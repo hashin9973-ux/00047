@@ -1,4 +1,4 @@
-:root{--bg:transparent;--line:rgba(255,255,255,.08);--tx:#e9ebf0;--mu:#8c93a1;--ac:#8b9cff;--ok:#4ade80;--er:#ff6b81;--wa:#f5b14a;--bl:#5aa9ff;--glass-tint:28,30,37;--glass-bg-opacity:.20;--glass-element-opacity:.40;--glass-blur:15px;--glass-element-blur:20px;--glass-border-hi:rgba(128,128,128,.314);--glass-border-low:rgba(64,64,64,.314);--glass-element-border-mid:rgba(96,96,96,.314)}
+:root{--bg:transparent;--line:rgba(255,255,255,.08);--tx:#e9ebf0;--mu:#8c93a1;--ac:#8b9cff;--ok:#4ade80;--er:#ff6b81;--wa:#f5b14a;--bl:#5aa9ff;--glass-tint:16,16,18;--glass-bg-opacity:.20;--glass-element-opacity:.40;--glass-blur:15px;--glass-element-blur:20px;--glass-border-hi:rgba(128,128,128,.314);--glass-border-low:rgba(64,64,64,.314);--glass-element-border-mid:rgba(96,96,96,.314)}
 *{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:rgba(170,180,200,.30) rgba(28,30,37,.12)}
 ::-webkit-scrollbar{width:8px;height:8px}
 ::-webkit-scrollbar-track{background:rgba(28,30,37,.12);border-radius:8px}
@@ -19,13 +19,13 @@ button,input,select{font:inherit;color:inherit}
 input,select{user-select:text}
 button:disabled{opacity:.35;cursor:default}
 .mu{color:var(--mu)}
-.glass{background:linear-gradient(rgba(var(--glass-tint),var(--glass-bg-opacity)),rgba(var(--glass-tint),var(--glass-bg-opacity))) padding-box,linear-gradient(180deg,var(--glass-border-hi) 0%,var(--glass-border-low) 25%,var(--glass-border-hi) 100%) border-box;backdrop-filter:blur(var(--glass-blur));-webkit-backdrop-filter:blur(var(--glass-blur));border-style:solid;border-color:transparent;border-width:1px .3px .3px .3px;box-shadow:none;isolation:isolate}
+.glass{background:linear-gradient(transparent,transparent) padding-box,linear-gradient(180deg,var(--glass-border-hi) 0%,var(--glass-border-low) 25%,var(--glass-border-hi) 100%) border-box;border-style:solid;border-color:transparent;border-width:1px .3px .3px .3px;box-shadow:none;isolation:isolate;position:relative}
 .top.glass,.ed-bar.glass,.ed-dock.glass{border-radius:12px}
-.card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{background:linear-gradient(rgba(var(--glass-tint),var(--glass-element-opacity)),rgba(var(--glass-tint),var(--glass-element-opacity))) padding-box,linear-gradient(180deg,var(--glass-element-border-mid) 15%,var(--glass-border-hi) 100%) border-box;backdrop-filter:blur(var(--glass-element-blur));-webkit-backdrop-filter:blur(var(--glass-element-blur));border-width:.3px .3px 1px .3px;border-radius:8px;box-shadow:none;isolation:isolate}
-.glass:not(.pop):not(.ctx):not(.ed-dock){position:relative}
-.glass::before{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background-image:var(--glass-desktop-frame,none);background-size:var(--glass-frame-size,100% 100%);background-position:var(--glass-frame-x,0px) var(--glass-frame-y,0px);background-repeat:no-repeat;mix-blend-mode:screen;filter:none;transform:scaleX(-1);opacity:0;pointer-events:none;transition:opacity .18s ease}
-html.glass-reflections-ready .glass::before{opacity:.54}
-
+.card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{background:linear-gradient(transparent,transparent) padding-box,linear-gradient(180deg,var(--glass-element-border-mid) 15%,var(--glass-border-hi) 100%) border-box;border-width:.3px .3px 1px .3px;border-radius:8px;box-shadow:none;isolation:isolate;position:relative}
+.glass::before{content:"";position:absolute;inset:0;z-index:-2;border-radius:inherit;background-image:var(--glass-backdrop-frame,none);background-size:var(--glass-frame-size,100% 100%);background-position:var(--glass-frame-x,0px) var(--glass-frame-y,0px);background-repeat:no-repeat;opacity:0;pointer-events:none;transition:opacity .12s ease}
+.glass::after{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background:rgba(var(--glass-tint),var(--glass-bg-opacity));pointer-events:none}
+.card.glass::after,.acard.glass::after,.ctx.glass::after,.pop.glass::after,.mbox.glass::after,.ck-box.glass::after{background:rgba(var(--glass-tint),var(--glass-element-opacity))}
+html.glass-backdrop-ready .glass::before{opacity:1}
 /* top dock */
 .top{display:flex;align-items:center;gap:18px;height:48px;margin:10px 12px 0;padding:0 14px;border-radius:16px;flex:none}
 .brand{font-size:11px;letter-spacing:.22em;color:var(--mu);opacity:.8}
