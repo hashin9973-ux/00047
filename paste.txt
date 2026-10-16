@@ -1,0 +1,448 @@
+Before pasting, I need to correct something. My failed push included a `sys.rs` that I wrote without reading your actual one, so it would have overwritten your real code. I'll read the files I haven't seen yet and patch against them.
+
+The GitHub connector is no longer available in this turn, so I can't read the files I haven't seen. I read `app.js`, `editor.js`, `blocks.js`, `blocks.rs`, `main.rs`, `engine.rs` and `model.rs`. I haven't seen `sys.rs`, `Cargo.toml`, `styles.css` or `index.html`. So `sys.rs` is append-only and `styles.css` is append-only. Everything else is an anchored edit, to keep it compact.
+
+Two of the approved items, block disable and test-run, are not in the repo. A block has no `disabled` flag, and test-run is just Restart. I can do those next.
+
+---
+
+**`ui/blocks.js` — replace the `note:` icon line (inside `const I = {`) with this**
+```js
+  note: ic('<path d="M4 5h16M4 12h16M4 19h10"/>'),
+  proc: ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M16.9 16.9l2.1 2.1M4.9 19.1l2.1-2.1M16.9 7.1l2.1-2.1"/>'),
+  stop: ic('<rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9z"/>'),
+  bell: ic('<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/>'),
+```
+
+**`ui/blocks.js` — insert this immediately before the line `  'act.trim': {`**
+```js
+  'cond.proc_running': {
+    cat: 'cond', title: 'Process Running', icon: I.proc,
+    desc: 'Checks whether a process (by exe name) is running, or waits for it to start or stop.',
+    defaults: { name: '', mode: 'check', pollSec: 2, timeoutSec: 0, onFail: 'stop' },
+    fields: [
+      { key: 'name', label: 'Process name', type: 'text', placeholder: 'chrome.exe', required: true },
+      { key: 'mode', label: 'Mode', type: 'select', options: [['check', 'Check once (IF running / ELSE not)'], ['wait_start', 'Wait until it starts'], ['wait_stop', 'Wait until it stops']] },
+      { key: 'pollSec', label: 'Poll every', type: 'number', min: 0.25, max: 3600, step: 0.25, unit: 's', show: c => c.mode !== 'check' },
+      { ...TIMEOUT, show: c => c.mode !== 'check' },
+      ONFAIL,
+    ],
+    summary: c => !c.name ? 'No process set' : c.mode === 'wait_start' ? `Wait for ${c.name} to start` : c.mode === 'wait_stop' ? `Wait for ${c.name} to stop` : `Is ${c.name} running?`,
+    help: 'Include the .exe extension. Needs no target block.',
+  },
+  'act.stop_proc': {
+    cat: 'act', title: 'Stop Process', icon: I.stop,
+    desc: 'Closes a process by exe name, or the wired Active process target.',
+    defaults: { mode: 'name', name: '', force: false, timeoutSec: 10, onFail: 'stop' },
+    fields: [
+      { key: 'mode', label: 'Pick process', type: 'select', options: [['name', 'By exe name'], ['target', 'From wired Active process target']] },
+      { key: 'name', label: 'Process name', type: 'text', placeholder: 'notepad.exe', required: true, show: c => c.mode === 'name' },
+      { key: 'force', label: 'Force-kill immediately', type: 'bool' },
+      TIMEOUT,
+      ONFAIL,
+    ],
+    summary: c => `Stop ${c.mode === 'name' ? (c.name || 'no name set') : 'target'}${c.force ? ' (force)' : ''}`,
+    help: 'Without force it sends a close request to the process windows, waits 5 s, then force-kills. By name only the first match is stopped. Protected processes need 00047 run as administrator. It refuses to stop 00047 itself.',
+  },
+  'act.notify': {
+    cat: 'act', title: 'Notification', icon: I.bell,
+    desc: 'Shows a Windows toast notification.',
+    defaults: { title: '00047', body: 'Hello', sound: true },
+    fields: [
+      { key: 'title', label: 'Title', type: 'text', required: true, maxLen: 64 },
+      { key: 'body', label: 'Message', type: 'text', required: true, maxLen: 256 },
+      { key: 'sound', label: 'Play sound', type: 'bool' },
+    ],
+    summary: c => c.body ? `"${c.body.slice(0, 40)}${c.body.length > 40 ? '…' : ''}"` : 'No message',
+  },
+```
+
+---
+
+**`src-tauri/src/blocks.rs` — insert this immediately before the line `// ---------- Actions ----------`**
+```rust
+struct ProcRunning;
+#[async_trait]
+impl Block for ProcRunning {
+    fn title(&self) -> &'static str {
+        "Process Running"
+    }
+    fn category(&self) -> Cat {
+        Cat::Condition
+    }
+    fn supports_timeout(&self) -> bool {
+        true
+    }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        if text(c, "name").is_empty() {
+            return Err("Process name is required".into());
+        }
+        let mode = text(c, "mode");
+        if !matches!(mode.as_str(), "" | "check" | "wait_start" | "wait_stop") {
+            return Err("Unknown mode".into());
+        }
+        if mode.starts_with("wait") {
+            rng(c, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
+            check_timeout(c)?;
+        }
+        Ok(())
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let name = text(&cx.cfg, "name");
+        let mode = text(&cx.cfg, "mode");
+        let poll = rng(&cx.cfg, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
+        let wait_start = mode == "wait_start";
+        let wait_stop = mode == "wait_stop";
+        loop {
+            let running = sys::find_pid_by_name(&name).is_ok();
+            (cx.report)(
+                if wait_start || wait_stop { "waiting" } else { "running" },
+                None,
+                format!("{name}: {}", if running { "running" } else { "not running" }),
+            );
+            if wait_start {
+                if running {
+                    return Ok(Outcome::Satisfied);
+                }
+            } else if wait_stop {
+                if !running {
+                    return Ok(Outcome::Satisfied);
+                }
+            } else {
+                return Ok(if running { Outcome::Satisfied } else { Outcome::NotSatisfied });
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs_f64(poll)) => {},
+                _ = cx.token.cancelled() => return Err("cancelled".into()),
+            }
+        }
+    }
+}
+
+```
+
+**`src-tauri/src/blocks.rs` — insert this immediately before the line `/// Loop: each time it is reached it counts a visit.`**
+```rust
+struct StopProc;
+#[async_trait]
+impl Block for StopProc {
+    fn title(&self) -> &'static str {
+        "Stop Process"
+    }
+    fn category(&self) -> Cat {
+        Cat::Action
+    }
+    fn supports_timeout(&self) -> bool {
+        true
+    }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        if text(c, "mode") != "target" && text(c, "name").is_empty() {
+            return Err("Process name is required".into());
+        }
+        check_timeout(c)
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let force = flag(&cx.cfg, "force", false);
+        let (pid, name) = if text(&cx.cfg, "mode") == "target" {
+            first_process(cx)?
+        } else {
+            let n = text(&cx.cfg, "name");
+            (sys::find_pid_by_name(&n)?, n)
+        };
+        if pid == sys::own_pid() {
+            return Err("refusing to stop 00047 itself".into());
+        }
+        (cx.report)("running", None, format!("Stopping {name} ({pid})"));
+        let msg = tokio::task::spawn_blocking(move || sys::stop_process(pid, force))
+            .await
+            .map_err(|e| e.to_string())??;
+        (cx.log)("info", format!("{name} ({pid}): {msg}"));
+        Ok(Outcome::Satisfied)
+    }
+}
+
+struct Notify;
+#[async_trait]
+impl Block for Notify {
+    fn title(&self) -> &'static str {
+        "Notification"
+    }
+    fn category(&self) -> Cat {
+        Cat::Action
+    }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        let t = text(c, "title");
+        let b = text(c, "body");
+        if t.is_empty() || b.is_empty() {
+            return Err("Title and message are required".into());
+        }
+        if t.chars().count() > 64 || b.chars().count() > 256 {
+            return Err("Title max 64 and message max 256 characters".into());
+        }
+        Ok(())
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let (t, b, s) = (text(&cx.cfg, "title"), text(&cx.cfg, "body"), flag(&cx.cfg, "sound", true));
+        tokio::task::spawn_blocking(move || sys::show_notification(&t, &b, s))
+            .await
+            .map_err(|e| e.to_string())??;
+        Ok(Outcome::Satisfied)
+    }
+}
+
+```
+
+**`src-tauri/src/blocks.rs` — replace the line `        m.insert("act.trim", Box::new(Trim));` with these lines, and the line `        m.insert("act.log", Box::new(LogMsg));` with its two-line version below**
+```rust
+        m.insert("cond.proc_running", Box::new(ProcRunning));
+        m.insert("act.trim", Box::new(Trim));
+        m.insert("act.stop_proc", Box::new(StopProc));
+```
+```rust
+        m.insert("act.log", Box::new(LogMsg));
+        m.insert("act.notify", Box::new(Notify));
+```
+
+---
+
+**`src-tauri/src/sys.rs` — append at the end of the file**
+
+I haven't seen your imports, so this uses full paths. It assumes `windows` ≥ 0.58 (calls return `Result`).
+```rust
+/// Closes a process: WM_CLOSE to its windows, waits 5 s, then TerminateProcess (or straight to terminate if force).
+#[cfg(windows)]
+pub fn stop_process(pid: u32, force: bool) -> Result<String, String> {
+    use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE};
+
+    unsafe extern "system" fn close_cb(hwnd: HWND, lp: LPARAM) -> BOOL {
+        let mut p = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut p));
+        if p == lp.0 as u32 {
+            let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+        BOOL(1)
+    }
+
+    let h = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, false, pid) }
+        .map_err(|e| format!("open process {pid}: {e}"))?;
+    let res = (|| -> Result<String, String> {
+        if !force {
+            unsafe {
+                let _ = EnumWindows(Some(close_cb), LPARAM(pid as isize));
+            }
+            if unsafe { WaitForSingleObject(h, 5000) } == WAIT_OBJECT_0 {
+                return Ok("closed gracefully".to_string());
+            }
+        }
+        unsafe { TerminateProcess(h, 1) }.map_err(|e| format!("TerminateProcess: {e}"))?;
+        unsafe {
+            WaitForSingleObject(h, 3000);
+        }
+        let m = if force { "force-killed" } else { "did not close within 5 s; force-killed" };
+        Ok(m.to_string())
+    })();
+    unsafe {
+        let _ = CloseHandle(h);
+    }
+    res
+}
+
+/// Toast notification. Uses the built-in PowerShell AppUserModelID because an unpackaged app has no registered one.
+#[cfg(windows)]
+pub fn show_notification(title: &str, body: &str, sound: bool) -> Result<(), String> {
+    use windows::core::HSTRING;
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+
+    unsafe {
+        let _ = windows::Win32::System::WinRT::RoInitialize(windows::Win32::System::WinRT::RO_INIT_MULTITHREADED);
+    }
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;");
+    let audio = if sound { "" } else { "<audio silent=\"true\"/>" };
+    let xml = format!(
+        "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{}</toast>",
+        esc(title),
+        esc(body),
+        audio
+    );
+    let doc = XmlDocument::new().map_err(|e| format!("XmlDocument: {e}"))?;
+    doc.LoadXml(&HSTRING::from(xml)).map_err(|e| format!("LoadXml: {e}"))?;
+    let toast = ToastNotification::CreateToastNotification(&doc).map_err(|e| format!("toast: {e}"))?;
+    let aumid = HSTRING::from(r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe");
+    ToastNotificationManager::CreateToastNotifierWithId(&aumid)
+        .map_err(|e| format!("notifier: {e}"))?
+        .Show(&toast)
+        .map_err(|e| format!("show: {e}"))
+}
+```
+Add any missing features to the `windows` dependency in `src-tauri/Cargo.toml`. This round needs: `"Data_Xml_Dom"`, `"UI_Notifications"`, `"Foundation"`, `"Win32_System_WinRT"`, `"Win32_System_Threading"`, `"Win32_UI_WindowsAndMessaging"`.
+
+---
+
+**`src-tauri/src/main.rs` — insert this immediately before the line `// ---------- helpers ----------`**
+```rust
+#[tauri::command]
+async fn export_logs(app: AppHandle, csv: String) -> Result<bool, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("CSV", &["csv"])
+        .set_file_name("00047-logs.csv")
+        .save_file(move |p| {
+            let _ = tx.send(p);
+        });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(false) };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(path, format!("\u{feff}{csv}")).map_err(|e| format!("write file: {e}"))?;
+    Ok(true)
+}
+
+```
+
+**`src-tauri/src/main.rs` — replace the line `            import_automation` (inside `generate_handler!`) with**
+```rust
+            import_automation,
+            export_logs
+```
+
+---
+
+**`ui/app.js` — insert this immediately after the line `$('#ed-redo').addEventListener('click', () => editor.doRedo());`**
+```js
+
+// ---------- log filter + CSV export ----------
+const logMatch = e => {
+  const { q, level, auto } = S.lf;
+  if (level && e.level !== level) return false;
+  if (auto === '__app' ? e.autoId !== '' : auto && e.autoId !== auto) return false;
+  if (q && !`${e.msg} ${e.autoName} ${e.nodeLabel || ''}`.toLowerCase().includes(q)) return false;
+  return true;
+};
+const csvCell = v => {
+  let s = String(v ?? '');
+  if (/^[=+\-@]/.test(s)) s = "'" + s;
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+async function exportLogs() {
+  const rows = S.logs.filter(logMatch);
+  if (!rows.length) { toast('No log entries to export'); return; }
+  const day = ts => { const d = new Date(ts); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${fmtTime(ts)}`; };
+  const csv = ['time,level,automation,block,message',
+    ...rows.map(e => [day(e.ts), e.level, e.autoName, e.nodeLabel || '', e.msg].map(csvCell).join(','))].join('\r\n') + '\r\n';
+  try { if (await invoke('export_logs', { csv })) toast(`Exported ${rows.length} entries`); }
+  catch (e) { toast('Log export failed: ' + e, 'err'); }
+}
+
+// ---------- Ctrl+K command palette ----------
+const pal = document.createElement('div');
+pal.id = 'cmdk'; pal.hidden = true;
+pal.innerHTML = '<div class="ck-box glass"><input class="ck-in" placeholder="Type a command…" spellcheck="false"><div class="ck-list"></div></div>';
+document.body.appendChild(pal);
+const ckIn = $('.ck-in', pal), ckList = $('.ck-list', pal);
+const ck = { items: [], i: 0 };
+
+function ckCommands() {
+  const go = v => () => { if (S.view === 'editor') flushSaves(); show(v); };
+  const c = [
+    { t: 'New automation', k: 'Action', f: newAuto },
+    { t: 'Import automation…', k: 'Action', f: importAuto },
+    { t: 'Go to Overview', k: 'View', f: go('overview') },
+    { t: 'Go to Automations', k: 'View', f: go('automations') },
+    { t: 'Go to Logs', k: 'View', f: go('logs') },
+    { t: 'Export logs (CSV)…', k: 'Logs', f: exportLogs },
+  ];
+  if (S.view === 'editor') c.unshift(
+    { t: 'Add block…', k: 'Editor', f: () => editor.openMenuCenter() },
+    { t: 'Undo', k: 'Editor', f: () => editor.doUndo() },
+    { t: 'Redo', k: 'Editor', f: () => editor.doRedo() },
+    { t: 'Fit view', k: 'Editor', f: () => editor.fit() },
+  );
+  for (const a of S.autos) {
+    c.push({ t: `Open: ${a.name}`, k: 'Automation', f: () => openEditor(a.id) });
+    c.push(isRun(a.id)
+      ? { t: `Stop: ${a.name}`, k: 'Automation', f: () => control('stop', a.id) }
+      : { t: `Start: ${a.name}`, k: 'Automation', f: () => control('start', a.id) });
+    c.push({ t: `Restart: ${a.name}`, k: 'Automation', f: () => control('restart', a.id) });
+  }
+  return c;
+}
+function ckRender() {
+  const terms = ckIn.value.toLowerCase().split(/\s+/).filter(Boolean);
+  ck.items = ckCommands().filter(c => terms.every(t => `${c.t} ${c.k}`.toLowerCase().includes(t))).slice(0, 50);
+  ck.i = Math.min(ck.i, Math.max(0, ck.items.length - 1));
+  ckList.innerHTML = ck.items.map((c, i) => `<div class="ck-item${i === ck.i ? ' on' : ''}" data-i="${i}"><span>${esc(c.t)}</span><small>${esc(c.k)}</small></div>`).join('')
+    || '<div class="ck-empty">No matching commands</div>';
+  ckList.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
+}
+const ckClose = () => { pal.hidden = true; };
+function ckOpen() {
+  if (!$('#modal').hidden) return;
+  ck.i = 0; ckIn.value = ''; pal.hidden = false; ckRender(); ckIn.focus();
+}
+function ckRun(i) { const c = ck.items[i]; if (!c) return; ckClose(); setTimeout(c.f, 0); }
+ckIn.addEventListener('input', () => { ck.i = 0; ckRender(); });
+ckIn.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown') { ck.i = Math.min(ck.items.length - 1, ck.i + 1); ckRender(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { ck.i = Math.max(0, ck.i - 1); ckRender(); e.preventDefault(); }
+  else if (e.key === 'Enter') { ckRun(ck.i); e.preventDefault(); }
+  else if (e.key === 'Escape') ckClose();
+  e.stopPropagation();
+});
+ckList.addEventListener('click', e => { const it = e.target.closest('.ck-item'); if (it) ckRun(+it.dataset.i); });
+pal.addEventListener('pointerdown', e => { if (e.target === pal) ckClose(); });
+window.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (pal.hidden) ckOpen(); else ckClose();
+  }
+}, true);
+```
+
+**`ui/app.js` — replace the line `  else if (act === 'import') importAuto();` with**
+```js
+  else if (act === 'import') importAuto();
+  else if (act === 'export-logs') exportLogs();
+```
+
+**`ui/app.js` — replace the text `<button class="btn" id="lg-clear">Clear</button>` (inside `renderLogs`) with**
+```html
+<button class="btn" id="lg-clear">Clear</button><button class="btn" data-act="export-logs" title="Export the filtered entries to CSV">Export CSV</button>
+```
+
+**`ui/app.js` — replace the whole `fillLogs` function with**
+```js
+function fillLogs() {
+  const el = $('#lg-rows'); if (!el) return;
+  const rows = []; let total = 0;
+  for (let i = S.logs.length - 1; i >= 0; i--) {
+    const e = S.logs[i];
+    if (!logMatch(e)) continue;
+    total++;
+    if (rows.length < 500) rows.push(logRow(e));
+  }
+  el.innerHTML = rows.join('') || '<div class="empty">No log entries match.</div>';
+  $('#lg-count').textContent = total > 500 ? `showing newest 500 of ${total}` : `${total} entries`;
+}
+```
+
+---
+
+**`ui/styles.css` — append at the end of the file**
+```css
+#cmdk{position:fixed;inset:0;z-index:60;display:flex;justify-content:center;align-items:flex-start;padding-top:12vh;background:rgba(0,0,0,.35)}
+#cmdk[hidden]{display:none}
+.ck-box{width:min(560px,92vw);padding:8px;border-radius:14px}
+.ck-in{width:100%;box-sizing:border-box;padding:11px 12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;color:inherit;font:inherit;outline:none}
+.ck-in:focus{border-color:rgba(139,156,255,.6)}
+.ck-list{max-height:48vh;overflow:auto;margin-top:6px}
+.ck-item{display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:8px;cursor:pointer}
+.ck-item small{opacity:.5}
+.ck-item.on,.ck-item:hover{background:rgba(139,156,255,.16)}
+.ck-empty{padding:12px;opacity:.5;text-align:center}
+```
+
+---
+
+If `sys.rs` fails to compile, paste the errors, or paste the file and I'll adapt `stop_process` and `show_notification` to its imports. Toasts from an unpackaged app can be flaky on some Windows setups, so test that block first.
