@@ -195,6 +195,7 @@ async function delAuto(id) {
     await invoke('delete_automation', { id });
     S.autos = S.autos.filter(x => x.id !== id);
     delete S.rt.autos[id]; delete S.rt.nodes[id];
+    if (!pending.size && ind.classList.contains('err')) setInd('Saved', 'ok');
     render();
   } catch (e) {
     if (S.autos.some(x => x.id === id)) markDirty(a);
