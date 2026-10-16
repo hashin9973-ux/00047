@@ -790,7 +790,8 @@ function createGlassGpuProcessor() {
       regions.set([x, y, r.width * dpr * ratioX, r.height * dpr * ratioY], count * 4);
       const frost = el.matches(frostSelector);
       blurs[count] = (frost ? FROST.blur : 16) * dpr * ratioX;
-      frosts[count] = frost ? 1 : 0;
+      // Both variants use the same genuine backdrop-blur kernel; only radius differs.
+      frosts[count] = 0;
       count++;
     }
     gl.uniform1i(gl.getUniformLocation(program, 'u_count'), count);
