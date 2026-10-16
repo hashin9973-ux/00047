@@ -193,6 +193,52 @@ impl Block for Ram {
     }
 }
 
+struct ProcRunning;
+#[async_trait]
+impl Block for ProcRunning {
+    fn title(&self) -> &'static str { "Process Running" }
+    fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        if text(c, "name").is_empty() { return Err("Process name is required".into()); }
+        let mode = text(c, "mode");
+        if !matches!(mode.as_str(), "" | "check" | "wait_start" | "wait_stop") {
+            return Err("Unknown mode".into());
+        }
+        if mode.starts_with("wait") {
+            rng(c, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
+            check_timeout(c)?;
+        }
+        Ok(())
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let name = text(&cx.cfg, "name");
+        let mode = text(&cx.cfg, "mode");
+        let poll = rng(&cx.cfg, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
+        let wait_start = mode == "wait_start";
+        let wait_stop = mode == "wait_stop";
+        loop {
+            let running = sys::find_pid_by_name(&name).is_ok();
+            (cx.report)(
+                if wait_start || wait_stop { "waiting" } else { "running" },
+                None,
+                format!("{name}: {}", if running { "running" } else { "not running" }),
+            );
+            if wait_start {
+                if running { return Ok(Outcome::Satisfied); }
+            } else if wait_stop {
+                if !running { return Ok(Outcome::Satisfied); }
+            } else {
+                return Ok(if running { Outcome::Satisfied } else { Outcome::NotSatisfied });
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs_f64(poll)) => {},
+                _ = cx.token.cancelled() => return Err("cancelled".into()),
+            }
+        }
+    }
+}
+
 // ---------- Actions ----------
 struct Trim;
 #[async_trait]
@@ -278,6 +324,57 @@ impl Block for Start {
         let p2 = path.clone();
         tokio::task::spawn_blocking(move || sys::start_file(&p2, &args)).await.map_err(|e| e.to_string())??;
         (cx.log)("info", format!("launched {path}"));
+        Ok(Outcome::Satisfied)
+    }
+}
+
+struct StopProc;
+#[async_trait]
+impl Block for StopProc {
+    fn title(&self) -> &'static str { "Stop Process" }
+    fn category(&self) -> Cat { Cat::Action }
+    fn supports_timeout(&self) -> bool { true }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        if text(c, "mode") != "target" && text(c, "name").is_empty() {
+            return Err("Process name is required".into());
+        }
+        check_timeout(c)
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let force = flag(&cx.cfg, "force", false);
+        let (pid, name) = if text(&cx.cfg, "mode") == "target" {
+            first_process(cx)?
+        } else {
+            let n = text(&cx.cfg, "name");
+            (sys::find_pid_by_name(&n)?, n)
+        };
+        if pid == sys::own_pid() { return Err("refusing to stop 00047 itself".into()); }
+        (cx.report)("running", None, format!("Stopping {name} ({pid})"));
+        let msg = tokio::task::spawn_blocking(move || sys::stop_process(pid, force))
+            .await.map_err(|e| e.to_string())??;
+        (cx.log)("info", format!("{name} ({pid}): {msg}"));
+        Ok(Outcome::Satisfied)
+    }
+}
+
+struct Notify;
+#[async_trait]
+impl Block for Notify {
+    fn title(&self) -> &'static str { "Notification" }
+    fn category(&self) -> Cat { Cat::Action }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        let t = text(c, "title");
+        let b = text(c, "body");
+        if t.is_empty() || b.is_empty() { return Err("Title and message are required".into()); }
+        if t.chars().count() > 64 || b.chars().count() > 256 {
+            return Err("Title max 64 and message max 256 characters".into());
+        }
+        Ok(())
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let (t, b, s) = (text(&cx.cfg, "title"), text(&cx.cfg, "body"), flag(&cx.cfg, "sound", true));
+        tokio::task::spawn_blocking(move || sys::show_notification(&t, &b, s))
+            .await.map_err(|e| e.to_string())??;
         Ok(Outcome::Satisfied)
     }
 }
@@ -398,11 +495,14 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         let mut m: HashMap<&'static str, Box<dyn Block>> = HashMap::new();
         m.insert("cond.interval", Box::new(Interval));
         m.insert("cond.ram", Box::new(Ram));
+        m.insert("cond.proc_running", Box::new(ProcRunning));
         m.insert("act.trim", Box::new(Trim));
+        m.insert("act.stop_proc", Box::new(StopProc));
         m.insert("act.wait", Box::new(Wait));
         m.insert("act.start", Box::new(Start));
         m.insert("act.loop", Box::new(Loop));
         m.insert("act.log", Box::new(LogMsg));
+        m.insert("act.notify", Box::new(Notify));
         m.insert("tgt.process", Box::new(ProcessTarget));
         m.insert("tgt.file", Box::new(FileTarget));
         m
