@@ -232,21 +232,6 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .er{color:var(--er)}
 
 /* Exactly two neutral glass materials. The editor canvas and workflow nodes retain their own styling. */
-body { isolation: isolate; }
-body.liquidglass::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background-image: var(--glass-backdrop-frame, none);
-  background-size: var(--glass-frame-size, 100% 100%);
-  background-position: var(--glass-window-frame-x, 0px) var(--glass-window-frame-y, 0px);
-  background-repeat: no-repeat;
-  opacity: 0;
-}
-html.glass-backdrop-ready body.liquidglass::before { opacity: 1; }
-
 /* Shared transparent base; visible material comes from the sampled, GPU-blurred desktop image. */
 .glass {
   background: transparent !important;
