@@ -37,7 +37,7 @@ fn save_automation(eng: State<'_, Arc<Engine>>, auto: Automation) -> Result<(), 
 #[tauri::command]
 async fn delete_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
     let e = eng.inner().clone();
-    e.stop_and_wait(&id).await;
+    e.stop_and_wait(&id).await?;
     e.remove(&id)
 }
 
