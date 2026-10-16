@@ -46,7 +46,7 @@ pub struct Automation {
     pub auto_start: bool,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
     pub seq: u64,
@@ -82,7 +82,7 @@ impl Default for AutoRuntime {
     }
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRecord {
     pub id: u64,
