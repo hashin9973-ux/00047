@@ -564,11 +564,6 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
             *flow_incoming.entry(e.to.as_str()).or_default() += 1;
         }
     }
-    for (node_id, count) in flow_incoming {
-        if count > 1 {
-            errs.push(format!("block #{} has {count} incoming flow wires; converging branches are not supported yet", node_id.chars().take(4).collect::<String>()));
-        }
-    }
     for n in &a.nodes {
         if n.disabled {
             continue;
@@ -614,8 +609,6 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
             errs.push(format!("IF/ELSE/AFTER wire cannot start at Target block {} (use its teal output)", short(f)));
         } else if f.kind == "act.loop" {
             errs.push(format!("Loop {} has no output wires; it returns to Start automatically", short(f)));
-        } else if t.kind == "act.start" {
-            errs.push(format!("Start {} is an entry point and cannot receive a wire; Loop returns automatically", short(t)));
         } else if !["if", "else", "after"].contains(&e.kind.as_str()) {
             errs.push(format!("unknown wire type '{}'", e.kind));
         }

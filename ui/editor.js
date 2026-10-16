@@ -217,6 +217,23 @@ export class Editor {
   select(ids) { this.setSel(new Set(ids)); }
   toggle(id) { const s = new Set(this.sel); s.has(id) ? s.delete(id) : s.add(id); this.setSel(s); }
   selectEdge(id) { this.setSel(new Set()); this.selEdge = id; this.scheduleWires(); }
+  cutWire(id) {
+    const wire = this.wires.get(id), edge = this.auto.edges.find(e => e.id === id);
+    if (!wire || !edge) return;
+    const blade = svg('text', { class: 'wire-scissor', 'text-anchor': 'middle', 'dominant-baseline': 'central' });
+    blade.textContent = '✂';
+    const mid = wire.mid || {x:0,y:0};
+    blade.setAttribute('x', mid.x); blade.setAttribute('y', mid.y);
+    this.wl.appendChild(blade);
+    wire.vis.classList.add('cutting'); wire.hit.style.pointerEvents = 'none';
+    requestAnimationFrame(() => { wire.vis.classList.add('cut-animate'); blade.classList.add('snip'); });
+    setTimeout(() => {
+      blade.remove();
+      this.auto.edges = this.auto.edges.filter(e => e.id !== id);
+      if (this.selEdge === id) this.selEdge = null;
+      this.refreshAll(); this.scheduleWires(); this.changed();
+    }, 260);
+  }
 
   // ---------- pointer ----------
   down(e) {
@@ -377,10 +394,6 @@ export class Editor {
         this.hooks.toast('Loop returns to Start automatically and has no output wires.');
         return false;
       }
-      if (B.kind === 'act.start') {
-        this.hooks.toast('Start is an entry point. Loop returns to it automatically; do not connect a wire into Start.');
-        return false;
-      }
     }
 
     if (this.auto.edges.some(e => e.from === from && e.to === to && e.kind === kind)) return false;
@@ -447,6 +460,9 @@ export class Editor {
         w = { hit: svg('path', { class: 'wire hit' }), vis: svg('path'), mid: null };
         const id = e.id;
         w.hit.addEventListener('pointerdown', ev => { ev.stopPropagation(); ev.preventDefault(); this.selectEdge(id); });
+        w.hit.addEventListener('pointerenter', () => { if (this.wires.get(id)) this.wires.get(id).vis.classList.add('hover'); });
+        w.hit.addEventListener('pointerleave', () => { if (this.wires.get(id)) this.wires.get(id).vis.classList.remove('hover'); });
+        w.hit.addEventListener('contextmenu', ev => { ev.preventDefault(); ev.stopPropagation(); this.cutWire(id); });
         this.wl.appendChild(w.hit); this.wl.appendChild(w.vis);
         this.wires.set(e.id, w);
       }
@@ -494,9 +510,7 @@ export class Editor {
          <i class="port out tgt" data-t="target" title="Target output: bind this target and continue the workflow"></i>`
       : isLoop
         ? `<i class="port in" title="Flow input. Loop returns automatically to Start."></i>`
-        : isStart
-          ? flowOut
-          : `<i class="port in" title="Input"></i>${flowOut}`;
+        : `<i class="port in" title="Flow input. Multiple incoming wires may converge here."></i>${flowOut}`;
     el.innerHTML = `
       <div class="n-head"><button class="n-chev" title="Collapse / expand settings">▾</button><span class="n-icon">${def.icon}</span><span class="n-title">${def.title}</span><span class="n-dot"></span></div>
       <div class="n-sum"></div><div class="n-detail"></div><div class="n-prog" hidden><i></i></div>
@@ -597,9 +611,6 @@ export class Editor {
       if (this.auto.edges.some(e => e.from === n.id && ['if', 'else', 'after'].includes(e.kind))) {
         out.push('Loop has no output wires now; disconnect its old outgoing wires. It jumps to Start automatically.');
       }
-    }
-    if (n.kind === 'act.start' && this.auto.edges.some(e => e.to === n.id)) {
-      out.push('Start is an entry point and cannot receive wires. Loop returns to it automatically.');
     }
     return out;
   }
