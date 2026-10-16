@@ -3,6 +3,7 @@ use crate::{
     model::*,
     store::Store,
 };
+use crate::logstore::LogStore;
 use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -47,21 +48,35 @@ pub struct Engine {
     seq: AtomicU64,
     run_seq: AtomicU64,
     ui: AtomicBool,
+    disk: LogStore,
 }
 
 impl Engine {
-    pub fn new(app: AppHandle, store: Arc<Store>) -> Self {
+    pub fn new(app: AppHandle, store: Arc<Store>, dir: &std::path::Path) -> Self {
+        let (disk, old_logs) = LogStore::open(dir, LOG_CAP);
+        let hist = LogStore::load_history(dir);
+        let max_run = hist.values().flat_map(|q| q.iter().map(|r| r.id)).max().unwrap_or(0);
+        let mut seq = 0u64;
+        let logs: VecDeque<LogEntry> = old_logs
+            .into_iter()
+            .map(|mut e| {
+                seq += 1;
+                e.seq = seq;
+                e
+            })
+            .collect();
         Engine {
             app,
             store,
             runs: Default::default(),
             autos: Default::default(),
             nodes: Default::default(),
-            logs: Default::default(),
-            hist: Default::default(),
-            seq: AtomicU64::new(0),
-            run_seq: AtomicU64::new(0),
+            logs: Mutex::new(logs),
+            hist: Mutex::new(hist),
+            seq: AtomicU64::new(seq),
+            run_seq: AtomicU64::new(max_run),
             ui: AtomicBool::new(false),
+            disk,
         }
     }
 
@@ -97,10 +112,12 @@ impl Engine {
             }
             l.push_back(e.clone());
         }
+        self.disk.append(&e);
         if self.visible() {
             let _ = self.app.emit("log", &e);
         }
     }
+
     pub fn app_log(&self, level: &str, msg: String) {
         self.log(level, "", "Application", None, msg);
     }
@@ -115,6 +132,7 @@ impl Engine {
     }
     pub fn clear_logs(&self) {
         self.logs.lock().unwrap().clear();
+        self.disk.clear();
     }
 
     // ----- state -----
@@ -201,6 +219,7 @@ impl Engine {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+        self.disk.flush();
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
@@ -208,6 +227,7 @@ impl Engine {
         self.autos.lock().unwrap().remove(id);
         self.nodes.lock().unwrap().remove(id);
         self.hist.lock().unwrap().remove(id);
+        self.disk.save_history(&self.hist.lock().unwrap());
         Ok(())
     }
 
@@ -266,6 +286,7 @@ impl Engine {
             let q = h.entry(aid.clone()).or_default();
             q.push_front(RunRecord { id: run_id, started_at: started, ended_at: ended, outcome: outcome.into(), errors });
             q.truncate(HIST_CAP);
+            self.disk.save_history(&h);
         }
         {
             let mut r = self.runs.lock().unwrap();
