@@ -565,6 +565,7 @@ export class Editor {
     if (!ns.length) return;
     const off = ns.some(n => !n.disabled);
     for (const n of ns) { n.disabled = off; this.refresh(n); }
+    this.scheduleWires();
     this.changed();
   }
   refreshAll() { for (const n of this.auto.nodes) this.refresh(n); }
