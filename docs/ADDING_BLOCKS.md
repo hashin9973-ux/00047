@@ -10,15 +10,15 @@ An example is in `docs/examples/blocks/sample-pack.json`.
 
 ```json
 {
-  "kind": "user.open_url",            // must start with "user."; a-z 0-9 . _
-  "category": "action",               // "condition" or "action"
+  "kind": "user.open_url",
+  "category": "action",
   "title": "Open URL",
   "icon": "play",                     // clock chip trim hourglass play repeat window file note proc stop bell
   "description": "Opens a web address.",
   "fields": [
     { "key": "url", "label": "Address", "type": "text", "required": true, "maxLen": 500 },
-    { "preset": "timeout" },          // adds a Timeout setting (and enables the timeout)
-    { "preset": "onFail" }            // adds the "On failure" setting
+    { "preset": "timeout" },
+    { "preset": "onFail" }
   ],
   "summary": "Open {url}",
   "run": { "type": "powershell", "script": "Start-Process $env:FIELD_URL" }
