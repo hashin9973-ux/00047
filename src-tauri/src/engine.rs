@@ -208,6 +208,48 @@ impl Engine {
         self.start(id)
     }
 
+    /// Runs one block using its current settings and wired targets, without traversing flow wires.
+    pub async fn test_block(self: &Arc<Self>, auto: Automation, node_id: String) -> Result<String, String> {
+        let node = auto.nodes.iter().find(|n| n.id == node_id).cloned().ok_or_else(|| "block not found".to_string())?;
+        let blk = registry().get(node.kind.as_str()).ok_or_else(|| "unknown block type".to_string())?;
+        if blk.category() == Cat::Target {
+            return match blk.resolve(&node.cfg)? {
+                Target::Process { pid, name } => Ok(format!("resolves to {name} (pid {pid})")),
+                Target::File { path } => Ok(format!("file: {path}")),
+            };
+        }
+        blk.validate(&node.cfg)?;
+        let auto = Arc::new(auto);
+        let short_id = node.id.chars().take(4).collect::<String>();
+        let label = format!("{} #{short_id} (test)", blk.title());
+        let cx = NodeCx {
+            cfg: node.cfg.clone(),
+            token: CancellationToken::new(),
+            visit: 1,
+            report: Box::new(|_: &str, _: Option<f64>, _: String| {}),
+            log: {
+                let me = self.clone();
+                let (aid, name, nid, node_label) = (auto.id.clone(), auto.name.clone(), node.id.clone(), label.clone());
+                Box::new(move |lv: &str, m: String| me.log(lv, &aid, &name, Some((nid.clone(), node_label.clone())), m))
+            },
+            resolve: {
+                let a = auto.clone();
+                let nid = node.id.clone();
+                Box::new(move || resolve_targets(&a, &nid))
+            },
+            visible: Box::new(|| false),
+        };
+        let out = tokio::time::timeout(Duration::from_secs(60), blk.run(&cx))
+            .await
+            .map_err(|_| "test timed out after 60 s".to_string())??;
+        let txt = match out {
+            Outcome::Satisfied => "satisfied (a real run would follow IF + AFTER wires)",
+            Outcome::NotSatisfied => "not satisfied (a real run would follow ELSE + AFTER wires)",
+        };
+        self.log("info", &auto.id, &auto.name, Some((node.id.clone(), label)), format!("Test run: {txt}"));
+        Ok(txt.to_string())
+    }
+
     pub async fn shutdown(&self) {
         let ids: Vec<String> = self.runs.lock().unwrap().keys().cloned().collect();
         for id in &ids {
@@ -342,14 +384,7 @@ impl Ctx {
         v
     }
     fn resolve_for(&self, id: &str) -> Result<Vec<Target>, String> {
-        let reg = registry();
-        let mut v = vec![];
-        for e in self.auto.edges.iter().filter(|e| e.kind == "target" && e.to == id) {
-            let src = self.auto.nodes.iter().find(|n| n.id == e.from).ok_or("a wired target block is missing")?;
-            let b = reg.get(src.kind.as_str()).ok_or("unknown target block type")?;
-            v.push(b.resolve(&src.cfg)?);
-        }
-        Ok(v)
+        resolve_targets(&self.auto, id)
     }
     /// Runaway guard: too many executions of one block in a short window aborts the automation.
     fn rate_ok(&self, node: &Node) -> bool {
@@ -373,6 +408,17 @@ fn short(n: &Node) -> String {
     format!("#{}", n.id.chars().take(4).collect::<String>())
 }
 
+fn resolve_targets(a: &Automation, id: &str) -> Result<Vec<Target>, String> {
+    let reg = registry();
+    let mut v = vec![];
+    for e in a.edges.iter().filter(|e| e.kind == "target" && e.to == id) {
+        let src = a.nodes.iter().find(|n| n.id == e.from).ok_or("a wired target block is missing")?;
+        let b = reg.get(src.kind.as_str()).ok_or("unknown target block type")?;
+        v.push(b.resolve(&src.cfg)?);
+    }
+    Ok(v)
+}
+
 pub fn entry_nodes(a: &Automation) -> Vec<String> {
     let reg = registry();
     a.nodes
@@ -388,6 +434,9 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
     let mut errs: Vec<String> = vec![];
     let find = |id: &str| a.nodes.iter().find(|n| n.id == id);
     for n in &a.nodes {
+        if n.disabled {
+            continue;
+        }
         let Some(b) = reg.get(n.kind.as_str()) else {
             errs.push(format!("{} has unknown block type '{}'", short(n), n.kind));
             continue;
@@ -490,6 +539,11 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         ctx.log("error", Some(node), "Runaway guard tripped: this block ran too often in a short time. Automation aborted. Add a Wait or raise the loop delay / interval.".into());
         ctx.abort();
         return vec![];
+    }
+    if node.disabled {
+        eng.set_node(&aid, &node.id, "done", None, "disabled: skipped".into());
+        ctx.log("info", Some(node), "skipped (block is disabled); following AFTER wires only".into());
+        return ctx.out(&node.id, &["after"]);
     }
     let visit = {
         let mut v = ctx.visits.lock().unwrap();
