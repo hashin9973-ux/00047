@@ -90,11 +90,11 @@ fn apply_liquidglass_backdrop(window: &tauri::WebviewWindow) {
         fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
     }
 
-    let user32: Vec<u16> = "user32.dll\\0".encode_utf16().collect();
+    let user32: Vec<u16> = "user32.dll\0".encode_utf16().collect();
     let procedure = unsafe {
         let module = GetModuleHandleW(user32.as_ptr());
         if module.is_null() { return; }
-        GetProcAddress(module, b"SetWindowCompositionAttribute\\0".as_ptr())
+        GetProcAddress(module, b"SetWindowCompositionAttribute\0".as_ptr())
     };
     if procedure.is_null() { return; }
 
@@ -530,9 +530,14 @@ fn show_main(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.show();
         #[cfg(target_os = "windows")]
-        let _ = w.with_webview(|webview| unsafe {
-            let _ = webview.controller().SetIsVisible(true);
-        });
+        {
+            // Reapply after showing/restoring because the compositor can rebuild
+            // the window surface during visibility transitions.
+            apply_liquidglass_backdrop(&w);
+            let _ = w.with_webview(|webview| unsafe {
+                let _ = webview.controller().SetIsVisible(true);
+            });
+        }
         let _ = w.set_focus();
     }
     if let Some(e) = app.try_state::<Arc<Engine>>() {
