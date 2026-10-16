@@ -274,7 +274,7 @@ html.glass-backdrop-ready body::before { opacity: 1; }
 .glass::after { content: none !important; display: none !important; }
 html.glass-backdrop-ready .glass::before { opacity: 1; }
 
-/* LiquidGlass: app background and primary surface radius. */
+/* LiquidGlass: the application background; the base backdrop pass is 16px blur. */
 .glass.liquidglass {
   border-color: rgba(255,255,255,.12) !important;
   box-shadow: 0 8px 22px rgba(0,0,0,.20) !important;
