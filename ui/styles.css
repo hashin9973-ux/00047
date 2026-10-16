@@ -230,96 +230,181 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .bp li{margin-bottom:10px}
 .bp pre{white-space:pre-wrap;word-break:break-word;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;color:var(--tx);font:12px Consolas,monospace;user-select:text}
 .er{color:var(--er)}
-
-
-/* LiquidGlass Frosty variant: translucent ice surfaces for content and controls.
-   The title/editor docks retain the original LiquidGlass backdrop material. */
+/* LiquidGlass Frosty: neutral, low-chroma material treatment.
+   Preserve .canvas and its grid exactly; the frosted treatment applies to the UI
+   around it, including panels, controls, overlays, and workflow nodes. */
 :root{
-  --frost-ink:#1c2b40;
-  --frost-muted:#5b6d83;
-  --frost-line:rgba(76,103,137,.24);
-  --frost-surface:rgba(235,244,253,.66);
-  --frost-surface-strong:rgba(244,249,255,.82);
-  --frost-hover:rgba(255,255,255,.72);
-  --frost-shadow:0 8px 24px rgba(44,67,98,.12);
-  --line:var(--frost-line);
-  --ac:#6588df;
+  --tx:#202020;
+  --mu:#555555;
+  --line:rgba(36,36,36,.17);
+  --ac:#626262;
+  --glass-tint:250,250,250;
+  --glass-bg-opacity:.12;
+  --glass-element-opacity:.19;
+  --glass-blur:15px;
+  --glass-element-blur:20px;
+  --glass-border-hi:rgba(255,255,255,.82);
+  --glass-border-low:rgba(45,45,45,.26);
+  --glass-element-border-mid:rgba(255,255,255,.68);
 }
-body{color:var(--tx)}
-/* Frosted cards, workflow nodes, editor canvas and overlays */
+*{
+  scrollbar-color:rgba(80,80,80,.30) rgba(255,255,255,.10);
+}
+::-webkit-scrollbar-track{background:rgba(255,255,255,.10)}
+::-webkit-scrollbar-thumb{
+  background:linear-gradient(180deg,rgba(255,255,255,.52),rgba(80,80,80,.18));
+  border-color:rgba(255,255,255,.42);
+}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.65)}
+.window-titlebar{color:#222;border-bottom-color:rgba(255,255,255,.22)}
+.window-titlebar-title{color:rgba(25,25,25,.72)}
+.window-control{color:rgba(25,25,25,.82)}
+.window-control:hover{background:rgba(255,255,255,.28);color:#111}
+.window-control.close:hover{background:#c42b1c;color:#fff}
+
+/* Real backdrop blur lives in .glass::before (GPU-blurred desktop capture).
+   Keep the fill achromatic and restrained; let the backdrop and reflective edge
+   do the work instead of painting the surface blue, purple, or charcoal. */
+.glass{
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.26),inset 0 -1px 0 rgba(0,0,0,.045);
+}
+.glass::after{background:rgba(var(--glass-tint),var(--glass-bg-opacity))}
 .card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{
-  color:var(--frost-ink);
-  background:linear-gradient(var(--frost-surface),var(--frost-surface)) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.9),rgba(143,171,207,.46)) border-box;
-  border-color:transparent;
-  box-shadow:var(--frost-shadow);
-  -webkit-backdrop-filter:blur(20px) saturate(1.3);
-  backdrop-filter:blur(20px) saturate(1.3);
+  box-shadow:0 8px 28px rgba(0,0,0,.13),inset 0 1px 0 rgba(255,255,255,.38);
 }
 .card.glass::after,.acard.glass::after,.ctx.glass::after,.pop.glass::after,.mbox.glass::after,.ck-box.glass::after{
-  background:rgba(232,242,253,.12);
+  background:rgba(var(--glass-tint),var(--glass-element-opacity));
 }
-.card h3,.acard h4,.tbl th,.tbl td,.chead,.help,.help b,.mbox h3,.mbox p,.mbody,.mbody code{color:var(--frost-ink)}
-.card h3,.tbl th,.help,.mbox p,.mbody{color:var(--frost-muted)}
-.tbl th,.tbl td{border-bottom-color:rgba(76,103,137,.16)}
-.tbl tr[data-act=open]:hover{background:rgba(255,255,255,.36)}
-/* Controls use a frosty material instead of opaque charcoal fills */
-.btn,.ib,.eu-bar button,.ck-in,.search,select,.name,.mq,
-.fld input[type=text],.fld input[type=number],.fld select,.bp pre{
-  color:var(--frost-ink);
-  background:rgba(242,248,255,.68);
-  border-color:var(--frost-line);
-  -webkit-backdrop-filter:blur(12px) saturate(1.25);
-  backdrop-filter:blur(12px) saturate(1.25);
+
+/* Neutral ink and quiet structural lines throughout non-canvas UI. */
+.mu,.brand,.save.ok,.icon-btn,.tbl th,.res span,.recent div,.empty,
+.lr .t,.lr .an,.lr .bl,.help,.fl,.fh,.mempty,.mbody,
+.ck-item small,.ck-empty{color:var(--mu)}
+.card h3,.acard h4,.tbl td,.tbl th,.chead,.help b,
+.mbox h3,.mbox p,.mbody,.mbody code,.bp pre{color:var(--tx)}
+.tbl th,.tbl td{border-bottom-color:rgba(40,40,40,.11)}
+.tbl tr[data-act=open]:hover{background:rgba(255,255,255,.22)}
+.res i{background:rgba(50,50,50,.10)}
+.res u{background:var(--ac)}
+.lr{border-bottom-color:rgba(35,35,35,.10)}
+.logs,.lr{color:var(--tx)}
+.lr .t,.lr .an,.lr .bl{color:var(--mu)}
+
+/* Glass controls: clear neutral surfaces, soft defocus, and monochrome rims. */
+.btn,.ib,.icon-btn,.window-control,.eu-bar button,
+.search,.name,.mq,select,.ck-in,
+.fld input[type=text],.fld input[type=number],.fld select,
+.bp pre{
+  color:#202020;
+  background:linear-gradient(180deg,rgba(255,255,255,.24),rgba(235,235,235,.11)) padding-box,
+    linear-gradient(180deg,rgba(255,255,255,.78),rgba(55,55,55,.22)) border-box;
+  border:1px solid transparent;
+  -webkit-backdrop-filter:blur(14px) saturate(1);
+  backdrop-filter:blur(14px) saturate(1);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.38);
 }
 .btn:hover:not(:disabled),.ib:hover:not(:disabled),.icon-btn:hover,
-.eu-bar button:hover,.ck-item:hover,.ck-item.on{background:rgba(255,255,255,.82)}
-.btn.primary{background:rgba(126,158,235,.32);border-color:rgba(94,126,204,.48)}
+.eu-bar button:hover,.ck-item:hover,.ck-item.on,
+#tabs button:hover,#dock-tabs button:hover{
+  color:#111;
+  background:rgba(255,255,255,.40);
+}
+.btn.primary,.btn.danger,.btn.danger:hover:not(:disabled){
+  color:#202020;
+  background:linear-gradient(180deg,rgba(255,255,255,.30),rgba(220,220,220,.13));
+  border-color:rgba(255,255,255,.55);
+}
+.btn:focus-visible,.ib:focus-visible,.icon-btn:focus-visible,
+input:focus-visible,select:focus-visible,button:focus-visible{
+  outline:1px solid rgba(35,35,35,.58);
+  outline-offset:1px;
+}
 .search:focus,.name:focus,.mq:focus,select:focus,
-.fld input:focus,.fld select:focus,.ck-in:focus{border-color:rgba(91,126,207,.72)}
-.btn.danger:hover:not(:disabled){background:rgba(255,107,129,.2)}
-.pill{background:rgba(255,255,255,.55);color:var(--frost-ink)}
-.dock-tabs button.on{background:rgba(255,255,255,.55)}
-/* The workflow canvas becomes a pale, translucent drafting surface */
-.canvas{
-  background-color:rgba(220,232,246,.88);
-  background-image:radial-gradient(circle,rgba(69,91,123,.25) 1px,transparent 1.3px),
-    linear-gradient(rgba(69,91,123,.09) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(69,91,123,.09) 1px,transparent 1px);
+.fld input:focus,.fld select:focus,.ck-in:focus{
+  border-color:rgba(45,45,45,.48);
+  outline:none;
 }
-.ed-host{border-color:rgba(76,103,137,.24)}
+input,select,textarea{accent-color:#666}
+#tabs button,#dock-tabs button{
+  color:rgba(32,32,32,.66);
+}
+#tabs button:hover,#dock-tabs button:hover{color:#111}
+#tabs button.on,#dock-tabs button.on{
+  color:#171717;
+  background:rgba(255,255,255,.32);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.70),inset 0 0 0 1px rgba(40,40,40,.12);
+}
+.pill{
+  color:#292929;
+  background:rgba(255,255,255,.24);
+  border:1px solid rgba(255,255,255,.40);
+}
+.pill.stopped{color:#555}
+.pill.running{background:rgba(90,169,255,.14);color:#27618d}
+.pill.completed{background:rgba(74,222,128,.14);color:#25643b}
+.pill.failed{background:rgba(255,107,129,.14);color:#8e2939}
+.pill.stopping{background:rgba(245,177,74,.14);color:#80541c}
+
+/* Leave the .canvas background/grid unchanged. Workflow blocks themselves get
+   neutral glass bodies rather than pastel-colored fills. */
 .node{
-  color:var(--frost-ink);
-  background:linear-gradient(145deg,rgba(248,252,255,.88),rgba(220,233,248,.72));
-  border:1px solid rgba(255,255,255,.78);
-  box-shadow:0 8px 22px rgba(44,67,98,.16),inset 0 1px 0 rgba(255,255,255,.76);
-  -webkit-backdrop-filter:blur(18px) saturate(1.3);
-  backdrop-filter:blur(18px) saturate(1.3);
+  color:#202020;
+  background:linear-gradient(145deg,rgba(255,255,255,.22),rgba(225,225,225,.09)) padding-box,
+    linear-gradient(180deg,rgba(255,255,255,.85),rgba(45,45,45,.28)) border-box;
+  border:1px solid transparent;
+  border-radius:14px;
+  box-shadow:0 8px 22px rgba(0,0,0,.20),inset 0 1px 0 rgba(255,255,255,.55);
+  -webkit-backdrop-filter:blur(18px) saturate(1);
+  backdrop-filter:blur(18px) saturate(1);
 }
-.node.sel{box-shadow:0 0 0 1.5px var(--c),0 8px 24px rgba(44,67,98,.2),inset 0 1px 0 rgba(255,255,255,.8)}
-.node .n-detail{color:#52657d}
-.node .n-chev{color:#5b6d83}
-.node .n-chev:hover{background:rgba(255,255,255,.7);color:#1c2b40}
-.node .n-dot{background:#9aaac0}
-.node .n-prog{background:rgba(70,93,125,.14)}
-.port{background:#edf4fc;border-color:#7185a2}
-.port.in{border-color:#7185a2}
-.node.off{filter:grayscale(.35);opacity:.62}
-/* Logs, command palette, toasts and secondary surfaces */
-.logs,.lr{color:var(--frost-ink)}
-.lr{border-bottom-color:rgba(76,103,137,.15)}
-.lr .t,.lr .an,.lr .bl{color:var(--frost-muted)}
+.node::before{background:rgba(255,255,255,.52);opacity:1}
+.node .n-title,.node .n-sum,.node .n-detail,.node .fl,.node .fh,
+.node .n-chev,.node .nhelp{color:rgba(25,25,25,.82)}
+.node .n-chev:hover{background:rgba(255,255,255,.42);color:#111}
+.node .n-dot{background:#777}
+.node .n-prog{background:rgba(35,35,35,.12)}
+.node.sel{
+  box-shadow:0 0 0 1.5px rgba(255,255,255,.85),0 8px 24px rgba(0,0,0,.22),
+    inset 0 1px 0 rgba(255,255,255,.60);
+}
+.node.unknown{color:#7a2525}
+.fld input[type=text],.fld input[type=number],.fld select{
+  background:rgba(255,255,255,.22);
+  color:#202020;
+}
+.fld input:focus,.fld select:focus{border-color:rgba(40,40,40,.50)}
+.port{background:rgba(245,245,245,.90);border-color:#707070}
+.port.in,.port.tgt-in{border-color:#707070}
+
+/* Secondary surfaces that were previously opaque charcoal. */
 .toast{
-  color:var(--frost-ink);
-  background:rgba(242,248,255,.9);
-  border-color:rgba(255,255,255,.85);
-  box-shadow:0 8px 24px rgba(44,67,98,.18);
-  -webkit-backdrop-filter:blur(18px) saturate(1.25);
-  backdrop-filter:blur(18px) saturate(1.25);
+  position:relative;
+  isolation:isolate;
+  color:#202020;
+  background:linear-gradient(145deg,rgba(255,255,255,.27),rgba(225,225,225,.13)) padding-box,
+    linear-gradient(180deg,rgba(255,255,255,.82),rgba(55,55,55,.25)) border-box;
+  border:1px solid transparent;
+  border-left:3px solid rgba(75,75,75,.60);
+  box-shadow:0 8px 24px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.45);
+  -webkit-backdrop-filter:blur(18px) saturate(1);
+  backdrop-filter:blur(18px) saturate(1);
 }
-#cmdk{background:rgba(95,115,143,.18);-webkit-backdrop-filter:blur(5px);backdrop-filter:blur(5px)}
-.ck-item{color:var(--frost-ink)}
-.ck-item.on,.ck-item:hover{background:rgba(255,255,255,.82)}
-.ck-item small,.ck-empty{color:var(--frost-muted)}
-.bp pre{color:var(--frost-ink)}
-/* Retain readable, familiar semantic colors for execution states and branches. */
+.toast.err{border-left-color:#7f4343}
+.modal,#cmdk{
+  background:rgba(35,35,35,.14);
+  -webkit-backdrop-filter:blur(10px) saturate(1);
+  backdrop-filter:blur(10px) saturate(1);
+}
+.ck-in{
+  background:rgba(255,255,255,.20);
+  border-color:rgba(255,255,255,.52);
+}
+.ck-item{color:#202020}
+.ck-item.on,.ck-item:hover{background:rgba(255,255,255,.38)}
+.ck-item small,.ck-empty{color:#555}
+.bp pre{
+  background:rgba(255,255,255,.18);
+  border-color:rgba(255,255,255,.42);
+}
+.mbody code{color:#202020}
+
