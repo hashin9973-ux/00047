@@ -122,15 +122,15 @@ export const BLOCKS = {
   },
   'act.start': {
     cat: 'act', title: 'Start', icon: I.play,
-    desc: 'Launches the wired File target (program, document or shortcut).',
-    requires: 'tgt.file',
+    desc: 'Starts this workflow. If a File target is connected directly after it, launches that program; otherwise it acts as the entry point for monitoring an existing process.',
     defaults: { args: '', timeoutSec: 15, onFail: 'stop' },
     fields: [
       { key: 'args', label: 'Arguments (optional)', type: 'text', placeholder: '--example' },
       TIMEOUT,
       ONFAIL,
     ],
-    summary: c => `Launch the File target${c.args ? ' with arguments' : ''}`,
+    summary: c => `Start workflow${c.args ? ' · with arguments' : ''}`,
+    help: 'Use this as the entry point for a workflow, including a loop that connects back to Start. If a File target is wired directly after Start, it launches that program; otherwise it continues without launching anything.',
   },
   'act.loop': {
     cat: 'act', title: 'Loop', icon: I.repeat,

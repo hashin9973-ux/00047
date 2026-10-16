@@ -408,45 +408,100 @@ fn short(n: &Node) -> String {
     format!("#{}", n.id.chars().take(4).collect::<String>())
 }
 
-fn resolve_targets(a: &Automation, id: &str) -> Result<Vec<Target>, String> {
+fn target_source_ids(a: &Automation, id: &str) -> Vec<String> {
     let reg = registry();
-    let mut v = vec![];
+    let mut pending = vec![id.to_string()];
+    let mut visited = std::collections::HashSet::new();
+    let mut found = Vec::new();
+    let mut found_set = std::collections::HashSet::new();
 
-    // Prefer explicit teal target wires (legacy and direct-binding form).
-    for e in a.edges.iter().filter(|e| e.kind == "target" && e.to == id) {
-        let src = a.nodes.iter().find(|n| n.id == e.from).ok_or("a wired target block is missing")?;
-        let b = reg.get(src.kind.as_str()).ok_or("unknown target block type")?;
-        v.push(b.resolve(&src.cfg)?);
-    }
-
-    // Also support a Target placed directly after a step in the flow:
-    // Start -> File Target -> Condition. The Start action resolves the File
-    // target from its outgoing flow edge before execution continues through it.
-    if v.is_empty() {
-        for e in a.edges.iter().filter(|e| e.from == id && e.kind != "target") {
-            let Some(dst) = a.nodes.iter().find(|n| n.id == e.to) else { continue };
-            let Some(b) = reg.get(dst.kind.as_str()) else { continue };
-            if b.category() == Cat::Target {
-                v.push(b.resolve(&dst.cfg)?);
+    // Walk backward through workflow wires. A teal target wire binds the target
+    // to its consumer; consumers farther down the same chain inherit that binding.
+    while let Some(current) = pending.pop() {
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        for edge in a.edges.iter().filter(|edge| edge.to == current) {
+            let Some(source) = a.nodes.iter().find(|node| node.id == edge.from) else { continue };
+            let is_target = reg.get(source.kind.as_str()).map(|block| block.category() == Cat::Target).unwrap_or(false);
+            if edge.kind == "target" || (is_target && ["if", "else", "after"].contains(&edge.kind.as_str())) {
+                if is_target && found_set.insert(source.id.clone()) {
+                    found.push(source.id.clone());
+                }
+            } else if ["if", "else", "after"].contains(&edge.kind.as_str()) {
+                pending.push(source.id.clone());
             }
         }
     }
-    Ok(v)
+
+    // Preserve the direct downstream-target form supported by the editor.
+    if found.is_empty() {
+        for edge in a.edges.iter().filter(|edge| edge.from == id && edge.kind != "target") {
+            if let Some(dst) = a.nodes.iter().find(|node| node.id == edge.to) {
+                if reg.get(dst.kind.as_str()).map(|block| block.category() == Cat::Target).unwrap_or(false)
+                    && found_set.insert(dst.id.clone())
+                {
+                    found.push(dst.id.clone());
+                }
+            }
+        }
+    }
+    found
+}
+
+fn resolve_targets(a: &Automation, id: &str) -> Result<Vec<Target>, String> {
+    let reg = registry();
+
+    // Start only needs to resolve a File target that is explicitly attached to it
+    // or directly after it. Do not fail a Start trigger because a later process
+    // target is not running yet.
+    if a.nodes.iter().any(|node| node.id == id && node.kind == "act.start") {
+        let mut ids = Vec::new();
+        for edge in &a.edges {
+            if edge.kind == "target" && edge.to == id {
+                if a.nodes.iter().any(|node| node.id == edge.from && node.kind == "tgt.file") {
+                    ids.push(edge.from.clone());
+                }
+            } else if edge.from == id && edge.kind != "target" {
+                if a.nodes.iter().any(|node| node.id == edge.to && node.kind == "tgt.file") {
+                    ids.push(edge.to.clone());
+                }
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        return ids.into_iter().map(|target_id| {
+            let node = a.nodes.iter().find(|node| node.id == target_id).ok_or("a wired File target is missing")?;
+            let block = reg.get(node.kind.as_str()).ok_or("unknown target block type")?;
+            block.resolve(&node.cfg)
+        }).collect();
+    }
+
+    target_source_ids(a, id).into_iter().map(|target_id| {
+        let node = a.nodes.iter().find(|node| node.id == target_id).ok_or("a wired target block is missing")?;
+        let block = reg.get(node.kind.as_str()).ok_or("unknown target block type")?;
+        block.resolve(&node.cfg)
+    }).collect()
 }
 
 pub fn entry_nodes(a: &Automation) -> Vec<String> {
     let reg = registry();
-    a.nodes
+    let entries: Vec<String> = a.nodes
         .iter()
         .filter(|n| {
             let is_target = reg.get(n.kind.as_str()).map(|b| b.category() == Cat::Target).unwrap_or(false);
-            // A Target can start a chain when its teal output is connected, but not when
-            // another step already flows into it.
             !is_target || a.edges.iter().any(|e| e.from == n.id && e.kind == "target")
         })
         .filter(|n| !a.edges.iter().any(|e| e.to == n.id))
         .map(|n| n.id.clone())
-        .collect()
+        .collect();
+    if !entries.is_empty() {
+        return entries;
+    }
+
+    // Closed loop graphs need an explicit execution anchor. Start is that anchor
+    // when every node already has an incoming wire.
+    a.nodes.iter().filter(|node| node.kind == "act.start").map(|node| node.id.clone()).collect()
 }
 
 pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
@@ -465,14 +520,9 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
             errs.push(format!("{} {}: {e}", b.title(), short(n)));
         }
         if let Some(req) = b.requires_target() {
-            let wired_before = a.edges.iter().any(|e| {
-                e.kind == "target" && e.to == n.id && find(&e.from).map(|s| s.kind == req).unwrap_or(false)
-            });
-            let wired_after = a.edges.iter().any(|e| {
-                e.from == n.id && e.kind != "target" && find(&e.to).map(|s| s.kind == req).unwrap_or(false)
-            });
-            if !wired_before && !wired_after {
-                errs.push(format!("{} {} needs a connected {} block", b.title(), short(n), if req == "tgt.file" { "File" } else { "Active process" }));
+            let ok = target_source_ids(a, &n.id).iter().any(|id| find(id).map(|source| source.kind == req).unwrap_or(false));
+            if !ok {
+                errs.push(format!("{} {} needs a connected {} block in its flow", b.title(), short(n), if req == "tgt.file" { "File" } else { "Active process" }));
             }
         }
     }
@@ -494,7 +544,7 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
         }
     }
     if entry_nodes(a).is_empty() {
-        errs.push("no start block: add a Condition or Action with no incoming wire, or a Target with a connected teal output".into());
+        errs.push("no entry point: add a Condition/Action with no incoming wire, or add a Start block to anchor a closed loop".into());
     }
     if errs.is_empty() {
         Ok(())

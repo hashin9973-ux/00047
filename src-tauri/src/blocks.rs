@@ -305,17 +305,18 @@ impl Block for Start {
     fn supports_timeout(&self) -> bool {
         true
     }
-    fn requires_target(&self) -> Option<&'static str> {
-        Some("tgt.file")
-    }
     fn validate(&self, c: &Value) -> Result<(), String> {
         check_timeout(c)
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
-        let path = (cx.resolve)()?
+        let targets = (cx.resolve)()?;
+        let Some(path) = targets
             .into_iter()
             .find_map(|t| if let Target::File { path } = t { Some(path) } else { None })
-            .ok_or("no File target is connected to this block")?;
+        else {
+            (cx.log)("info", "Start entry reached (no File target configured; no program launched)".into());
+            return Ok(Outcome::Satisfied);
+        };
         if !std::path::Path::new(&path).exists() {
             return Err(format!("file not found: {path}"));
         }

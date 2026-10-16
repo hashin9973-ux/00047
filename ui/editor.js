@@ -74,7 +74,7 @@ export class Editor {
         </div>
         <div class="marquee" hidden></div>
         <div class="edge-ui" hidden>
-          <div class="eu-bar glass"><button data-k="if">IF</button><button data-k="else">ELSE</button><button data-k="after">AFTER</button><button data-del="1" title="Disconnect this wire (or select it and press Delete)">✕</button></div>
+          <div class="eu-bar glass"><button data-k="if">IF</button><button data-k="else">ELSE</button><button data-k="after">AFTER</button><button data-del="1" title="Disconnect wire">Disconnect ✕</button></div>
           <div class="eu-handle" title="Drag to reroute"></div>
         </div>
         <div class="ctx glass" hidden></div>
@@ -544,14 +544,36 @@ export class Editor {
     if (def.help) { const h = document.createElement('div'); h.className = 'nhelp'; h.textContent = def.help; body.appendChild(h); }
   }
 
+  hasTarget(kind, id) {
+    const stack = [id], seen = new Set();
+    while (stack.length) {
+      const current = stack.pop();
+      if (seen.has(current)) continue;
+      seen.add(current);
+      for (const e of this.auto.edges) {
+        if (e.to !== current) continue;
+        const src = this.node(e.from);
+        if (!src) continue;
+        if (e.kind === 'target' && src.kind === kind) return true;
+        if (['if', 'else', 'after'].includes(e.kind)) {
+          if (BLOCKS[src.kind]?.cat === 'tgt') {
+            if (src.kind === kind) return true;
+          } else {
+            stack.push(src.id);
+          }
+        }
+      }
+    }
+    // Preserve the supported form where a required Target is placed directly after the consumer.
+    return this.auto.edges.some(e => e.from === id && e.kind !== 'target' && this.node(e.to)?.kind === kind);
+  }
+
   issues(n) {
     const def = BLOCKS[n.kind];
     if (!def) return ['Unknown block type'];
     const out = validate(n.kind, n.cfg);
-    if (def.requires) {
-      const inbound = this.auto.edges.some(e => e.kind === 'target' && e.to === n.id && this.node(e.from)?.kind === def.requires);
-      const chained = this.auto.edges.some(e => e.from === n.id && e.kind !== 'target' && this.node(e.to)?.kind === def.requires);
-      if (!inbound && !chained) out.push(`Connect a "${BLOCKS[def.requires].title}" target to this block or directly after it`);
+    if (def.requires && !this.hasTarget(def.requires, n.id)) {
+      out.push(`Connect a "${BLOCKS[def.requires].title}" target to this block or earlier in its flow`);
     }
     return out;
   }
