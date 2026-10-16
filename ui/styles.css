@@ -167,6 +167,7 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .port.if{top:14px;border-color:#4ade80}
 .port.else{top:34px;border-color:#ff6b81}
 .port.after{top:54px;border-color:#5aa9ff}
+.port.tgt-in{left:-7px;top:15px;border-color:#3ddbd9;pointer-events:none}
 .port.tgt{top:15px;border-color:#3ddbd9}
 .port.out:hover{transform:scale(1.35)}
 .pl{position:absolute;right:16px;font-size:8.5px;letter-spacing:.08em;opacity:.75;pointer-events:none}

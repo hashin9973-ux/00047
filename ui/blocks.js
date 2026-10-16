@@ -163,7 +163,7 @@ export const BLOCKS = {
       { key: 'ignoreSelf', label: 'Fail if the foreground is 00047 itself', type: 'bool', show: c => c.mode !== 'name' },
     ],
     summary: c => (c.mode === 'name' ? (c.name || 'No name set') : 'Foreground window process'),
-    help: 'Drag from the teal port to a Condition or Action to bind this target. It is resolved fresh each time the block runs.',
+    help: 'Drag from the teal port to a Condition or Action, or drag a Condition/Action output onto the teal inlet. Both create a target binding. Targets provide data; they are not execution steps.',
   },
   'tgt.file': {
     cat: 'tgt', title: 'File', icon: I.file,
@@ -171,6 +171,7 @@ export const BLOCKS = {
     defaults: { path: '' },
     fields: [{ key: 'path', label: 'Full path', type: 'file', placeholder: 'C:\\Tools\\app.exe', required: true }],
     summary: c => c.path || 'No path set',
+    help: 'Drag from the teal port to Start, or drag a Condition/Action output onto the teal inlet to bind this file target. Target blocks provide data; they are not execution steps.',
   },
 };
 

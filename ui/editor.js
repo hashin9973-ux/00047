@@ -359,13 +359,23 @@ export class Editor {
     else if (!hit) this.openMenu(e.clientX, e.clientY, { from: d.from, kind: d.kind });
   }
   connect(from, to, kind) {
-    const A = this.node(from), B = this.node(to);
+    let A = this.node(from), B = this.node(to);
     if (!A || !B || from === to) return false;
-    const ca = BLOCKS[A.kind]?.cat, cb = BLOCKS[B.kind]?.cat;
+    let ca = BLOCKS[A.kind]?.cat, cb = BLOCKS[B.kind]?.cat;
+
+    // Target blocks are data sources, not execution steps. Allow either drag direction
+    // in the UI, but store the wire in the canonical target -> consumer direction.
+    if (ca !== 'tgt' && cb === 'tgt' && kind !== 'target') {
+      [from, to] = [to, from];
+      [A, B] = [B, A];
+      [ca, cb] = [cb, ca];
+      kind = 'target';
+    }
+
     if (kind === 'target') {
       if (ca !== 'tgt' || cb === 'tgt') { this.hooks.toast('A Target block can only feed a Condition or an Action.'); return false; }
     } else if (ca === 'tgt' || cb === 'tgt') {
-      this.hooks.toast('IF / ELSE / AFTER wires connect Conditions and Actions. Use the teal port on a Target block to bind it.');
+      this.hooks.toast('IF / ELSE / AFTER wires connect Conditions and Actions. Drop a Condition or Action wire onto a Target block to bind it.');
       return false;
     }
     if (this.auto.edges.some(e => e.from === from && e.to === to && e.kind === kind)) return false;
@@ -469,7 +479,8 @@ export class Editor {
     el.style.setProperty('--c', CATS[def.cat].color);
     const isT = def.cat === 'tgt';
     const ports = isT
-      ? `<i class="port out tgt" data-t="target" title="Drag to a Condition or Action to bind this target"></i>`
+      ? `<i class="port in tgt-in" title="Drop a Condition or Action wire here to bind this target"></i>
+         <i class="port out tgt" data-t="target" title="Drag to a Condition or Action to bind this target"></i>`
       : `<i class="port in" title="Input"></i>
          <i class="port out if" data-t="if" title="IF: follow when satisfied"></i>
          <i class="port out else" data-t="else" title="ELSE: follow when not satisfied"></i>
