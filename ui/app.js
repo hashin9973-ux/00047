@@ -60,7 +60,7 @@ if (appWindow && windowTitlebar) {
 // ---------- toast / modal ----------
 function toast(msg, kind = '') {
   const t = document.createElement('div');
-  t.className = 'toast ' + kind; t.textContent = msg;
+  t.className = 'toast glass ' + kind; t.textContent = msg;
   $('#toasts').appendChild(t);
   setTimeout(() => t.remove(), kind === 'err' ? 8000 : 4500);
 }
