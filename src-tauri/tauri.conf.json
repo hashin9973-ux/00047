@@ -16,7 +16,9 @@
         "minHeight": 560,
         "visible": false,
         "theme": "Dark",
-        "backgroundColor": "#0d0e11"
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "noRedirectionBitmap": true
       }
     ],
     "security": { "csp": null }
