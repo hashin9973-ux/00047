@@ -23,9 +23,8 @@ button:disabled{opacity:.35;cursor:default}
 .top.glass,.ed-bar.glass,.ed-dock.glass{border-radius:12px}
 .card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{background:linear-gradient(rgba(var(--glass-tint),var(--glass-element-opacity)),rgba(var(--glass-tint),var(--glass-element-opacity))) padding-box,linear-gradient(180deg,var(--glass-element-border-mid) 15%,var(--glass-border-hi) 100%) border-box;backdrop-filter:blur(var(--glass-element-blur));-webkit-backdrop-filter:blur(var(--glass-element-blur));border-width:.3px .3px 1px .3px;border-radius:8px;box-shadow:none;isolation:isolate}
 .glass:not(.pop):not(.ctx):not(.ed-dock){position:relative}
-.glass::before{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background-image:var(--glass-desktop-frame,none);background-size:var(--glass-frame-size,100% 100%);background-position:var(--glass-frame-x,0px) var(--glass-frame-y,0px);background-repeat:no-repeat;mix-blend-mode:screen;filter:url(#glass-lens-distortion);transform:scaleX(-1);opacity:0;pointer-events:none;transition:opacity .18s ease}
+.glass::before{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background-image:var(--glass-desktop-frame,none);background-size:var(--glass-frame-size,100% 100%);background-position:var(--glass-frame-x,0px) var(--glass-frame-y,0px);background-repeat:no-repeat;mix-blend-mode:screen;filter:none;transform:scaleX(-1);opacity:0;pointer-events:none;transition:opacity .18s ease}
 html.glass-reflections-ready .glass::before{opacity:.54}
-.glass-reflection-status{position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;overflow:hidden;pointer-events:none}
 
 /* top dock */
 .top{display:flex;align-items:center;gap:18px;height:48px;margin:10px 12px 0;padding:0 14px;border-radius:16px;flex:none}
