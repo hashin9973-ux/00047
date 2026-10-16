@@ -26,7 +26,7 @@ function rounded(pts, r = 14) {
     const [x0, y0] = pts[i - 1], [x1, y1] = pts[i], [x2, y2] = pts[i + 1];
     const l1 = Math.hypot(x1 - x0, y1 - y0) || 1, l2 = Math.hypot(x2 - x1, y2 - y1) || 1;
     const rr = Math.min(r, l1 / 2, l2 / 2);
-    d += ` L${x1 + (x0 - x1) / l1 * rr},${y1 + (y2 - y1) / l2 * 0 + (y1 - y0) / l1 * rr} Q${x1},${y1} ${x1 + (x2 - x1) / l2 * rr},${y1 + (y2 - y1) / l2 * rr}`;
+    d += ` L${x1 + (x0 - x1) / l1 * rr},${y1 + (y0 - y1) / l1 * rr} Q${x1},${y1} ${x1 + (x2 - x1) / l2 * rr},${y1 + (y2 - y1) / l2 * rr}`;
   }
   const l = pts[pts.length - 1];
   return d + ` L${l[0]},${l[1]}`;
