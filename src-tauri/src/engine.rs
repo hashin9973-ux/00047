@@ -192,19 +192,23 @@ impl Engine {
         }
     }
 
-    pub async fn stop_and_wait(&self, id: &str) {
+    pub async fn stop_and_wait(&self, id: &str) -> Result<(), String> {
         self.stop(id);
-        for _ in 0..100 {
-            let running = self.runs.lock().unwrap().contains_key(id);
-            if !running {
-                break;
+        for _ in 0..200 {
+            if !self.runs.lock().unwrap().contains_key(id) {
+                return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if self.runs.lock().unwrap().contains_key(id) {
+            Err(format!("automation {id} did not stop within 10 seconds; it has not been restarted or deleted"))
+        } else {
+            Ok(())
         }
     }
 
     pub async fn restart(self: &Arc<Self>, id: &str) -> Result<(), String> {
-        self.stop_and_wait(id).await;
+        self.stop_and_wait(id).await?;
         self.start(id)
     }
 
@@ -255,11 +259,14 @@ impl Engine {
         for id in &ids {
             self.stop(id);
         }
-        for _ in 0..40 {
+        for _ in 0..200 {
             if self.runs.lock().unwrap().is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if !self.runs.lock().unwrap().is_empty() {
+            self.app_log("error", "Shutdown timed out waiting for one or more automations to stop".into());
         }
         self.disk.flush();
     }
