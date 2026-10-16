@@ -248,3 +248,41 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 :is(.btn,.ib,.icon-btn,.search,.name,.mq,select,.ck-in,.fld input[type=text],.fld input[type=number],.fld select,.eu-bar button):not(.node *){color:inherit;background:rgba(0,0,0,.12);border-color:rgba(0,0,0,.24);box-shadow:none}
 :is(.btn,.ib,.icon-btn,.search,.name,.mq,select,.ck-in,.fld input[type=text],.fld input[type=number],.fld select,.eu-bar button):not(.node *):hover{background:rgba(0,0,0,.16)}
 :is(.btn,.ib,.icon-btn,.search,.name,.mq,select,.ck-in,.fld input[type=text],.fld input[type=number],.fld select):focus-visible{outline:1px solid rgba(0,0,0,.55);outline-offset:1px}
+
+
+/* Final material system: two transparent, backdrop-sampled materials only. */
+.glass.liquidglass,
+.glass.liquidglass-variant {
+  background: transparent !important;
+  background-image: none !important;
+  border: 1px solid rgba(255,255,255,.12) !important;
+  box-shadow: 0 8px 22px rgba(0,0,0,.20) !important;
+  isolation: isolate;
+  position: relative;
+}
+.glass.liquidglass::before,
+.glass.liquidglass-variant::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background-image: var(--glass-backdrop-frame, none);
+  background-size: var(--glass-frame-size, 100% 100%);
+  background-position: var(--glass-frame-x, 0px) var(--glass-frame-y, 0px);
+  background-repeat: no-repeat;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .12s ease;
+}
+.glass.liquidglass::after,
+.glass.liquidglass-variant::after { content: none !important; display: none !important; }
+html.glass-backdrop-ready .glass.liquidglass::before,
+html.glass-backdrop-ready .glass.liquidglass-variant::before { opacity: 1; }
+.glass.liquidglass-variant {
+  border-color: rgba(255,255,255,.14) !important;
+  box-shadow: 0 9px 24px rgba(0,0,0,.23) !important;
+}
+/* Controls stay neutral; the editor canvas and its nodes intentionally keep their own palette. */
+.glass.liquidglass :is(button,input,select),
+.glass.liquidglass-variant :is(button,input,select) { box-shadow: none; }
