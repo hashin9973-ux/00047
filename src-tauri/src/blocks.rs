@@ -296,34 +296,34 @@ impl Block for Wait {
 struct Start;
 #[async_trait]
 impl Block for Start {
-    fn title(&self) -> &'static str {
-        "Start"
-    }
-    fn category(&self) -> Cat {
-        Cat::Action
-    }
-    fn supports_timeout(&self) -> bool {
-        true
-    }
-    fn validate(&self, c: &Value) -> Result<(), String> {
-        check_timeout(c)
-    }
+    fn title(&self) -> &'static str { "Start" }
+    fn category(&self) -> Cat { Cat::Action }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
-        let targets = (cx.resolve)()?;
-        let Some(path) = targets
-            .into_iter()
+        (cx.log)("info", "Workflow entry reached".into());
+        Ok(Outcome::Satisfied)
+    }
+}
+
+struct LaunchFile;
+#[async_trait]
+impl Block for LaunchFile {
+    fn title(&self) -> &'static str { "Launch File" }
+    fn category(&self) -> Cat { Cat::Action }
+    fn requires_target(&self) -> Option<&'static str> { Some("tgt.file") }
+    fn supports_timeout(&self) -> bool { true }
+    fn validate(&self, c: &Value) -> Result<(), String> { check_timeout(c) }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let path = (cx.resolve)()?.into_iter()
             .find_map(|t| if let Target::File { path } = t { Some(path) } else { None })
-        else {
-            (cx.log)("info", "Start entry reached (no File target configured; no program launched)".into());
-            return Ok(Outcome::Satisfied);
-        };
+            .ok_or("no File target is connected to Launch File")?;
         if !std::path::Path::new(&path).exists() {
             return Err(format!("file not found: {path}"));
         }
         let args = text(&cx.cfg, "args");
         (cx.report)("running", None, format!("Launching {path}"));
         let p2 = path.clone();
-        tokio::task::spawn_blocking(move || sys::start_file(&p2, &args)).await.map_err(|e| e.to_string())??;
+        tokio::task::spawn_blocking(move || sys::start_file(&p2, &args))
+            .await.map_err(|e| e.to_string())??;
         (cx.log)("info", format!("launched {path}"));
         Ok(Outcome::Satisfied)
     }
@@ -386,29 +386,10 @@ impl Block for Notify {
 struct Loop;
 #[async_trait]
 impl Block for Loop {
-    fn title(&self) -> &'static str {
-        "Loop"
-    }
-    fn category(&self) -> Cat {
-        Cat::Action
-    }
-    fn validate(&self, c: &Value) -> Result<(), String> {
-        rng(c, "iterations", 3.0, 0.0, 1_000_000.0, "Iterations")?;
-        rng(c, "delaySec", 1.0, 0.1, 86400.0, "Delay").map(|_| ())
-    }
-    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
-        let it = rng(&cx.cfg, "iterations", 3.0, 0.0, 1_000_000.0, "Iterations")? as u64;
-        let delay = rng(&cx.cfg, "delaySec", 1.0, 0.1, 86400.0, "Delay")?;
-        if it == 0 || cx.visit <= it {
-            let label = if it > 0 { format!("Iteration {}/{it}", cx.visit) } else { format!("Iteration {}", cx.visit) };
-            if !sleep_progress(cx, delay, &label).await {
-                return Err("cancelled".into());
-            }
-            Ok(Outcome::Satisfied)
-        } else {
-            Ok(Outcome::NotSatisfied)
-        }
-    }
+    fn title(&self) -> &'static str { "Loop" }
+    fn category(&self) -> Cat { Cat::Action }
+    fn validate(&self, _c: &Value) -> Result<(), String> { Ok(()) }
+    async fn run(&self, _cx: &NodeCx) -> Result<Outcome, String> { Ok(Outcome::Satisfied) }
 }
 
 struct LogMsg;
@@ -511,6 +492,7 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         m.insert("act.stop_proc", Box::new(StopProc));
         m.insert("act.wait", Box::new(Wait));
         m.insert("act.start", Box::new(Start));
+        m.insert("act.launch", Box::new(LaunchFile));
         m.insert("act.loop", Box::new(Loop));
         m.insert("act.log", Box::new(LogMsg));
         m.insert("act.notify", Box::new(Notify));

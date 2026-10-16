@@ -395,7 +395,7 @@ impl Ctx {
     }
     /// Runaway guard: too many executions of one block in a short window aborts the automation.
     fn rate_ok(&self, node: &Node) -> bool {
-        let (win, limit) = if node.kind == "act.trim" || node.kind == "act.start" { (10, 12) } else { (2, 40) };
+        let (win, limit) = if node.kind == "act.trim" || node.kind == "act.launch" { (10, 12) } else { (2, 40) };
         let mut m = self.rate.lock().unwrap();
         let q = m.entry(node.id.clone()).or_default();
         let now = Instant::now();
@@ -413,6 +413,17 @@ impl Ctx {
 
 fn short(n: &Node) -> String {
     format!("#{}", n.id.chars().take(4).collect::<String>())
+}
+
+fn loop_start_id(a: &Automation) -> Result<String, String> {
+    let starts: Vec<&Node> = a.nodes.iter()
+        .filter(|node| node.kind == "act.start" && !node.disabled)
+        .collect();
+    match starts.as_slice() {
+        [start] => Ok(start.id.clone()),
+        [] => Err("Loop requires one enabled Start block in this automation".into()),
+        _ => Err("Loop requires exactly one enabled Start block; multiple enabled Start blocks are ambiguous".into()),
+    }
 }
 
 fn target_source_ids(a: &Automation, id: &str) -> Vec<String> {
@@ -576,6 +587,11 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
             }
         }
     }
+    if a.nodes.iter().any(|node| node.kind == "act.loop" && !node.disabled) {
+        if let Err(message) = loop_start_id(a) {
+            errs.push(message);
+        }
+    }
     for e in &a.edges {
         let (Some(f), Some(t)) = (find(&e.from), find(&e.to)) else {
             errs.push(format!("wire {} points at a missing block", e.id));
@@ -584,11 +600,15 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
         let fc = reg.get(f.kind.as_str()).map(|b| b.category());
         let tc = reg.get(t.kind.as_str()).map(|b| b.category());
         if e.kind == "target" {
-            if fc != Some(Cat::Target) || tc == Some(Cat::Target) {
-                errs.push(format!("invalid target wire {} -> {}", short(f), short(t)));
+            if fc != Some(Cat::Target) || tc == Some(Cat::Target) || t.kind == "act.start" || t.kind == "act.loop" {
+                errs.push(format!("invalid target wire {} -> {}; targets cannot bind to Start or Loop", short(f), short(t)));
             }
         } else if fc == Some(Cat::Target) {
             errs.push(format!("IF/ELSE/AFTER wire cannot start at Target block {} (use its teal output)", short(f)));
+        } else if f.kind == "act.loop" {
+            errs.push(format!("Loop {} has no output wires; it returns to Start automatically", short(f)));
+        } else if t.kind == "act.start" {
+            errs.push(format!("Start {} is an entry point and cannot receive a wire; Loop returns automatically", short(t)));
         } else if !["if", "else", "after"].contains(&e.kind.as_str()) {
             errs.push(format!("unknown wire type '{}'", e.kind));
         }
@@ -727,8 +747,21 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             } else {
                 ("not satisfied", &["else", "after"])
             };
-            if node.kind == "act.loop" && o == Outcome::NotSatisfied {
-                ctx.visits.lock().unwrap().remove(&node.id);
+            if node.kind == "act.loop" {
+                match loop_start_id(&ctx.auto) {
+                    Ok(start_id) => {
+                        eng.set_node(&aid, &node.id, "done", None, format!("jumping to Start · {dt:.1}s"));
+                        ctx.log("info", Some(node), "Loop redirected execution to Start (implicit connection)".into());
+                        return vec![start_id];
+                    }
+                    Err(message) => {
+                        ctx.errors.fetch_add(1, Ordering::SeqCst);
+                        eng.set_node(&aid, &node.id, "failed", None, message.clone());
+                        ctx.log("error", Some(node), message);
+                        ctx.abort();
+                        return vec![];
+                    }
+                }
             }
             eng.set_node(&aid, &node.id, "done", None, format!("{txt} · {dt:.1}s"));
             ctx.log("info", Some(node), format!("{txt} ({dt:.2}s)"));
@@ -749,5 +782,105 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
                 _ => vec![],
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod loop_semantics_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn node(id: &str, kind: &str, cfg: Value) -> Node {
+        Node {
+            id: id.into(),
+            kind: kind.into(),
+            x: 0.0,
+            y: 0.0,
+            collapsed: false,
+            disabled: false,
+            cfg,
+        }
+    }
+
+    fn edge(id: &str, from: &str, to: &str, kind: &str) -> Edge {
+        Edge { id: id.into(), from: from.into(), to: to.into(), kind: kind.into(), bend: 0.0 }
+    }
+
+    fn automation(nodes: Vec<Node>, edges: Vec<Edge>) -> Automation {
+        Automation {
+            id: "test".into(),
+            name: "test".into(),
+            nodes,
+            edges,
+            viewport: Viewport { x: 0.0, y: 0.0, k: 1.0 },
+            auto_start: false,
+        }
+    }
+
+    #[test]
+    fn loop_returns_to_the_single_enabled_start() {
+        let a = automation(
+            vec![
+                node("start", "act.start", json!({})),
+                node("wait", "act.wait", json!({"seconds": 0.1})),
+                node("loop", "act.loop", json!({})),
+            ],
+            vec![
+                edge("e1", "start", "wait", "after"),
+                edge("e2", "wait", "loop", "after"),
+            ],
+        );
+        assert_eq!(loop_start_id(&a).unwrap(), "start");
+        assert!(validate_automation(&a).is_ok());
+        assert_eq!(entry_nodes(&a), vec!["start".to_string()]);
+    }
+
+    #[test]
+    fn loop_rejects_missing_or_ambiguous_start() {
+        let missing = automation(vec![node("loop", "act.loop", json!({}))], vec![]);
+        assert!(validate_automation(&missing).unwrap_err().join(" ").contains("Loop requires one enabled Start"));
+
+        let multiple = automation(
+            vec![
+                node("start1", "act.start", json!({})),
+                node("start2", "act.start", json!({})),
+                node("loop", "act.loop", json!({})),
+            ],
+            vec![],
+        );
+        assert!(validate_automation(&multiple).unwrap_err().join(" ").contains("exactly one enabled Start"));
+    }
+
+    #[test]
+    fn loop_rejects_old_outgoing_wires() {
+        let a = automation(
+            vec![
+                node("start", "act.start", json!({})),
+                node("loop", "act.loop", json!({})),
+                node("wait", "act.wait", json!({})),
+            ],
+            vec![
+                edge("e1", "start", "loop", "after"),
+                edge("e2", "loop", "wait", "if"),
+            ],
+        );
+        assert!(validate_automation(&a).unwrap_err().join(" ").contains("Loop"));
+    }
+
+    #[test]
+    fn launch_file_is_a_separate_action_and_requires_a_file_target() {
+        let a = automation(
+            vec![
+                node("start", "act.start", json!({})),
+                node("file", "tgt.file", json!({"path": "C:\\\\test.exe"})),
+                node("launch", "act.launch", json!({})),
+            ],
+            vec![
+                edge("e1", "start", "file", "after"),
+                edge("e2", "file", "launch", "target"),
+            ],
+        );
+        assert!(validate_automation(&a).is_ok());
     }
 }

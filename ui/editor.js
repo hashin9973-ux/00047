@@ -363,17 +363,24 @@ export class Editor {
     if (!A || !B || from === to) return false;
     const ca = BLOCKS[A.kind]?.cat, cb = BLOCKS[B.kind]?.cat;
 
-    // IF / ELSE / AFTER wires keep their direction when they enter a Target.
-    // The teal Target output creates a target-binding edge and continues execution
-    // into the consumer, so Target blocks can sit in a normal workflow chain.
     if (kind === 'target') {
-      if (ca !== 'tgt' || cb === 'tgt') {
-        this.hooks.toast('Drag from a Target block’s teal output to a Condition or Action.');
+      if (ca !== 'tgt' || cb === 'tgt' || B.kind === 'act.start' || B.kind === 'act.loop') {
+        this.hooks.toast('A Target can only bind to a Condition or an Action that consumes it, such as Launch File.');
         return false;
       }
-    } else if (!['if', 'else', 'after'].includes(kind) || ca === 'tgt') {
-      this.hooks.toast('Use IF / ELSE / AFTER outputs for flow, and the teal output for a Target connection.');
-      return false;
+    } else {
+      if (!['if', 'else', 'after'].includes(kind) || ca === 'tgt') {
+        this.hooks.toast('Use IF / ELSE / AFTER outputs for flow, and the teal output for a Target connection.');
+        return false;
+      }
+      if (ca === 'act.loop') {
+        this.hooks.toast('Loop returns to Start automatically and has no output wires.');
+        return false;
+      }
+      if (B.kind === 'act.start') {
+        this.hooks.toast('Start is an entry point. Loop returns to it automatically; do not connect a wire into Start.');
+        return false;
+      }
     }
 
     if (this.auto.edges.some(e => e.from === from && e.to === to && e.kind === kind)) return false;
@@ -476,14 +483,20 @@ export class Editor {
     el.className = `node cat-${def.cat}${n.collapsed ? ' collapsed' : ''}`;
     el.style.setProperty('--c', CATS[def.cat].color);
     const isT = def.cat === 'tgt';
-    const ports = isT
-      ? `<i class="port in tgt-in" title="IF / ELSE / AFTER flow input"></i>
-         <i class="port out tgt" data-t="target" title="Target output: bind this target and continue the workflow"></i>`
-      : `<i class="port in" title="Input"></i>
-         <i class="port out if" data-t="if" title="IF: follow when satisfied"></i>
+    const isStart = n.kind === 'act.start';
+    const isLoop = n.kind === 'act.loop';
+    const flowOut = `<i class="port out if" data-t="if" title="IF: follow when satisfied"></i>
          <i class="port out else" data-t="else" title="ELSE: follow when not satisfied"></i>
          <i class="port out after" data-t="after" title="AFTER: follow when finished"></i>
          <b class="pl if">IF</b><b class="pl else">ELSE</b><b class="pl after">AFTER</b>`;
+    const ports = isT
+      ? `<i class="port in tgt-in" title="IF / ELSE / AFTER flow input"></i>
+         <i class="port out tgt" data-t="target" title="Target output: bind this target and continue the workflow"></i>`
+      : isLoop
+        ? `<i class="port in" title="Flow input. Loop returns automatically to Start."></i>`
+        : isStart
+          ? flowOut
+          : `<i class="port in" title="Input"></i>${flowOut}`;
     el.innerHTML = `
       <div class="n-head"><button class="n-chev" title="Collapse / expand settings">▾</button><span class="n-icon">${def.icon}</span><span class="n-title">${def.title}</span><span class="n-dot"></span></div>
       <div class="n-sum"></div><div class="n-detail"></div><div class="n-prog" hidden><i></i></div>
@@ -574,6 +587,16 @@ export class Editor {
     const out = validate(n.kind, n.cfg);
     if (def.requires && !this.hasTarget(def.requires, n.id)) {
       out.push(`Connect a "${BLOCKS[def.requires].title}" target to this block or earlier in its flow`);
+    }
+    if (n.kind === 'act.loop') {
+      const starts = this.auto.nodes.filter(x => x.kind === 'act.start' && !x.disabled);
+      if (starts.length !== 1) out.push('Loop requires exactly one enabled Start block in this automation');
+      if (this.auto.edges.some(e => e.from === n.id && ['if', 'else', 'after'].includes(e.kind))) {
+        out.push('Loop has no output wires now; disconnect its old outgoing wires. It jumps to Start automatically.');
+      }
+    }
+    if (n.kind === 'act.start' && this.auto.edges.some(e => e.to === n.id)) {
+      out.push('Start is an entry point and cannot receive wires. Loop returns to it automatically.');
     }
     return out;
   }
