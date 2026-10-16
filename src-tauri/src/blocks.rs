@@ -298,6 +298,7 @@ struct Start;
 impl Block for Start {
     fn title(&self) -> &'static str { "Start" }
     fn category(&self) -> Cat { Cat::Action }
+    fn validate(&self, _c: &Value) -> Result<(), String> { Ok(()) }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         (cx.log)("info", "Workflow entry reached".into());
         Ok(Outcome::Satisfied)
