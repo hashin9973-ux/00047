@@ -517,6 +517,13 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
     let find = |id: &str| a.nodes.iter().find(|n| n.id == id);
     let mut node_ids = std::collections::HashSet::new();
     let mut edge_ids = std::collections::HashSet::new();
+    let mut edge_shapes = std::collections::HashSet::new();
+    let mut flow_incoming: HashMap<&str, usize> = HashMap::new();
+    if !a.viewport.x.is_finite() || !a.viewport.y.is_finite()
+        || !a.viewport.k.is_finite() || !(0.05..=8.0).contains(&a.viewport.k)
+    {
+        errs.push("canvas viewport is invalid; zoom must be between 0.05 and 8".into());
+    }
     for n in &a.nodes {
         if n.id.trim().is_empty() {
             errs.push("a block has an empty ID".into());
@@ -535,6 +542,20 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
         }
         if e.from == e.to {
             errs.push(format!("wire {} connects a block to itself", e.id));
+        }
+        if !e.bend.is_finite() {
+            errs.push(format!("wire {} has an invalid bend position", e.id));
+        }
+        if !edge_shapes.insert((e.from.as_str(), e.to.as_str(), e.kind.as_str())) {
+            errs.push(format!("duplicate connection {} -> {} ({})", e.from, e.to, e.kind));
+        }
+        if ["if", "else", "after"].contains(&e.kind.as_str()) {
+            *flow_incoming.entry(e.to.as_str()).or_default() += 1;
+        }
+    }
+    for (node_id, count) in flow_incoming {
+        if count > 1 {
+            errs.push(format!("block #{} has {count} incoming flow wires; converging branches are not supported yet", node_id.chars().take(4).collect::<String>()));
         }
     }
     for n in &a.nodes {
