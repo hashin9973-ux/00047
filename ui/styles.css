@@ -7,6 +7,13 @@
 ::-webkit-scrollbar-corner{background:transparent}
 html,body{height:100%;margin:0}
 body{background:transparent;color:var(--tx);font:13px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden;user-select:none}
+.window-titlebar{display:flex;align-items:stretch;flex:none;height:32px;min-height:32px;background:transparent;color:var(--tx);border-bottom:1px solid rgba(255,255,255,.035);user-select:none;-webkit-user-select:none}
+.window-titlebar-title{display:flex;align-items:center;min-width:90px;padding:0 14px;color:rgba(233,235,240,.72);font-size:12px;font-weight:500;cursor:default}
+.window-titlebar-spacer{flex:1;min-width:40px;cursor:default}
+.window-controls{display:flex;align-items:stretch;flex:none}
+.window-control{display:grid;place-items:center;width:46px;height:32px;padding:0;border:0;border-radius:0;background:transparent;color:rgba(233,235,240,.84);font-size:13px;font-weight:400;cursor:default}
+.window-control:hover{background:rgba(255,255,255,.08);color:var(--tx)}
+.window-control.close:hover{background:#c42b1c;color:#fff}
 [hidden]{display:none!important}
 button,input,select{font:inherit;color:inherit}
 input,select{user-select:text}
@@ -14,7 +21,6 @@ button:disabled{opacity:.35;cursor:default}
 .mu{color:var(--mu)}
 .glass{background:linear-gradient(rgba(var(--glass-tint),var(--glass-bg-opacity)),rgba(var(--glass-tint),var(--glass-bg-opacity))) padding-box,linear-gradient(180deg,var(--glass-border-hi) 0%,var(--glass-border-low) 25%,var(--glass-border-hi) 100%) border-box;backdrop-filter:blur(var(--glass-blur));-webkit-backdrop-filter:blur(var(--glass-blur));border-style:solid;border-color:transparent;border-width:1px .3px .3px .3px;box-shadow:none}
 .top.glass,.ed-bar.glass,.ed-dock.glass{border-radius:12px}
-.top.glass{background:rgba(28,30,37,.045);backdrop-filter:blur(15px);-webkit-backdrop-filter:blur(15px);border:1px solid rgba(255,255,255,.05);box-shadow:none}
 .card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{background:linear-gradient(rgba(var(--glass-tint),var(--glass-element-opacity)),rgba(var(--glass-tint),var(--glass-element-opacity))) padding-box,linear-gradient(180deg,var(--glass-element-border-mid) 15%,var(--glass-border-hi) 100%) border-box;backdrop-filter:blur(var(--glass-element-blur));-webkit-backdrop-filter:blur(var(--glass-element-blur));border-width:.3px .3px 1px .3px;border-radius:8px}
 .pop.glass,.ctx.glass,.mbox.glass,.ck-box.glass{box-shadow:0 12px 30px rgba(0,0,0,.28)}
 
