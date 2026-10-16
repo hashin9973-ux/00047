@@ -3,6 +3,7 @@ import { BLOCKS, registerSpecs } from './blocks.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+const appWindow = window.__TAURI__?.window?.getCurrentWindow?.();
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -24,6 +25,37 @@ const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview',
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
 const isRun = id => ['running', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
+
+ 
+// Custom transparent window caption controls (separate from the in-app tabs).
+const windowTitlebar = $('#window-titlebar');
+const maximizeButton = $('#window-maximize');
+const runWindowAction = action => {
+  try {
+    return Promise.resolve(action()).catch(e => toast('Window control failed: ' + (e?.message || e), 'err'));
+  } catch (e) {
+    toast('Window control failed: ' + (e?.message || e), 'err');
+    return Promise.resolve();
+  }
+};
+if (appWindow && windowTitlebar) {
+  const updateMaximizeButton = async () => {
+    try {
+      const maximized = await appWindow.isMaximized();
+      maximizeButton.textContent = maximized ? '❐' : '□';
+      maximizeButton.title = maximized ? 'Restore' : 'Maximize';
+      maximizeButton.setAttribute('aria-label', maximized ? 'Restore window' : 'Maximize window');
+    } catch { /* Window may be transitioning during shutdown. */ }
+  };
+  $('#window-minimize').addEventListener('click', () => runWindowAction(() => appWindow.minimize()));
+  maximizeButton.addEventListener('click', () => runWindowAction(() => appWindow.toggleMaximize()).then(updateMaximizeButton));
+  $('#window-close').addEventListener('click', () => runWindowAction(() => appWindow.close()));
+  windowTitlebar.addEventListener('dblclick', e => {
+    if (e.target.closest('.window-controls')) return;
+    runWindowAction(() => appWindow.toggleMaximize()).then(updateMaximizeButton);
+  });
+  updateMaximizeButton();
+}
 
 // ---------- toast / modal ----------
 function toast(msg, kind = '') {
