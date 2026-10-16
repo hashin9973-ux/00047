@@ -1,0 +1,46 @@
+{
+  "blocks": [
+    {
+      "kind": "user.file_exists",
+      "category": "condition",
+      "title": "File exists",
+      "icon": "file",
+      "description": "Satisfied when a file or folder exists.",
+      "fields": [
+        { "key": "path", "label": "Path", "type": "file", "required": true, "maxLen": 260 },
+        { "preset": "onFail" }
+      ],
+      "summary": "Exists: {path}",
+      "run": { "type": "powershell", "script": "if (Test-Path -LiteralPath $env:FIELD_PATH) { exit 0 } else { exit 1 }" }
+    },
+    {
+      "kind": "user.open_url",
+      "category": "action",
+      "title": "Open URL",
+      "icon": "play",
+      "description": "Opens a web address in the default browser.",
+      "fields": [
+        { "key": "url", "label": "Address", "type": "text", "required": true, "maxLen": 500, "placeholder": "https://example.com" },
+        { "preset": "onFail" }
+      ],
+      "summary": "Open {url}",
+      "run": { "type": "powershell", "script": "Start-Process $env:FIELD_URL" }
+    },
+    {
+      "kind": "user.run_program",
+      "category": "action",
+      "title": "Run program",
+      "icon": "play",
+      "description": "Runs a program with optional arguments and waits for it to finish.",
+      "fields": [
+        { "key": "program", "label": "Program", "type": "file", "required": true },
+        { "key": "args", "label": "Arguments (optional)", "type": "text", "maxLen": 500 },
+        { "key": "wait", "label": "Wait for it to finish", "type": "bool", "default": true },
+        { "preset": "timeout", "default": 60 },
+        { "preset": "onFail" }
+      ],
+      "summary": "Run {program}",
+      "run": { "type": "command", "program": "{program}", "args": ["{args}"], "skipEmptyArgs": true, "okExitCodes": [0], "capture": true }
+    }
+  ]
+}
