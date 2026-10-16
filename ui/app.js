@@ -649,12 +649,110 @@ async function reloadBlocks() {
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
+function createGlassGpuProcessor() {
+  const canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+  if (!gl) return null;
+  const vertexSource = 'attribute vec2 a_position; varying vec2 v_uv; void main(){ v_uv = a_position * 0.5 + 0.5; gl_Position = vec4(a_position, 0.0, 1.0); }';
+  const fragmentSource = [
+    'precision mediump float;',
+    'uniform sampler2D u_frame;',
+    'uniform vec2 u_size;',
+    'uniform int u_count;',
+    'uniform vec4 u_regions[32];',
+    'varying vec2 v_uv;',
+    'void main(){',
+    '  vec2 p = vec2(v_uv.x, 1.0 - v_uv.y) * u_size;',
+    '  vec2 sampleUV = vec2(v_uv.x, 1.0 - v_uv.y);',
+    '  for (int i = 0; i < 32; i++) {',
+    '    if (i >= u_count) break;',
+    '    vec4 r = u_regions[i];',
+    '    vec2 local = p - r.xy;',
+    '    if (local.x >= 0.0 && local.y >= 0.0 && local.x <= r.z && local.y <= r.w) {',
+    '      vec2 halfSize = max(r.zw * 0.5, vec2(1.0));',
+    '      float edgeDistance = min(min(local.x, r.z - local.x), min(local.y, r.w - local.y));',
+    '      float rim = 1.0 - smoothstep(0.0, 34.0, edgeDistance);',
+    '      vec2 normal = (local - halfSize) / halfSize;',
+    '      vec2 ripple = vec2(sin(local.y * 0.032 + r.x * 0.011), cos(local.x * 0.026 + r.y * 0.009));',
+    '      vec2 offset = normal * rim * 10.0 + ripple * (1.5 + rim * 2.0);',
+    '      sampleUV += vec2(offset.x / u_size.x, -offset.y / u_size.y);',
+    '      break;',
+    '    }',
+    '  }',
+    '  vec3 sampled = texture2D(u_frame, clamp(sampleUV, vec2(0.001), vec2(0.999))).rgb;',
+    '  gl_FragColor = vec4(sampled, 1.0);',
+    '}'
+  ].join('\n');
+  const compile = (type, source) => {
+    const shader = gl.createShader(type);
+    if (!shader) throw new Error('WebGL could not allocate a shader');
+    gl.shaderSource(shader, source); gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) { const message = gl.getShaderInfoLog(shader) || 'shader compilation failed'; gl.deleteShader(shader); throw new Error(message); }
+    return shader;
+  };
+  let program, texture, buffer;
+  try {
+    const vs = compile(gl.VERTEX_SHADER, vertexSource);
+    const fs = compile(gl.FRAGMENT_SHADER, fragmentSource);
+    program = gl.createProgram();
+    if (!program) throw new Error('WebGL could not allocate a program');
+    gl.attachShader(program, vs); gl.attachShader(program, fs); gl.linkProgram(program);
+    gl.deleteShader(vs); gl.deleteShader(fs);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || 'shader link failed');
+    texture = gl.createTexture(); buffer = gl.createBuffer();
+    if (!texture || !buffer) throw new Error('WebGL could not allocate reflection resources');
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+    gl.useProgram(program);
+    const position = gl.getAttribLocation(program, 'a_position');
+    gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform1i(gl.getUniformLocation(program, 'u_frame'), 0);
+    gl.uniform2f(gl.getUniformLocation(program, 'u_size'), 1, 1);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  } catch (error) {
+    console.warn('WebGL reflection shader unavailable; using the captured frame without GPU refraction:', error);
+    return null;
+  }
+
+  return (image, frame) => {
+    canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.useProgram(program);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, image);
+    gl.uniform2f(gl.getUniformLocation(program, 'u_size'), canvas.width, canvas.height);
+    const dpr = window.devicePixelRatio || 1;
+    const ratioX = canvas.width / frame.screenWidth;
+    const ratioY = canvas.height / frame.screenHeight;
+    const regions = new Float32Array(32 * 4);
+    let count = 0;
+    for (const el of document.querySelectorAll('.glass')) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2 || count >= 32) continue;
+      const x = (frame.windowX - frame.screenX + r.left * dpr) * ratioX;
+      const y = (frame.windowY - frame.screenY + r.top * dpr) * ratioY;
+      regions.set([x, y, r.width * dpr * ratioX, r.height * dpr * ratioY], count * 4);
+      count++;
+    }
+    gl.uniform1i(gl.getUniformLocation(program, 'u_count'), count);
+    gl.uniform4fv(gl.getUniformLocation(program, 'u_regions[0]'), regions);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    return canvas.toDataURL('image/jpeg', 0.78);
+  };
+}
+
 function startGlassReflections() {
   if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
-
   const root = document.documentElement;
   let inFlight = false;
   let loggedFailure = false;
+  let gpuProcess;
+  try { gpuProcess = createGlassGpuProcessor(); } catch (error) { console.warn('Could not start glass GPU renderer:', error); }
+
   const updateReflectionPositions = frame => {
     const dpr = window.devicePixelRatio || 1;
     const cropOriginX = (frame.screenX - frame.windowX) / dpr;
@@ -673,28 +771,28 @@ function startGlassReflections() {
     try {
       const frame = await invoke('capture_glass_frame');
       if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) return;
-      root.style.setProperty('--glass-desktop-frame', 'url("' + frame.dataUrl + '")');
+      let displayFrame = frame.dataUrl;
+      if (gpuProcess) {
+        const image = new Image();
+        image.src = frame.dataUrl;
+        await image.decode();
+        displayFrame = gpuProcess(image, frame);
+      }
+      root.style.setProperty('--glass-desktop-frame', 'url("' + displayFrame + '")');
       updateReflectionPositions(frame);
       root.classList.add('glass-reflections-ready');
       loggedFailure = false;
     } catch (error) {
       root.classList.remove('glass-reflections-ready');
-      if (!loggedFailure) {
-        console.warn('Live glass reflection capture unavailable:', error);
-        loggedFailure = true;
-      }
-    } finally {
-      inFlight = false;
-    }
+      if (!loggedFailure) { console.warn('Live glass reflection capture unavailable:', error); loggedFailure = true; }
+    } finally { inFlight = false; }
   };
 
-  // Four desktop samples per second: enough for moving windows without pushing
-  // a full-screen image through WebView2 on every animation frame.
+  // Four capture/render passes per second; the desktop pixels are sampled natively
+  // and refracted by a WebGL shader only within the measured glass-panel bounds.
   capture();
   window.setInterval(capture, 250);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) capture();
-  });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) capture(); });
 }
 
 // ---------- init ----------
