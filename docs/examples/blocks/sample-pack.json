@@ -35,7 +35,6 @@
       "fields": [
         { "key": "program", "label": "Program", "type": "file", "required": true },
         { "key": "args", "label": "Arguments (optional)", "type": "text", "maxLen": 500 },
-        { "key": "wait", "label": "Wait for it to finish", "type": "bool", "default": true },
         { "preset": "timeout", "default": 60 },
         { "preset": "onFail" }
       ],
