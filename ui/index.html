@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>00047</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="dock top glass">
+    <span class="brand">00047</span>
+    <nav id="tabs">
+      <button data-view="overview" class="on">Overview</button>
+      <button data-view="automations">Automations</button>
+      <button data-view="logs">Logs</button>
+    </nav>
+    <div class="top-right">
+      <span id="save-ind" class="save ok" title="Auto-save status">Saved</span>
+      <button id="btn-settings" class="icon-btn" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="view-overview" class="view"></section>
+    <section id="view-automations" class="view" hidden></section>
+    <section id="view-logs" class="view" hidden></section>
+
+    <section id="view-editor" class="view editor" hidden>
+      <div class="ed-bar glass">
+        <button class="btn" id="ed-back" title="Back to automations">←</button>
+        <input id="ed-name" class="name" spellcheck="false" maxlength="80" placeholder="Automation name">
+        <span id="ed-status" class="pill stopped">Stopped</span>
+        <div class="ed-ctl">
+          <button class="btn" data-ed="start">▶ Start</button>
+          <button class="btn" data-ed="stop">■ Stop</button>
+          <button class="btn" data-ed="restart">↻ Restart</button>
+        </div>
+        <label class="chk"><input type="checkbox" id="ed-auto"> Run at app launch</label>
+        <span id="ed-note" class="note"></span>
+        <span class="sp"></span>
+        <button class="btn" id="ed-add">+ Block</button>
+        <button class="btn" id="ed-fit">Fit</button>
+      </div>
+      <div id="ed-host" class="ed-host"></div>
+      <div id="ed-dock" class="ed-dock glass">
+        <div class="dock-h">
+          <div id="dock-tabs">
+            <button data-tab="log" class="on">Live log</button>
+            <button data-tab="history">History</button>
+            <button data-tab="help">Help</button>
+          </div>
+          <button id="dock-toggle" class="ib" title="Collapse / expand">▾</button>
+        </div>
+        <div id="dock-body" class="dock-b"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="pop-settings" class="glass pop" hidden>
+    <label class="chk"><input type="checkbox" id="set-autostart"> Launch at Windows sign-in (minimized to tray)</label>
+    <small class="mu">Closing the window asks whether to minimize to the tray or exit.</small>
+  </div>
+  <div id="modal" class="modal" hidden></div>
+  <div id="toasts"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
