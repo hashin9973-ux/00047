@@ -339,6 +339,7 @@ export class Editor {
     else if (c && k === 'v') { this.paste(this.hover ? this.cursor : null); e.preventDefault(); }
     else if (c && k === 'd') { this.duplicate(); e.preventDefault(); }
     else if (c && k === 'a') { this.setSel(new Set(this.auto.nodes.map(n => n.id))); e.preventDefault(); }
+    else if (!c && k === 'b') { this.toggleDisabled(); }
     else if (c && k === 'z' && !e.shiftKey) { this.doUndo(); e.preventDefault(); }
     else if (c && (k === 'y' || (k === 'z' && e.shiftKey))) { this.doRedo(); e.preventDefault(); }
     else if (e.key === 'Escape') { this.select([]); this.selEdge = null; this.hideMenu(); this.scheduleWires(); }
@@ -684,21 +685,27 @@ export class Editor {
   hideMenu() { this.menu.hidden = true; this.menu.innerHTML = ''; this.menu.onclick = null; }
 
   nodeMenu(cx, cy, id) {
-    const n = this.node(id), m = this.menu;
+    const n = this.node(id), m = this.menu, isT = BLOCKS[n.kind]?.cat === 'tgt';
     m.className = 'ctx glass';
     m.innerHTML = `<div class="ml">
+      <div class="mi" data-a="test"><span><b>Test this block</b><small>Runs once with current settings and wired targets</small></span></div>
+      ${isT ? '' : `<div class="mi" data-a="off"><span><b>${n.disabled ? 'Enable' : 'Disable'} block</b><small>B · disabled blocks only follow AFTER wires</small></span></div>`}
       <div class="mi" data-a="dup"><span><b>Duplicate</b><small>Ctrl+D</small></span></div>
       <div class="mi" data-a="col"><span><b>${n.collapsed ? 'Expand' : 'Collapse'} settings</b></span></div>
       <div class="mi" data-a="del"><span><b>Delete</b><small>Del</small></span></div></div>`;
-    this.placeMenu(cx, cy, 300, 170);
+    this.placeMenu(cx, cy, 300, 260);
     m.onclick = e => {
       const it = e.target.closest('.mi'); if (!it) return;
       this.hideMenu();
-      if (it.dataset.a === 'dup') this.duplicate();
-      else if (it.dataset.a === 'del') this.deleteSel();
+      const action = it.dataset.a;
+      if (action === 'test') this.hooks.testBlock(id);
+      else if (action === 'off') this.toggleDisabled();
+      else if (action === 'dup') this.duplicate();
+      else if (action === 'del') this.deleteSel();
       else this.toggleCollapse(n);
     };
   }
+
 
   openMenu(cx, cy, pending) {
     const wp = this.toWorld(cx, cy), m = this.menu;
