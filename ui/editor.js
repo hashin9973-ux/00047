@@ -591,6 +591,9 @@ export class Editor {
     if (n.kind === 'act.loop') {
       const starts = this.auto.nodes.filter(x => x.kind === 'act.start' && !x.disabled);
       if (starts.length !== 1) out.push('Loop requires exactly one enabled Start block in this automation');
+      if (!this.auto.edges.some(e => e.to === n.id && ['if', 'else', 'after'].includes(e.kind))) {
+        out.push('Connect the last block in the flow to Loop; Loop returns to Start automatically.');
+      }
       if (this.auto.edges.some(e => e.from === n.id && ['if', 'else', 'after'].includes(e.kind))) {
         out.push('Loop has no output wires now; disconnect its old outgoing wires. It jumps to Start automatically.');
       }

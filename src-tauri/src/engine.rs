@@ -587,9 +587,16 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
             }
         }
     }
-    if a.nodes.iter().any(|node| node.kind == "act.loop" && !node.disabled) {
+    for node in a.nodes.iter().filter(|node| node.kind == "act.loop" && !node.disabled) {
         if let Err(message) = loop_start_id(a) {
             errs.push(message);
+            break;
+        }
+        let has_incoming_flow = a.edges.iter().any(|edge| {
+            edge.to == node.id && ["if", "else", "after"].contains(&edge.kind.as_str())
+        });
+        if !has_incoming_flow {
+            errs.push(format!("Loop {} needs an incoming flow wire from the last block; it then returns to Start automatically", short(node)));
         }
     }
     for e in &a.edges {
