@@ -529,7 +529,6 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
     let mut node_ids = std::collections::HashSet::new();
     let mut edge_ids = std::collections::HashSet::new();
     let mut edge_shapes = std::collections::HashSet::new();
-    let mut flow_incoming: HashMap<&str, usize> = HashMap::new();
     if !a.viewport.x.is_finite() || !a.viewport.y.is_finite()
         || !a.viewport.k.is_finite() || !(0.05..=8.0).contains(&a.viewport.k)
     {
@@ -559,9 +558,6 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
         }
         if !edge_shapes.insert((e.from.as_str(), e.to.as_str(), e.kind.as_str())) {
             errs.push(format!("duplicate connection {} -> {} ({})", e.from, e.to, e.kind));
-        }
-        if ["if", "else", "after"].contains(&e.kind.as_str()) {
-            *flow_incoming.entry(e.to.as_str()).or_default() += 1;
         }
     }
     for n in &a.nodes {
@@ -866,6 +862,28 @@ mod loop_semantics_tests {
             ],
         );
         assert!(validate_automation(&a).unwrap_err().join(" ").contains("Loop"));
+    }
+
+    #[test]
+    fn start_accepts_an_incoming_flow_wire_and_converging_inputs_validate() {
+        let a = automation(
+            vec![
+                node("start", "act.start", json!({})),
+                node("left", "act.wait", json!({"seconds": 0.1})),
+                node("right", "act.wait", json!({"seconds": 0.1})),
+                node("join", "act.wait", json!({"seconds": 0.1})),
+            ],
+            vec![
+                edge("e1", "start", "left", "if"),
+                edge("e2", "start", "right", "if"),
+                edge("e3", "left", "join", "after"),
+                edge("e4", "right", "join", "after"),
+                edge("e5", "join", "start", "after"),
+            ],
+        );
+        assert!(validate_automation(&a).is_ok());
+        assert!(entry_nodes(&a).is_empty());
+        assert_eq!(loop_start_id(&a).unwrap(), "start");
     }
 
     #[test]
