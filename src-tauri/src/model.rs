@@ -10,6 +10,8 @@ pub struct Node {
     #[serde(default)]
     pub collapsed: bool,
     #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
     pub cfg: Value,
 }
 
