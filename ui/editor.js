@@ -505,12 +505,10 @@ export class Editor {
     const isT = def.cat === 'tgt';
     const isStart = n.kind === 'act.start';
     const isLoop = n.kind === 'act.loop';
-    const canElse = def.cat === 'cond' || ['else', 'after', 'abort'].includes(n.cfg.onFail);
-    const canAfter = def.cat === 'cond' || Number(n.cfg.timeoutSec) > 0 || n.cfg.onFail === 'after';
     const flowOut = `<i class="port out if" data-t="if" title="IF: continue on success / satisfied"></i>
-         ${canElse ? '<i class="port out else" data-t="else" title="ELSE: follow when not satisfied or configured failure"></i><b class="pl else">ELSE</b>' : ''}
-         ${canAfter ? '<i class="port out after" data-t="after" title="AFTER: timeout/completion route"></i><b class="pl after">AFTER</b>' : ''}
-         <b class="pl if">IF</b>`;
+         <i class="port out else" data-t="else" title="ELSE: follow when not satisfied or configured failure"></i>
+         <i class="port out after" data-t="after" title="AFTER: timeout/completion route"></i>
+         <b class="pl if">IF</b><b class="pl else">ELSE</b><b class="pl after">AFTER</b>`;
     const ports = isT
       ? `<i class="port in tgt-in" title="Flow input"></i>
          <i class="port out tgt" data-t="target" title="Target output: bind this target and continue the workflow"></i>`
@@ -625,6 +623,12 @@ export class Editor {
     const el = this.els.get(n.id), def = BLOCKS[n.kind];
     if (!el || !def) return;
     el.classList.toggle('off', !!n.disabled);
+    const showElse = def.cat === 'cond' || ['else', 'after', 'abort'].includes(n.cfg.onFail);
+    const showAfter = def.cat === 'cond' || Number(n.cfg.timeoutSec) > 0 || n.cfg.onFail === 'after';
+    for (const [selector, visible] of [['.port.out.else', showElse], ['.pl.else', showElse], ['.port.out.after', showAfter], ['.pl.after', showAfter]]) {
+      const port = el.querySelector(selector);
+      if (port) port.hidden = !visible;
+    }
     el.querySelector('.n-sum').textContent = (n.disabled ? 'Disabled · ' : '') + def.summary(n.cfg);
     el.querySelectorAll('.fld').forEach(r => {
       const f = def.fields.find(x => x.key === r.dataset.key);
