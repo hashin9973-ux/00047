@@ -51,6 +51,7 @@ export class Editor {
     this.drag = null;
     this.temp = null;
     this.raf = 0;
+    this.uStack = []; this.rStack = []; this.last = ''; this.lastTag = null; this.lastT = 0; this.applying = false;
     this.build();
   }
 
@@ -114,6 +115,7 @@ export class Editor {
     this.hideMenu();
     for (const n of auto.nodes) this.addEl(n);
     this.refreshAll(); this.applyVp(); this.scheduleWires();
+    this.uStack = []; this.rStack = []; this.last = this.snap(); this.lastTag = null;
   }
 
   setNodeState(id, st) { this.states[id] = st; this.paintState(id, st); }
@@ -149,7 +151,38 @@ export class Editor {
   // ---------- helpers ----------
   node(id) { return this.auto.nodes.find(n => n.id === id); }
   edge() { return this.auto.edges.find(e => e.id === this.selEdge); }
-  changed() { this.hooks.onChange(this.auto); }
+  snap() { return JSON.stringify({ n: this.auto.nodes, e: this.auto.edges }); }
+
+  changed(tag) {
+    if (!this.applying) {
+      const now = this.snap();
+      if (now !== this.last) {
+        const t = Date.now();
+        if (!(tag && tag === this.lastTag && t - this.lastT < 1000)) {
+          this.uStack.push(this.last);
+          if (this.uStack.length > 100) this.uStack.shift();
+        }
+        this.rStack = []; this.last = now; this.lastTag = tag || null; this.lastT = t;
+      }
+    }
+    this.hooks.onChange(this.auto);
+  }
+
+  restore(s) {
+    const o = JSON.parse(s);
+    this.applying = true;
+    this.auto.nodes = o.n; this.auto.edges = o.e; this.last = s; this.lastTag = null;
+    const keep = new Set([...this.sel].filter(id => o.n.some(n => n.id === id)));
+    this.nodesEl.innerHTML = ''; this.wl.innerHTML = '';
+    this.els.clear(); this.wires.clear();
+    for (const n of this.auto.nodes) this.addEl(n);
+    this.sel = new Set(); this.selEdge = null;
+    this.setSel(keep); this.refreshAll(); this.scheduleWires();
+    this.applying = false;
+    this.hooks.onChange(this.auto);
+  }
+  doUndo() { if (!this.uStack.length) return; this.rStack.push(this.last); this.restore(this.uStack.pop()); }
+  doRedo() { if (!this.rStack.length) return; this.uStack.push(this.last); this.restore(this.rStack.pop()); }
   toWorld(cx, cy) {
     const r = this.cv.getBoundingClientRect();
     return { x: (cx - r.left - this.vp.x) / this.vp.k, y: (cy - r.top - this.vp.y) / this.vp.k };
@@ -286,6 +319,8 @@ export class Editor {
     else if (c && k === 'v') { this.paste(this.hover ? this.cursor : null); e.preventDefault(); }
     else if (c && k === 'd') { this.duplicate(); e.preventDefault(); }
     else if (c && k === 'a') { this.setSel(new Set(this.auto.nodes.map(n => n.id))); e.preventDefault(); }
+    else if (c && k === 'z' && !e.shiftKey) { this.doUndo(); e.preventDefault(); }
+    else if (c && (k === 'y' || (k === 'z' && e.shiftKey))) { this.doRedo(); e.preventDefault(); }
     else if (e.key === 'Escape') { this.select([]); this.selEdge = null; this.hideMenu(); this.scheduleWires(); }
   }
 
@@ -443,9 +478,18 @@ export class Editor {
       }
       inp.addEventListener(f.type === 'select' || f.type === 'bool' ? 'change' : 'input', () => {
         n.cfg[f.key] = f.type === 'bool' ? inp.checked : f.type === 'number' ? (inp.value === '' ? null : Number(inp.value)) : inp.value;
-        this.refresh(n); this.changed();
+        this.refresh(n); this.changed('f' + n.id + f.key);
       });
       if (f.type !== 'bool') row.appendChild(inp);
+      if (f.type === 'file') {
+        const b = document.createElement('button');
+        b.className = 'btn'; b.textContent = 'Browse…';
+        b.addEventListener('click', async () => {
+          const p = await this.hooks.pickFile();
+          if (p) { inp.value = p; inp.dispatchEvent(new Event('input')); }
+        });
+        row.appendChild(b);
+      }
       if (f.help) { const h = document.createElement('small'); h.className = 'fh'; h.textContent = f.help; row.appendChild(h); }
       body.appendChild(row);
     }
