@@ -8,6 +8,7 @@ const I = {
   repeat: ic('<path d="M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3"/>'),
   window: ic('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>'),
   file: ic('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
+  note: ic('<path d="M4 5h16M4 12h16M4 19h10"/>'),
 };
 
 export const CATS = {
@@ -100,6 +101,16 @@ export const BLOCKS = {
     summary: c => `${c.iterations === 0 ? 'Unlimited' : num(c.iterations) + '×'} · ${dur(c.delaySec)} per iteration`,
     help: 'Wire IF to the first block of the body and the last body block (AFTER) back into this Loop. Wire ELSE to what runs once the loop is done. A runaway guard aborts the automation if a block fires too often.',
   },
+  'act.log': {
+    cat: 'act', title: 'Log message', icon: I.note,
+    desc: 'Writes a message to the logs. Handy for tracing IF / ELSE paths.',
+    defaults: { message: 'Hello from 00047', level: 'info' },
+    fields: [
+      { key: 'message', label: 'Message', type: 'text', required: true, maxLen: 500 },
+      { key: 'level', label: 'Level', type: 'select', options: [['info', 'Info'], ['warn', 'Warning'], ['error', 'Error']] },
+    ],
+    summary: c => c.message || 'No message',
+  },
   'tgt.process': {
     cat: 'tgt', title: 'Active process', icon: I.window,
     desc: 'The foreground window\'s process, or a process by name.',
@@ -116,7 +127,7 @@ export const BLOCKS = {
     cat: 'tgt', title: 'File', icon: I.file,
     desc: 'A file or program path.',
     defaults: { path: '' },
-    fields: [{ key: 'path', label: 'Full path', type: 'text', placeholder: 'C:\\Tools\\app.exe', required: true }],
+    fields: [{ key: 'path', label: 'Full path', type: 'file', placeholder: 'C:\\Tools\\app.exe', required: true }],
     summary: c => c.path || 'No path set',
   },
 };
@@ -128,9 +139,14 @@ export function fieldError(f, cfg) {
     if (typeof v !== 'number' || !Number.isFinite(v)) return 'Enter a number';
     if (v < f.min || v > f.max) return `${f.min} – ${f.max}`;
   }
-  if (f.type === 'text' && f.required && !String(v ?? '').trim()) return 'Required';
+  if (f.type === 'text' || f.type === 'file') {
+    const s = String(v ?? '').trim();
+    if (f.required && !s) return 'Required';
+    if (f.maxLen && s.length > f.maxLen) return `Max ${f.maxLen} characters`;
+  }
   return null;
 }
+
 
 export function validate(kind, cfg) {
   const b = BLOCKS[kind];
