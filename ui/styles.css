@@ -231,64 +231,7 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .bp pre{white-space:pre-wrap;word-break:break-word;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;color:var(--tx);font:12px Consolas,monospace;user-select:text}
 .er{color:var(--er)}
 
-/* LiquidGlass materials: two neutral variants. The editor canvas and nodes retain their own styling. */
-:root{--glass-tint:0,0,0;--glass-bg-opacity:0;--glass-element-opacity:0}
-
-/* Default LiquidGlass: live desktop capture, neutral black absorption, no shine overlays. */
-.glass{background:transparent;border-color:rgba(0,0,0,.24);box-shadow:0 8px 22px rgba(0,0,0,.18)}
-.glass::after{background:rgba(0,0,0,.10)}
-.card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass,.logs.glass,.eu-bar.glass,.toast.glass{background:transparent;border-color:rgba(0,0,0,.28);box-shadow:0 9px 24px rgba(0,0,0,.20)}
-.card.glass::after,.acard.glass::after,.ctx.glass::after,.pop.glass::after,.mbox.glass::after,.ck-box.glass::after,.logs.glass::after,.eu-bar.glass::after,.toast.glass::after{background:rgba(0,0,0,.12)}
-
-/* LiquidGlass variant: slightly stronger blur and shadow, same neutral material. */
-.glass.liquidglass-variant,.liquidglass-variant.glass{border-color:rgba(0,0,0,.32);box-shadow:0 10px 26px rgba(0,0,0,.24)}
-.glass.liquidglass-variant::after,.liquidglass-variant.glass::after{background:rgba(0,0,0,.16)}
-
-/* Neutral controls; no colored glass treatments. */
-:is(.btn,.ib,.icon-btn,.search,.name,.mq,select,.ck-in,.fld input[type=text],.fld input[type=number],.fld select,.eu-bar button):not(.node *){color:inherit;background:rgba(0,0,0,.12);border-color:rgba(0,0,0,.24);box-shadow:none}
-:is(.btn,.ib,.icon-btn,.search,.name,.mq,select,.ck-in,.fld input[type=text],.fld input[type=number],.fld select,.eu-bar button):not(.node *):hover{background:rgba(0,0,0,.16)}
-:is(.btn,.ib,.icon-btn,.search,.name,.mq,select,.ck-in,.fld input[type=text],.fld input[type=number],.fld select):focus-visible{outline:1px solid rgba(0,0,0,.55);outline-offset:1px}
-
-
-/* Final material system: two transparent, backdrop-sampled materials only. */
-.glass.liquidglass,
-.glass.liquidglass-variant {
-  background: transparent !important;
-  background-image: none !important;
-  border: 1px solid rgba(255,255,255,.12) !important;
-  box-shadow: 0 8px 22px rgba(0,0,0,.20) !important;
-  isolation: isolate;
-  position: relative;
-}
-.glass.liquidglass::before,
-.glass.liquidglass-variant::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  background-image: var(--glass-backdrop-frame, none);
-  background-size: var(--glass-frame-size, 100% 100%);
-  background-position: var(--glass-frame-x, 0px) var(--glass-frame-y, 0px);
-  background-repeat: no-repeat;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .12s ease;
-}
-.glass.liquidglass::after,
-.glass.liquidglass-variant::after { content: none !important; display: none !important; }
-html.glass-backdrop-ready .glass.liquidglass::before,
-html.glass-backdrop-ready .glass.liquidglass-variant::before { opacity: 1; }
-.glass.liquidglass-variant {
-  border-color: rgba(255,255,255,.14) !important;
-  box-shadow: 0 9px 24px rgba(0,0,0,.23) !important;
-}
-/* Controls stay neutral; the editor canvas and its nodes intentionally keep their own palette. */
-.glass.liquidglass :is(button,input,select),
-.glass.liquidglass-variant :is(button,input,select) { box-shadow: none; }
-
-
-/* The window itself is the LiquidGlass background: only sampled desktop pixels, blurred on the GPU. */
+/* Exactly two neutral glass materials. The editor canvas and workflow nodes retain their own styling. */
 body { isolation: isolate; }
 body::before {
   content: "";
@@ -304,9 +247,8 @@ body::before {
 }
 html.glass-backdrop-ready body::before { opacity: 1; }
 
-/* These are the only two surface materials. No gloss, grain, tint, or color wash. */
-.glass.liquidglass,
-.glass.liquidglass-variant {
+/* Shared transparent base; visible material comes from the sampled, GPU-blurred desktop image. */
+.glass {
   background: transparent !important;
   background-color: transparent !important;
   background-image: none !important;
@@ -315,8 +257,7 @@ html.glass-backdrop-ready body::before { opacity: 1; }
   isolation: isolate;
   position: relative;
 }
-.glass.liquidglass::before,
-.glass.liquidglass-variant::before {
+.glass::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -330,15 +271,22 @@ html.glass-backdrop-ready body::before { opacity: 1; }
   pointer-events: none;
   transition: opacity .12s ease;
 }
-.glass.liquidglass::after,
-.glass.liquidglass-variant::after { content: none !important; display: none !important; }
-html.glass-backdrop-ready .glass.liquidglass::before,
-html.glass-backdrop-ready .glass.liquidglass-variant::before { opacity: 1; }
+.glass::after { content: none !important; display: none !important; }
+html.glass-backdrop-ready .glass::before { opacity: 1; }
+
+/* LiquidGlass: app background and primary surface radius. */
+.glass.liquidglass {
+  border-color: rgba(255,255,255,.12) !important;
+  box-shadow: 0 8px 22px rgba(0,0,0,.20) !important;
+}
+
+/* LiquidGlass Variant: all other surfaces; only a small increase in blur and shadow. */
 .glass.liquidglass-variant {
   border-color: rgba(255,255,255,.14) !important;
   box-shadow: 0 9px 24px rgba(0,0,0,.23) !important;
 }
-/* Replaced form controls cannot reliably paint pseudo-elements; use the same clipped image as their background. */
+
+/* Form controls do not consistently support ::before; use the same cropped blur image as their background. */
 input.glass.liquidglass-variant,
 select.glass.liquidglass-variant,
 textarea.glass.liquidglass-variant {
@@ -347,6 +295,5 @@ textarea.glass.liquidglass-variant {
   background-size: var(--glass-frame-size, 100% 100%) !important;
   background-position: var(--glass-frame-x, 0px) var(--glass-frame-y, 0px) !important;
   background-repeat: no-repeat !important;
+  color: var(--tx);
 }
-/* Keep all non-canvas controls neutral rather than adding a colored overlay. */
-.glass.liquidglass-variant:is(button, input, select, textarea) { color: var(--tx); }
