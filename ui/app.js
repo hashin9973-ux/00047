@@ -650,41 +650,83 @@ async function reloadBlocks() {
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
 function createGlassGpuProcessor() {
+  // Frosty material tunables (logical px). Set dim to 1 for zero adaptive dimming, sat to 1 for no saturation boost.
+  const FROST = { blur: 34, bevel: 12, bend: 9, sat: 1.28, dim: 0.62, dimFrom: 0.48, dimTo: 0.90 };
+  const frostSelector = '.card.glass, .acard.glass, .ctx.glass, .pop.glass, .mbox.glass, .ck-box.glass, .logs.glass, .eu-bar.glass, .toast.glass';
+  const f = n => Number(n).toFixed(3);
   const canvas = document.createElement('canvas');
   const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
   if (!gl) return null;
   const vertexSource = 'attribute vec2 a_position; varying vec2 v_uv; void main(){ v_uv = a_position * 0.5 + 0.5; gl_Position = vec4(a_position, 0.0, 1.0); }';
   const fragmentSource = [
+    '#ifdef GL_FRAGMENT_PRECISION_HIGH',
+    'precision highp float;',
+    '#else',
     'precision mediump float;',
+    '#endif',
     'uniform sampler2D u_frame;',
     'uniform vec2 u_size;',
+    'uniform float u_scale;',
     'uniform int u_count;',
     'uniform vec4 u_regions[32];',
     'uniform float u_blurs[32];',
+    'uniform float u_frost[32];',
     'varying vec2 v_uv;',
-    'vec3 sampleBackdrop(vec2 uv, float radius) {',
+    'vec2 cl(vec2 uv){ return clamp(uv, vec2(0.001), vec2(0.999)); }',
+    'vec3 liquid(vec2 uv, float radius) {',
     '  vec2 d = vec2(radius / u_size.x, radius / u_size.y) * 0.72;',
-    '  vec3 c = texture2D(u_frame, clamp(uv, vec2(0.001), vec2(0.999))).rgb * 0.20;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x, 0.0), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x, 0.0), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(0.0,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(0.0, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
+    '  vec3 c = texture2D(u_frame, cl(uv)).rgb * 0.20;',
+    '  c += texture2D(u_frame, cl(uv + vec2( d.x, 0.0))).rgb * 0.12;',
+    '  c += texture2D(u_frame, cl(uv + vec2(-d.x, 0.0))).rgb * 0.12;',
+    '  c += texture2D(u_frame, cl(uv + vec2(0.0,  d.y))).rgb * 0.12;',
+    '  c += texture2D(u_frame, cl(uv + vec2(0.0, -d.y))).rgb * 0.12;',
+    '  c += texture2D(u_frame, cl(uv + vec2( d.x,  d.y))).rgb * 0.08;',
+    '  c += texture2D(u_frame, cl(uv + vec2(-d.x,  d.y))).rgb * 0.08;',
+    '  c += texture2D(u_frame, cl(uv + vec2( d.x, -d.y))).rgb * 0.08;',
+    '  c += texture2D(u_frame, cl(uv + vec2(-d.x, -d.y))).rgb * 0.08;',
     '  return c;',
+    '}',
+    'float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }',
+    'vec3 frosted(vec2 uv, float radius) {',
+    '  vec2 px = radius / u_size;',
+    '  float a0 = hash(gl_FragCoord.xy) * 6.2831853;',
+    '  vec3 c = texture2D(u_frame, cl(uv)).rgb;',
+    '  float ws = 1.0;',
+    '  for (int ring = 1; ring <= 3; ring++) {',
+    '    float rr = float(ring) / 3.0;',
+    '    float w = exp(-2.2 * rr * rr);',
+    '    for (int k = 0; k < 8; k++) {',
+    '      float a = a0 + float(ring) * 0.71 + float(k) * 0.7853982;',
+    '      c += texture2D(u_frame, cl(uv + vec2(cos(a), sin(a)) * rr * px)).rgb * w;',
+    '      ws += w;',
+    '    }',
+    '  }',
+    '  return c / ws;',
     '}',
     'void main(){',
     '  vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);',
     '  vec2 p = uv * u_size;',
-    '  vec3 sampled = texture2D(u_frame, clamp(uv, vec2(0.001), vec2(0.999))).rgb;',
+    '  vec3 sampled = texture2D(u_frame, cl(uv)).rgb;',
+    '  vec4 r = vec4(0.0); float bl = 0.0; float fr = 0.0; bool hit = false;',
     '  for (int i = 0; i < 32; i++) {',
     '    if (i >= u_count) break;',
-    '    vec4 r = u_regions[i];',
-    '    if (p.x >= r.x && p.y >= r.y && p.x <= r.x + r.z && p.y <= r.y + r.w) {',
-    '      sampled = sampleBackdrop(uv, u_blurs[i]);',
-    '      break;',
+    '    vec4 q = u_regions[i];',
+    '    if (p.x >= q.x && p.y >= q.y && p.x <= q.x + q.z && p.y <= q.y + q.w) { r = q; bl = u_blurs[i]; fr = u_frost[i]; hit = true; }',
+    '  }',
+    '  if (hit) {',
+    '    if (fr < 0.5) {',
+    '      sampled = liquid(uv, bl);',
+    '    } else {',
+    '      float l = p.x - r.x; float rt = r.x + r.z - p.x; float t = p.y - r.y; float b = r.y + r.w - p.y;',
+    '      float dx = min(l, rt); float dy = min(t, b);',
+    '      vec2 n = dx < dy ? vec2(l < rt ? -1.0 : 1.0, 0.0) : vec2(0.0, t < b ? -1.0 : 1.0);',
+    '      float k = clamp(1.0 - min(dx, dy) / (' + f(FROST.bevel) + ' * u_scale), 0.0, 1.0);',
+    '      vec2 ruv = (p + n * (' + f(FROST.bend) + ' * u_scale) * k * k) / u_size;',
+    '      vec3 c = frosted(ruv, bl);',
+    '      float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));',
+    '      c = mix(vec3(lum), c, ' + f(FROST.sat) + ');',
+    '      c *= mix(1.0, ' + f(FROST.dim) + ', smoothstep(' + f(FROST.dimFrom) + ', ' + f(FROST.dimTo) + ', lum));',
+    '      sampled = clamp(c, 0.0, 1.0);',
     '    }',
     '  }',
     '  gl_FragColor = vec4(sampled, 1.0);',
@@ -735,28 +777,30 @@ function createGlassGpuProcessor() {
     const dpr = window.devicePixelRatio || 1;
     const ratioX = canvas.width / frame.screenWidth;
     const ratioY = canvas.height / frame.screenHeight;
+    gl.uniform1f(gl.getUniformLocation(program, 'u_scale'), dpr * ratioX);
     const regions = new Float32Array(32 * 4);
     const blurs = new Float32Array(32);
+    const frosts = new Float32Array(32);
     let count = 0;
-    const elementSelector = '.card.glass, .acard.glass, .ctx.glass, .pop.glass, .mbox.glass, .ck-box.glass';
     for (const el of document.querySelectorAll('.glass')) {
       const r = el.getBoundingClientRect();
       if (r.width < 2 || r.height < 2 || count >= 32) continue;
       const x = (frame.windowX - frame.screenX + r.left * dpr) * ratioX;
       const y = (frame.windowY - frame.screenY + r.top * dpr) * ratioY;
       regions.set([x, y, r.width * dpr * ratioX, r.height * dpr * ratioY], count * 4);
-      const logicalBlur = el.matches(elementSelector) ? 20 : 15;
-      blurs[count] = logicalBlur * dpr * ratioX;
+      const frost = el.matches(frostSelector);
+      blurs[count] = (frost ? FROST.blur : 15) * dpr * ratioX;
+      frosts[count] = frost ? 1 : 0;
       count++;
     }
     gl.uniform1i(gl.getUniformLocation(program, 'u_count'), count);
     gl.uniform4fv(gl.getUniformLocation(program, 'u_regions[0]'), regions);
     gl.uniform1fv(gl.getUniformLocation(program, 'u_blurs[0]'), blurs);
+    gl.uniform1fv(gl.getUniformLocation(program, 'u_frost[0]'), frosts);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     return canvas.toDataURL('image/jpeg', 0.86);
   };
 }
-
 function startGlassBackdrop() {
   if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
   const root = document.documentElement;
