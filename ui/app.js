@@ -651,9 +651,8 @@ $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = t
 
 function createGlassGpuProcessor() {
   // Frosty material tunables (logical px). Set dim to 1 for zero adaptive dimming, sat to 1 for no saturation boost.
-  const FROST = { blur: 18 };
-  const frostSelector = '.glass.liquidglass-variant';
-  const f = n => Number(n).toFixed(3);
+  const LIQUIDGLASS_BLUR = 16;
+  const LIQUIDGLASS_VARIANT_BLUR = 18;
   const canvas = document.createElement('canvas');
   const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
   if (!gl) return null;
@@ -666,11 +665,9 @@ function createGlassGpuProcessor() {
     '#endif',
     'uniform sampler2D u_frame;',
     'uniform vec2 u_size;',
-    'uniform float u_scale;',
     'uniform int u_count;',
     'uniform vec4 u_regions[32];',
     'uniform float u_blurs[32];',
-    'uniform float u_frost[32];',
     'varying vec2 v_uv;',
     'vec2 cl(vec2 uv){ return clamp(uv, vec2(0.001), vec2(0.999)); }',
     'vec3 liquid(vec2 uv, float radius) {',
@@ -686,35 +683,18 @@ function createGlassGpuProcessor() {
     '  c += texture2D(u_frame, cl(uv + vec2(-d.x, -d.y))).rgb * 0.08;',
     '  return c;',
     '}',
-    'float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }',
-    'vec3 frosted(vec2 uv, float radius) {',
-    '  vec2 px = radius / u_size;',
-    '  float a0 = 0.3926991; // stable sampling pattern: no per-pixel grain',
-    '  vec3 c = texture2D(u_frame, cl(uv)).rgb;',
-    '  float ws = 1.0;',
-    '  for (int ring = 1; ring <= 3; ring++) {',
-    '    float rr = float(ring) / 3.0;',
-    '    float w = exp(-2.2 * rr * rr);',
-    '    for (int k = 0; k < 8; k++) {',
-    '      float a = a0 + float(ring) * 0.71 + float(k) * 0.7853982;',
-    '      c += texture2D(u_frame, cl(uv + vec2(cos(a), sin(a)) * rr * px)).rgb * w;',
-    '      ws += w;',
-    '    }',
-    '  }',
-    '  return c / ws;',
-    '}',
     'void main(){',
     '  vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);',
     '  vec2 p = uv * u_size;',
     '  vec3 sampled = texture2D(u_frame, cl(uv)).rgb;',
-    '  vec4 r = vec4(0.0); float bl = 0.0; float fr = 0.0; bool hit = false;',
+    '  float bl = 0.0; bool hit = false;',
     '  for (int i = 0; i < 32; i++) {',
     '    if (i >= u_count) break;',
     '    vec4 q = u_regions[i];',
-    '    if (p.x >= q.x && p.y >= q.y && p.x <= q.x + q.z && p.y <= q.y + q.w) { r = q; bl = u_blurs[i]; fr = u_frost[i]; hit = true; }',
+    '    if (p.x >= q.x && p.y >= q.y && p.x <= q.x + q.z && p.y <= q.y + q.w) { bl = u_blurs[i]; hit = true; }',
     '  }',
     '  if (hit) {',
-    '    sampled = frosted(uv, bl);',
+    '    sampled = liquid(uv, bl);',
     '  }',
     '  gl_FragColor = vec4(sampled, 1.0);',
     '}'
@@ -764,10 +744,8 @@ function createGlassGpuProcessor() {
     const dpr = window.devicePixelRatio || 1;
     const ratioX = canvas.width / frame.screenWidth;
     const ratioY = canvas.height / frame.screenHeight;
-    gl.uniform1f(gl.getUniformLocation(program, 'u_scale'), dpr * ratioX);
     const regions = new Float32Array(32 * 4);
     const blurs = new Float32Array(32);
-    const frosts = new Float32Array(32);
 
     // Region zero is the whole app window, so the background itself is blurred.
     // Individual controls are added afterward and override it with the variant radius.
@@ -775,7 +753,6 @@ function createGlassGpuProcessor() {
     const baseY = (frame.windowY - frame.screenY) * ratioY;
     regions.set([baseX, baseY, window.innerWidth * dpr * ratioX, window.innerHeight * dpr * ratioY], 0);
     blurs[0] = 16 * dpr * ratioX;
-    frosts[0] = 0;
     let count = 1;
 
     const materialSelector = '.glass, button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
@@ -787,16 +764,13 @@ function createGlassGpuProcessor() {
       const x = (frame.windowX - frame.screenX + r.left * dpr) * ratioX;
       const y = (frame.windowY - frame.screenY + r.top * dpr) * ratioY;
       regions.set([x, y, r.width * dpr * ratioX, r.height * dpr * ratioY], count * 4);
-      const frost = el.matches(frostSelector);
-      blurs[count] = (frost ? FROST.blur : 16) * dpr * ratioX;
-      // Both variants use the same genuine backdrop-blur kernel; only radius differs.
-      frosts[count] = 0;
+      const variant = el.classList.contains('liquidglass-variant');
+      blurs[count] = (variant ? LIQUIDGLASS_VARIANT_BLUR : LIQUIDGLASS_BLUR) * dpr * ratioX;
       count++;
     }
     gl.uniform1i(gl.getUniformLocation(program, 'u_count'), count);
     gl.uniform4fv(gl.getUniformLocation(program, 'u_regions[0]'), regions);
     gl.uniform1fv(gl.getUniformLocation(program, 'u_blurs[0]'), blurs);
-    gl.uniform1fv(gl.getUniformLocation(program, 'u_frost[0]'), frosts);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     return canvas.toDataURL('image/jpeg', 0.86);
   };
