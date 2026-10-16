@@ -780,13 +780,8 @@ function createGlassGpuProcessor() {
 
     const materialSelector = '.glass, button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
     for (const el of document.querySelectorAll(materialSelector)) {
-      if (el.classList.contains('top')) {
-        el.classList.add('liquidglass');
-        el.classList.remove('liquidglass-variant');
-      } else {
-        el.classList.add('liquidglass-variant');
-        el.classList.remove('liquidglass');
-      }
+      el.classList.add('liquidglass-variant');
+      el.classList.remove('liquidglass');
       const r = el.getBoundingClientRect();
       if (r.width < 2 || r.height < 2 || count >= 32) continue;
       const x = (frame.windowX - frame.screenX + r.left * dpr) * ratioX;
@@ -809,6 +804,7 @@ function createGlassGpuProcessor() {
 function startGlassBackdrop() {
   if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
   const root = document.documentElement;
+  document.body.classList.add('liquidglass');
   let inFlight = false;
   let loggedFailure = false;
   let gpuProcess;
