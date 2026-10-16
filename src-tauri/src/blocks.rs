@@ -1,6 +1,7 @@
 use crate::sys;
 use async_trait::async_trait;
-use serde_json::Value;
+use crate::spec;
+use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     sync::OnceLock,
@@ -55,6 +56,15 @@ pub trait Block: Send + Sync {
     }
     /// Whether the generic `timeoutSec` setting applies.
     fn supports_timeout(&self) -> bool {
+        false
+    }
+    /// Declarative UI + validation spec (see docs/ADDING_BLOCKS.md). A native block that returns one needs
+    /// no definition in ui/blocks.js: the UI is generated from it.
+    fn spec(&self) -> Option<Value> {
+        None
+    }
+    /// True for actions with side effects: they get the strict repeat limit (12 runs per 10 s).
+    fn risky(&self) -> bool {
         false
     }
     async fn run(&self, _cx: &NodeCx) -> Result<Outcome, String> {
@@ -239,7 +249,78 @@ impl Block for ProcRunning {
     }
 }
 
-// ---------- Actions ----------
+// Time window: the reference example of a block defined purely by `spec()` + `run()`.
+fn schedule_spec() -> Value {
+    json!({
+        "category": "condition", "title": "Time window", "icon": "clock",
+        "description": "Satisfied during a daily time window (PC local time).",
+        "fields": [
+            {"key":"start","label":"From","type":"time","default":"09:00","required":true},
+            {"key":"end","label":"Until","type":"time","default":"17:00","required":true},
+            {"key":"days","label":"Days","type":"select","default":"all","options":[["all","Every day"],["weekdays","Mon–Fri"],["weekends","Sat–Sun"]]},
+            {"key":"mode","label":"Mode","type":"select","default":"check","options":[["check","Check once (IF / ELSE)"],["wait","Wait until inside the window"]]},
+            {"key":"pollSec","label":"Check every","type":"number","min":1,"max":3600,"step":1,"unit":"s","default":5,"show":{"key":"mode","eq":"wait"}},
+            {"preset":"timeout","show":{"key":"mode","eq":"wait"}},
+            {"preset":"onFail"}
+        ],
+        "summary": "{start}–{end} · {days}",
+        "help": "Uses this PC's local time. If Until is earlier than From the window crosses midnight (for example 22:00 to 06:00). From = Until means the whole day. Days is checked at the moment the block runs."
+    })
+}
+
+struct Schedule;
+fn in_window(c: &Value) -> Result<bool, String> {
+    let get = |k: &str, d: &str| {
+        let t = text(c, k);
+        if t.is_empty() { d.to_string() } else { t }
+    };
+    let s = spec::parse_hhmm(&get("start", "09:00")).ok_or("Start time must look like 09:00")?;
+    let e = spec::parse_hhmm(&get("end", "17:00")).ok_or("End time must look like 17:00")?;
+    let (dow, now) = sys::local_weekday_minutes();
+    let day_ok = match text(c, "days").as_str() {
+        "weekdays" => (1..=5).contains(&dow),
+        "weekends" => dow == 0 || dow == 6,
+        _ => true,
+    };
+    let time_ok = s == e || if s < e { now >= s && now < e } else { now >= s || now < e };
+    Ok(day_ok && time_ok)
+}
+#[async_trait]
+impl Block for Schedule {
+    fn title(&self) -> &'static str {
+        "Time window"
+    }
+    fn category(&self) -> Cat {
+        Cat::Condition
+    }
+    fn supports_timeout(&self) -> bool {
+        true
+    }
+    fn spec(&self) -> Option<Value> {
+        Some(schedule_spec())
+    }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        spec::validate(&schedule_spec(), c)
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let wait = text(&cx.cfg, "mode") == "wait";
+        let poll = rng(&cx.cfg, "pollSec", 5.0, 1.0, 3600.0, "Check interval")?;
+        loop {
+            let inside = in_window(&cx.cfg)?;
+            (cx.report)(if wait { "waiting" } else { "running" }, None, if inside { "inside the window".to_string() } else { "outside the window".to_string() });
+            if inside {
+                return Ok(Outcome::Satisfied);
+            }
+            if !wait {
+                return Ok(Outcome::NotSatisfied);
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs_f64(poll)) => {},
+                _ = cx.token.cancelled() => return Err("cancelled".into()),
+            }
+        }
+    }
+}
 struct Trim;
 #[async_trait]
 impl Block for Trim {
@@ -499,6 +580,8 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         m.insert("act.notify", Box::new(Notify));
         m.insert("tgt.process", Box::new(ProcessTarget));
         m.insert("tgt.file", Box::new(FileTarget));
+        m.insert("cond.schedule", Box::new(Schedule));
+        crate::custom::load_into(&mut m);
         m
     })
 }
