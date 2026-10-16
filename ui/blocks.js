@@ -9,6 +9,9 @@ const I = {
   window: ic('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>'),
   file: ic('<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>'),
   note: ic('<path d="M4 5h16M4 12h16M4 19h10"/>'),
+  proc: ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M16.9 16.9l2.1 2.1M4.9 19.1l2.1-2.1M16.9 7.1l2.1-2.1"/>'),
+  stop: ic('<rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9z"/>'),
+  bell: ic('<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/>'),
 };
 
 export const CATS = {
@@ -57,6 +60,45 @@ export const BLOCKS = {
     ],
     summary: c => `${c.op === 'below' ? 'Below' : 'Above'} ${num(c.thresholdMb)} MB · ${c.mode === 'wait' ? 'waits' + (c.timeoutSec > 0 ? ` ≤ ${dur(c.timeoutSec)}` : '') : 'checks once'}`,
     help: 'Wire an Active process target in to measure that process (working set). With no target it measures used system RAM.',
+  },
+  'cond.proc_running': {
+    cat: 'cond', title: 'Process Running', icon: I.proc,
+    desc: 'Checks whether a process (by exe name) is running, or waits for it to start or stop.',
+    defaults: { name: '', mode: 'check', pollSec: 2, timeoutSec: 0, onFail: 'stop' },
+    fields: [
+      { key: 'name', label: 'Process name', type: 'text', placeholder: 'chrome.exe', required: true },
+      { key: 'mode', label: 'Mode', type: 'select', options: [['check', 'Check once (IF running / ELSE not)'], ['wait_start', 'Wait until it starts'], ['wait_stop', 'Wait until it stops']] },
+      { key: 'pollSec', label: 'Poll every', type: 'number', min: 0.25, max: 3600, step: 0.25, unit: 's', show: c => c.mode !== 'check' },
+      { ...TIMEOUT, show: c => c.mode !== 'check' },
+      ONFAIL,
+    ],
+    summary: c => !c.name ? 'No process set' : c.mode === 'wait_start' ? `Wait for ${c.name} to start` : c.mode === 'wait_stop' ? `Wait for ${c.name} to stop` : `Is ${c.name} running?`,
+    help: 'Include the .exe extension. Needs no target block.',
+  },
+  'act.stop_proc': {
+    cat: 'act', title: 'Stop Process', icon: I.stop,
+    desc: 'Closes a process by exe name, or the wired Active process target.',
+    defaults: { mode: 'name', name: '', force: false, timeoutSec: 10, onFail: 'stop' },
+    fields: [
+      { key: 'mode', label: 'Pick process', type: 'select', options: [['name', 'By exe name'], ['target', 'From wired Active process target']] },
+      { key: 'name', label: 'Process name', type: 'text', placeholder: 'notepad.exe', required: true, show: c => c.mode === 'name' },
+      { key: 'force', label: 'Force-kill immediately', type: 'bool' },
+      TIMEOUT,
+      ONFAIL,
+    ],
+    summary: c => `Stop ${c.mode === 'name' ? (c.name || 'no name set') : 'target'}${c.force ? ' (force)' : ''}`,
+    help: 'Without force it sends a close request to the process windows, waits 5 s, then force-kills. By name only the first match is stopped. Protected processes need 00047 run as administrator. It refuses to stop 00047 itself.',
+  },
+  'act.notify': {
+    cat: 'act', title: 'Notification', icon: I.bell,
+    desc: 'Shows a Windows toast notification.',
+    defaults: { title: '00047', body: 'Hello', sound: true },
+    fields: [
+      { key: 'title', label: 'Title', type: 'text', required: true, maxLen: 64 },
+      { key: 'body', label: 'Message', type: 'text', required: true, maxLen: 256 },
+      { key: 'sound', label: 'Play sound', type: 'bool' },
+    ],
+    summary: c => c.body ? `"${c.body.slice(0, 40)}${c.body.length > 40 ? '…' : ''}"` : 'No message',
   },
   'act.trim': {
     cat: 'act', title: 'Working-Set Trim', icon: I.trim,
