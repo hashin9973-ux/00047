@@ -191,3 +191,14 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 
 .node.off{opacity:.5;filter:grayscale(.7)}
 .node.off .n-sum{display:block;font-style:italic}
+
+#cmdk{position:fixed;inset:0;z-index:60;display:flex;justify-content:center;align-items:flex-start;padding-top:12vh;background:rgba(0,0,0,.35)}
+#cmdk[hidden]{display:none}
+.ck-box{width:min(560px,92vw);padding:8px;border-radius:14px}
+.ck-in{width:100%;box-sizing:border-box;padding:11px 12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;color:inherit;font:inherit;outline:none}
+.ck-in:focus{border-color:rgba(139,156,255,.6)}
+.ck-list{max-height:48vh;overflow:auto;margin-top:6px}
+.ck-item{display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:8px;cursor:pointer}
+.ck-item small{opacity:.5}
+.ck-item.on,.ck-item:hover{background:rgba(139,156,255,.16)}
+.ck-empty{padding:12px;opacity:.5;text-align:center}
