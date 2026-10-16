@@ -297,3 +297,18 @@ textarea.glass.liquidglass-variant {
   background-repeat: no-repeat !important;
   color: var(--tx);
 }
+
+
+/* Keep the non-canvas interface achromatic; the workflow canvas retains its category colors. */
+.save.busy, .save.err, .note,
+.pill.running, .pill.completed, .pill.failed, .pill.stopping,
+.recent .er, .recent .wa,
+.lr.info .lv, .lr.warn .lv, .lr.error .lv, .lr.error .ms,
+.er, .window-control.close:hover {
+  color: var(--tx) !important;
+}
+.res u { background: var(--mu) !important; }
+.mi.on, .mi:hover, .ck-item.on, .ck-item:hover,
+.tbl tr[data-act=open]:hover {
+  background: rgba(255,255,255,.06) !important;
+}
