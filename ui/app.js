@@ -1,4 +1,5 @@
 import { Editor } from './editor.js';
+import { BLOCKS, registerSpecs } from './blocks.js';
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -96,7 +97,7 @@ async function testBlock(nodeId) {
   const a = S.autos.find(x => x.id === S.editId);
   const n = a && a.nodes.find(x => x.id === nodeId);
   if (!n) return;
-  if (n.kind.startsWith('act.')) {
+if (BLOCKS[n.kind]?.cat === 'act') {
     const c = await modal({
       title: 'Test this block?',
       body: "Actions run for real (for example a trim or a launch). The test uses the block's current settings and wired targets.",
@@ -150,6 +151,7 @@ const ck = { items: [], i: 0 };
 function ckCommands() {
   const go = v => () => { if (S.view === 'editor') flushSaves(); show(v); };
   const c = [
+{ t: 'Manage custom blocks…', k: 'Blocks', f: openBlocksManager },
     { t: 'New automation', k: 'Action', f: newAuto },
     { t: 'Import automation…', k: 'Action', f: importAuto },
     { t: 'Go to Overview', k: 'View', f: go('overview') },
@@ -209,7 +211,7 @@ const HELP = `<div class="help">
 <b>Connect:</b> drag from a colored port — green IF, red ELSE, blue AFTER. Press 1 / 2 / 3 while dragging to switch type. Drop on empty space to create a connected block. Teal port = bind a Target block.<br>
 <b>Wires:</b> click a wire to change its type, delete it, or drag its white dot to reroute.<br>
 <b>Select:</b> click, Ctrl/Shift-click, or Shift/Ctrl-drag a box. <b>Pan:</b> drag empty space, middle-drag, or Space-drag. <b>Zoom:</b> scroll wheel.<br>
-<b>Keys:</b> Ctrl+C / Ctrl+V (keeps internal wires), Ctrl+D duplicate, Ctrl+A select all, Del delete, Esc deselect.<br>
+<b>Keys:</b> Ctrl+C / Ctrl+V (keeps internal wires), Ctrl+D duplicate, Ctrl+A select all, B disable, Del delete, Esc deselect. Blocks cannot overlap while dragging; hold Alt to move through other blocks.<br>
 <b>Logic:</b> a satisfied block follows IF + AFTER wires; an unsatisfied one follows ELSE + AFTER. A failed block follows its "On failure" setting. Several wires from one port run in parallel.
 </div>`;
 
@@ -558,8 +560,66 @@ $('#set-autostart').addEventListener('change', async e => {
   catch (err) { e.target.checked = !want; toast('Could not change launch-at-sign-in: ' + err, 'err'); }
 });
 
+// ---------- custom blocks ----------
+function htmlModal(title, html, buttons) {
+  return new Promise(res => {
+    const m = $('#modal');
+    m.innerHTML = `<div class="mbox glass wide"><h3>${esc(title)}</h3><div class="mbody">${html}</div><div class="mbtn">${buttons.map(([v, l, c]) => `<button class="btn ${c || ''}" data-v="${v}">${esc(l)}</button>`).join('')}</div></div>`;
+    m.hidden = false;
+    m.onclick = e => {
+      const b = e.target.closest('button');
+      if (b || e.target === m) { m.hidden = true; m.innerHTML = ''; res(b ? b.dataset.v : 'cancel'); }
+    };
+  });
+}
+
+async function loadBlockSpecs() {
+  try { registerSpecs((await invoke('list_block_specs')).specs); }
+  catch (e) { toast('Could not load extra blocks: ' + e, 'err'); }
+}
+
+async function openBlocksManager() {
+  let info;
+  try { info = await invoke('list_block_specs'); } catch (e) { toast('Could not read blocks: ' + e, 'err'); return; }
+  const custom = info.specs.filter(s => s.origin === 'custom');
+  const list = custom.length
+    ? `<ul class="bp">${custom.map(s => `<li><b>${esc(s.title)}</b> <small>${esc(s.category)} · ${esc(s.kind)}</small></li>`).join('')}</ul>`
+    : '<p>No custom blocks installed yet.</p>';
+  const errs = info.errors.length ? `<p class="er">${info.errors.map(esc).join('<br>')}</p>` : '';
+  const c = await htmlModal('Custom blocks',
+    `<p>Folder: <code>${esc(info.dir)}</code></p>${list}${errs}<p>Custom blocks can run programs and scripts with your permissions. Only install packs you trust. See docs/ADDING_BLOCKS.md.</p>`,
+    [['close', 'Close'], ['folder', 'Open folder'], ['install', 'Install pack…', 'primary'], ['reload', 'Reload (restarts 00047)']]);
+  if (c === 'folder') invoke('open_blocks_folder').catch(e => toast(String(e), 'err'));
+  else if (c === 'install') installPack();
+  else if (c === 'reload') reloadBlocks();
+}
+
+async function installPack() {
+  try {
+    const pv = await invoke('block_pack_preview');
+    if (!pv) return;
+    const rows = pv.blocks.map(b => `<li><b>${esc(b.title)}</b> <small>${esc(b.category)} · ${esc(b.kind)}</small><pre>${esc(b.command)}</pre></li>`).join('');
+    const errs = pv.errors.length ? `<p class="er">Skipped: ${pv.errors.map(esc).join('<br>')}</p>` : '';
+    const c = await htmlModal(`Install "${pv.file}"?`,
+      `<p>These blocks will be able to run the following on this PC:</p><ul class="bp">${rows}</ul>${errs}`,
+      [['cancel', 'Cancel'], ['go', 'Install', 'primary']]);
+    if (c !== 'go') return;
+    await invoke('block_pack_install', { path: pv.path });
+    toast('Installed. Choose "Reload" in Custom blocks to load it.');
+  } catch (e) { toast('Install failed: ' + e, 'err'); }
+}
+
+async function reloadBlocks() {
+  const c = await modal({ title: 'Restart 00047?', body: 'Running automations are stopped and the app restarts to load changed blocks.', buttons: [['cancel', 'Cancel'], ['go', 'Restart', 'primary']] });
+  if (c !== 'go') return;
+  await flushSaves();
+  try { await invoke('restart_app'); } catch (e) { toast('Restart failed: ' + e, 'err'); }
+}
+$('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
+
 // ---------- init ----------
 (async function init() {
+  await loadBlockSpecs();
   try {
     S.autos = await invoke('list_automations');
     await resync();
