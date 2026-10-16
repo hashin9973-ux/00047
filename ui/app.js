@@ -689,7 +689,7 @@ function createGlassGpuProcessor() {
     'float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }',
     'vec3 frosted(vec2 uv, float radius) {',
     '  vec2 px = radius / u_size;',
-    '  float a0 = hash(gl_FragCoord.xy) * 6.2831853;',
+    '  float a0 = 0.3926991; // stable sampling pattern: no per-pixel grain',
     '  vec3 c = texture2D(u_frame, cl(uv)).rgb;',
     '  float ws = 1.0;',
     '  for (int ring = 1; ring <= 3; ring++) {',
@@ -714,13 +714,7 @@ function createGlassGpuProcessor() {
     '    if (p.x >= q.x && p.y >= q.y && p.x <= q.x + q.z && p.y <= q.y + q.w) { r = q; bl = u_blurs[i]; fr = u_frost[i]; hit = true; }',
     '  }',
     '  if (hit) {',
-    '    if (fr < 0.5) {',
-    '      sampled = liquid(uv, bl);',
-    '    } else {',
-    '      vec3 c = frosted(uv, bl);',
-    '      c *= 0.92;',
-    '      sampled = clamp(c, 0.0, 1.0);',
-    '    }',
+    '    sampled = frosted(uv, bl);',
     '  }',
     '  gl_FragColor = vec4(sampled, 1.0);',
     '}'
@@ -775,7 +769,8 @@ function createGlassGpuProcessor() {
     const blurs = new Float32Array(32);
     const frosts = new Float32Array(32);
     let count = 0;
-    for (const el of document.querySelectorAll('.glass')) {
+    const materialSelector = '.glass, button:not(.window-control), input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
+    for (const el of document.querySelectorAll(materialSelector)) {
       if (el.classList.contains('top')) {
         el.classList.add('liquidglass');
         el.classList.remove('liquidglass-variant');
@@ -839,6 +834,11 @@ function startGlassBackdrop() {
         backdropFrame = gpuProcess(image, frame);
       }
       root.style.setProperty('--glass-backdrop-frame', 'url("' + backdropFrame + '")');
+      const dpr = window.devicePixelRatio || 1;
+      const cropOriginX = (frame.screenX - frame.windowX) / dpr;
+      const cropOriginY = (frame.screenY - frame.windowY) / dpr;
+      root.style.setProperty('--glass-window-frame-x', cropOriginX + 'px');
+      root.style.setProperty('--glass-window-frame-y', cropOriginY + 'px');
       updateBackdropPositions(frame);
       root.classList.add('glass-backdrop-ready');
       loggedFailure = false;
@@ -848,7 +848,7 @@ function startGlassBackdrop() {
     } finally { inFlight = false; }
   };
 
-  // Use real sampled-backdrop blur with no tint overlay: 16px shell, 18px controls and surfaces.
+  // Use real sampled-backdrop blur with no tint overlay: 16px LiquidGlass, 18px LiquidGlass Variant.
   capture();
   window.setInterval(capture, 120);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) capture(); });
