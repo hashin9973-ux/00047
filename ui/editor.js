@@ -417,18 +417,22 @@ export class Editor {
       const dx = Math.max(40, (b.x - a.x) * 0.35), mx = (a.x + b.x) / 2, my0 = (a.y + b.y) / 2;
       let bend = e.bend || 0;
       if (!bend && rs.length) {
-        let found = false;
-        for (const c of [0, 50, -50, 110, -110, 180, -180, 260, -260, 360, -360, 500, -500, 700, -700, 900, -900]) {
+        let best = null;
+        const lanes = [0, 40, -40, 80, -80, 130, -130, 200, -200, 290, -290, 400, -400, 540, -540, 700, -700, 900, -900, 1200, -1200];
+        for (const c of lanes) {
           const my = my0 + c;
           const P = [a, { x: a.x + dx, y: a.y }, { x: mx - dx * 0.8, y: my }, { x: mx, y: my }, { x: mx + dx * 0.8, y: my }, { x: b.x - dx, y: b.y }, b];
           const pts = [];
-          for (let i = 0; i <= 12; i++) {
-            pts.push(cub(P[0], P[1], P[2], P[3], i / 12));
-            pts.push(cub(P[3], P[4], P[5], P[6], i / 12));
+          for (let i = 0; i <= 16; i++) {
+            pts.push(cub(P[0], P[1], P[2], P[3], i / 16));
+            pts.push(cub(P[3], P[4], P[5], P[6], i / 16));
           }
-          if (!hitsRect(pts, rs)) { bend = c; found = true; break; }
+          const collisions = pts.reduce((n, p) => n + rs.filter(r => p.x > r[0] && p.x < r[2] && p.y > r[1] && p.y < r[3]).length, 0);
+          const score = collisions * 100000 + Math.abs(c) + (c === 0 ? 0 : 12);
+          if (!best || score < best.score) best = { c, score };
+          if (collisions === 0 && c === 0) break;
         }
-        if (!found) bend = 1000;
+        bend = best?.c ?? 1000;
       }
       const my = my0 + bend;
       return { d: `M${a.x},${a.y} C${a.x + dx},${a.y} ${mx - dx * 0.8},${my} ${mx},${my} S${b.x - dx},${b.y} ${b.x},${b.y}`, mid: { x: mx, y: my } };
