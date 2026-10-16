@@ -74,7 +74,7 @@ export class Editor {
         </div>
         <div class="marquee" hidden></div>
         <div class="edge-ui" hidden>
-          <div class="eu-bar glass"><button data-k="if">IF</button><button data-k="else">ELSE</button><button data-k="after">AFTER</button><button data-del="1" title="Delete wire">✕</button></div>
+          <div class="eu-bar glass"><button data-k="if">IF</button><button data-k="else">ELSE</button><button data-k="after">AFTER</button><button data-del="1" title="Disconnect this wire (or select it and press Delete)">✕</button></div>
           <div class="eu-handle" title="Drag to reroute"></div>
         </div>
         <div class="ctx glass" hidden></div>
@@ -359,25 +359,23 @@ export class Editor {
     else if (!hit) this.openMenu(e.clientX, e.clientY, { from: d.from, kind: d.kind });
   }
   connect(from, to, kind) {
-    let A = this.node(from), B = this.node(to);
+    const A = this.node(from), B = this.node(to);
     if (!A || !B || from === to) return false;
-    let ca = BLOCKS[A.kind]?.cat, cb = BLOCKS[B.kind]?.cat;
+    const ca = BLOCKS[A.kind]?.cat, cb = BLOCKS[B.kind]?.cat;
 
-    // Target blocks are data sources, not execution steps. Allow either drag direction
-    // in the UI, but store the wire in the canonical target -> consumer direction.
-    if (ca !== 'tgt' && cb === 'tgt' && kind !== 'target') {
-      [from, to] = [to, from];
-      [A, B] = [B, A];
-      [ca, cb] = [cb, ca];
-      kind = 'target';
-    }
-
+    // IF / ELSE / AFTER wires keep their direction when they enter a Target.
+    // The teal Target output creates a target-binding edge and continues execution
+    // into the consumer, so Target blocks can sit in a normal workflow chain.
     if (kind === 'target') {
-      if (ca !== 'tgt' || cb === 'tgt') { this.hooks.toast('A Target block can only feed a Condition or an Action.'); return false; }
-    } else if (ca === 'tgt' || cb === 'tgt') {
-      this.hooks.toast('IF / ELSE / AFTER wires connect Conditions and Actions. Drop a Condition or Action wire onto a Target block to bind it.');
+      if (ca !== 'tgt' || cb === 'tgt') {
+        this.hooks.toast('Drag from a Target block’s teal output to a Condition or Action.');
+        return false;
+      }
+    } else if (!['if', 'else', 'after'].includes(kind) || ca === 'tgt') {
+      this.hooks.toast('Use IF / ELSE / AFTER outputs for flow, and the teal output for a Target connection.');
       return false;
     }
+
     if (this.auto.edges.some(e => e.from === from && e.to === to && e.kind === kind)) return false;
     this.auto.edges.push({ id: uid(), from, to, kind, bend: 0 });
     this.refreshAll(); this.scheduleWires(); this.changed();
@@ -479,8 +477,8 @@ export class Editor {
     el.style.setProperty('--c', CATS[def.cat].color);
     const isT = def.cat === 'tgt';
     const ports = isT
-      ? `<i class="port in tgt-in" title="Drop a Condition or Action wire here to bind this target"></i>
-         <i class="port out tgt" data-t="target" title="Drag to a Condition or Action to bind this target"></i>`
+      ? `<i class="port in tgt-in" title="IF / ELSE / AFTER flow input"></i>
+         <i class="port out tgt" data-t="target" title="Target output: bind this target and continue the workflow"></i>`
       : `<i class="port in" title="Input"></i>
          <i class="port out if" data-t="if" title="IF: follow when satisfied"></i>
          <i class="port out else" data-t="else" title="ELSE: follow when not satisfied"></i>
@@ -551,8 +549,9 @@ export class Editor {
     if (!def) return ['Unknown block type'];
     const out = validate(n.kind, n.cfg);
     if (def.requires) {
-      const ok = this.auto.edges.some(e => e.kind === 'target' && e.to === n.id && this.node(e.from)?.kind === def.requires);
-      if (!ok) out.push(`Wire a "${BLOCKS[def.requires].title}" target into this block`);
+      const inbound = this.auto.edges.some(e => e.kind === 'target' && e.to === n.id && this.node(e.from)?.kind === def.requires);
+      const chained = this.auto.edges.some(e => e.from === n.id && e.kind !== 'target' && this.node(e.to)?.kind === def.requires);
+      if (!inbound && !chained) out.push(`Connect a "${BLOCKS[def.requires].title}" target to this block or directly after it`);
     }
     return out;
   }

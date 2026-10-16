@@ -411,10 +411,25 @@ fn short(n: &Node) -> String {
 fn resolve_targets(a: &Automation, id: &str) -> Result<Vec<Target>, String> {
     let reg = registry();
     let mut v = vec![];
+
+    // Prefer explicit teal target wires (legacy and direct-binding form).
     for e in a.edges.iter().filter(|e| e.kind == "target" && e.to == id) {
         let src = a.nodes.iter().find(|n| n.id == e.from).ok_or("a wired target block is missing")?;
         let b = reg.get(src.kind.as_str()).ok_or("unknown target block type")?;
         v.push(b.resolve(&src.cfg)?);
+    }
+
+    // Also support a Target placed directly after a step in the flow:
+    // Start -> File Target -> Condition. The Start action resolves the File
+    // target from its outgoing flow edge before execution continues through it.
+    if v.is_empty() {
+        for e in a.edges.iter().filter(|e| e.from == id && e.kind != "target") {
+            let Some(dst) = a.nodes.iter().find(|n| n.id == e.to) else { continue };
+            let Some(b) = reg.get(dst.kind.as_str()) else { continue };
+            if b.category() == Cat::Target {
+                v.push(b.resolve(&dst.cfg)?);
+            }
+        }
     }
     Ok(v)
 }
@@ -423,8 +438,13 @@ pub fn entry_nodes(a: &Automation) -> Vec<String> {
     let reg = registry();
     a.nodes
         .iter()
-        .filter(|n| reg.get(n.kind.as_str()).map(|b| b.category() != Cat::Target).unwrap_or(false))
-        .filter(|n| !a.edges.iter().any(|e| e.to == n.id && e.kind != "target"))
+        .filter(|n| {
+            let is_target = reg.get(n.kind.as_str()).map(|b| b.category() == Cat::Target).unwrap_or(false);
+            // A Target can start a chain when its teal output is connected, but not when
+            // another step already flows into it.
+            !is_target || a.edges.iter().any(|e| e.from == n.id && e.kind == "target")
+        })
+        .filter(|n| !a.edges.iter().any(|e| e.to == n.id))
         .map(|n| n.id.clone())
         .collect()
 }
@@ -445,8 +465,13 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
             errs.push(format!("{} {}: {e}", b.title(), short(n)));
         }
         if let Some(req) = b.requires_target() {
-            let ok = a.edges.iter().any(|e| e.kind == "target" && e.to == n.id && find(&e.from).map(|s| s.kind == req).unwrap_or(false));
-            if !ok {
+            let wired_before = a.edges.iter().any(|e| {
+                e.kind == "target" && e.to == n.id && find(&e.from).map(|s| s.kind == req).unwrap_or(false)
+            });
+            let wired_after = a.edges.iter().any(|e| {
+                e.from == n.id && e.kind != "target" && find(&e.to).map(|s| s.kind == req).unwrap_or(false)
+            });
+            if !wired_before && !wired_after {
                 errs.push(format!("{} {} needs a connected {} block", b.title(), short(n), if req == "tgt.file" { "File" } else { "Active process" }));
             }
         }
@@ -462,14 +487,14 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
             if fc != Some(Cat::Target) || tc == Some(Cat::Target) {
                 errs.push(format!("invalid target wire {} -> {}", short(f), short(t)));
             }
-        } else if fc == Some(Cat::Target) || tc == Some(Cat::Target) {
-            errs.push(format!("IF/ELSE/AFTER wire {} -> {} touches a Target block", short(f), short(t)));
+        } else if fc == Some(Cat::Target) {
+            errs.push(format!("IF/ELSE/AFTER wire cannot start at Target block {} (use its teal output)", short(f)));
         } else if !["if", "else", "after"].contains(&e.kind.as_str()) {
             errs.push(format!("unknown wire type '{}'", e.kind));
         }
     }
     if entry_nodes(a).is_empty() {
-        errs.push("no start block: add a Condition or Action that has no incoming IF/ELSE/AFTER wire (for example an Interval)".into());
+        errs.push("no start block: add a Condition or Action with no incoming wire, or a Target with a connected teal output".into());
     }
     if errs.is_empty() {
         Ok(())
@@ -595,8 +620,13 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     let dt = t0.elapsed().as_secs_f64();
     match res {
         Ok(o) => {
-            let (txt, kinds): (&str, &[&str]) =
-                if o == Outcome::Satisfied { ("satisfied", &["if", "after"]) } else { ("not satisfied", &["else", "after"]) };
+            let (txt, kinds): (&str, &[&str]) = if blk.category() == Cat::Target {
+                ("passed through", &["target"])
+            } else if o == Outcome::Satisfied {
+                ("satisfied", &["if", "after"])
+            } else {
+                ("not satisfied", &["else", "after"])
+            };
             if node.kind == "act.loop" && o == Outcome::NotSatisfied {
                 ctx.visits.lock().unwrap().remove(&node.id);
             }

@@ -442,12 +442,17 @@ impl Block for LogMsg {
 
 // ---------- Targets ----------
 struct ProcessTarget;
+#[async_trait]
 impl Block for ProcessTarget {
     fn title(&self) -> &'static str {
         "Active process"
     }
     fn category(&self) -> Cat {
         Cat::Target
+    }
+    async fn run(&self, _cx: &NodeCx) -> Result<Outcome, String> {
+        // A Target is a pass-through workflow step; consumers resolve its value when they run.
+        Ok(Outcome::Satisfied)
     }
     fn validate(&self, c: &Value) -> Result<(), String> {
         if text(c, "mode") == "name" && text(c, "name").is_empty() {
@@ -470,12 +475,17 @@ impl Block for ProcessTarget {
 }
 
 struct FileTarget;
+#[async_trait]
 impl Block for FileTarget {
     fn title(&self) -> &'static str {
         "File"
     }
     fn category(&self) -> Cat {
         Cat::Target
+    }
+    async fn run(&self, _cx: &NodeCx) -> Result<Outcome, String> {
+        // A Target is a pass-through workflow step; consumers resolve its value when they run.
+        Ok(Outcome::Satisfied)
     }
     fn validate(&self, c: &Value) -> Result<(), String> {
         if text(c, "path").is_empty() {

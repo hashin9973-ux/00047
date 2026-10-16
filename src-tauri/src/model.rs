@@ -20,7 +20,7 @@ pub struct Edge {
     pub id: String,
     pub from: String,
     pub to: String,
-    /// "if" | "else" | "after" (flow) or "target" (binds a Target block to a Condition/Action)
+    /// "if" | "else" | "after" (flow into a node, including a Target) or "target" (binds and passes through a Target to a Condition/Action)
     pub kind: String,
     #[serde(default)]
     pub bend: f64,
