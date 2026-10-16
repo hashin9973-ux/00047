@@ -41,6 +41,28 @@ const cub = (p0, p1, p2, p3, t) => {
 };
 const hitsRect = (pts, rs) => pts.some(p => rs.some(r => p.x > r[0] && p.x < r[2] && p.y > r[1] && p.y < r[3]));
 
+const GAP = 20; // minimum space kept between blocks
+const polyPts = poly => {
+  const out = [];
+  for (let i = 0; i < poly.length - 1; i++) {
+    const [x0, y0] = poly[i], [x1, y1] = poly[i + 1];
+    const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 10));
+    for (let k = 0; k <= n; k++) out.push({ x: x0 + (x1 - x0) * k / n, y: y0 + (y1 - y0) * k / n });
+  }
+  return out;
+};
+const countHits = (pts, rs) => {
+  let n = 0;
+  for (const p of pts) for (const r of rs) if (p.x > r[0] && p.x < r[2] && p.y > r[1] && p.y < r[3]) { n++; break; }
+  return n;
+};
+// candidate offsets around a point, nearest first (used to find free canvas space)
+const OFFS = (() => {
+  const a = [];
+  for (let i = -20; i <= 20; i++) for (let j = -20; j <= 20; j++) a.push([i * 24, j * 24]);
+  return a.sort((p, q) => Math.hypot(p[0], p[1]) - Math.hypot(q[0], q[1]));
+})();
+
 export class Editor {
   constructor(host, hooks) {
     this.host = host;
@@ -198,6 +220,58 @@ export class Editor {
   }
   place(id) { const n = this.node(id), el = this.els.get(id); if (n && el) el.style.transform = `translate(${n.x}px,${n.y}px)`; }
 
+  rectOf(n) { return { x: n.x, y: n.y, w: W, h: this.hOf(n.id) }; }
+  collide(a, b) { return a.x < b.x + b.w + GAP && a.x + a.w + GAP > b.x && a.y < b.y + b.h + GAP && a.y + a.h + GAP > b.y; }
+
+  /** Would moving the dragged group by (dx, dy) overlap a block that is not part of the drag? */
+  blocked(d, dx, dy) {
+    for (const [id, o] of d.orig) {
+      const r = { x: o.x + dx, y: o.y + dy, w: W, h: this.hOf(id) };
+      for (const q of this.auto.nodes) {
+        if (d.orig.has(q.id) || d.ignore.has(q.id)) continue;
+        if (this.collide(r, this.rectOf(q))) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Moves the group toward the pointer in small steps, sliding along obstacles instead of passing through. */
+  stepGroup(d, tx, ty) {
+    let cx = d.cx, cy = d.cy;
+    const n = Math.max(1, Math.ceil(Math.hypot(tx - cx, ty - cy) / 12));
+    const sx = (tx - cx) / n, sy = (ty - cy) / n;
+    for (let i = 0; i < n; i++) {
+      if (!this.blocked(d, cx + sx, cy + sy)) { cx += sx; cy += sy; }
+      else if (sx && !this.blocked(d, cx + sx, cy)) cx += sx;
+      else if (sy && !this.blocked(d, cx, cy + sy)) cy += sy;
+      else break;
+    }
+    d.cx = cx; d.cy = cy;
+  }
+
+  freeSpot(x, y, w, h, ignore) {
+    const others = this.auto.nodes.filter(n => !ignore.has(n.id)).map(n => this.rectOf(n));
+    for (const [ox, oy] of OFFS) {
+      const r = { x: x + ox, y: y + oy, w, h };
+      if (!others.some(q => this.collide(r, q))) return { x: r.x, y: r.y };
+    }
+    return { x, y };
+  }
+
+  /** After a block grows (expanded / fields shown), push blocks below it out of the way. */
+  pushApart(id, depth = 0) {
+    if (depth > 40) return;
+    const n = this.node(id); if (!n) return;
+    const r = this.rectOf(n);
+    for (const o of this.auto.nodes) {
+      if (o.id === id) continue;
+      const q = this.rectOf(o);
+      if (this.collide(r, q) && q.y + q.h / 2 >= r.y + r.h / 2) {
+        o.y = r.y + r.h + GAP; this.place(o.id); this.pushApart(o.id, depth + 1);
+      }
+    }
+  }
+
   applyVp() {
     const { x, y, k } = this.vp;
     this.world.style.transform = `translate(${x}px,${y}px) scale(${k})`;
@@ -249,9 +323,13 @@ export class Editor {
       const mod = e.ctrlKey || e.metaKey || e.shiftKey;
       if (mod) this.toggle(id); else if (!this.sel.has(id)) this.select([id]);
       if (!this.sel.has(id)) return;
-      this.drag = {
-        t: 'nodes', sx: e.clientX, sy: e.clientY, moved: false, id, mod,
-        orig: new Map([...this.sel].map(i => { const n = this.node(i); return [i, { x: n.x, y: n.y }]; })),
+      const orig = new Map([...this.sel].map(i => { const n = this.node(i); return [i, { x: n.x, y: n.y }]; }));
+      const ignore = new Set(); // blocks already touching the dragged ones do not block the drag
+      for (const [oid, o] of orig) {
+        const r = { x: o.x, y: o.y, w: W, h: this.hOf(oid) };
+        for (const q of this.auto.nodes) if (!orig.has(q.id) && this.collide(r, this.rectOf(q))) ignore.add(q.id);
+      }
+      this.drag = { t: 'nodes', sx: e.clientX, sy: e.clientY, moved: false, id, mod, orig, ignore, cx: 0, cy: 0 };
       };
       this.cv.setPointerCapture(e.pointerId); e.preventDefault();
       return;
@@ -274,8 +352,9 @@ export class Editor {
     if (d.t === 'nodes') {
       if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 3) return;
       d.moved = true;
-      const dx = (e.clientX - d.sx) / this.vp.k, dy = (e.clientY - d.sy) / this.vp.k;
-      for (const [id, o] of d.orig) { const n = this.node(id); n.x = Math.round(o.x + dx); n.y = Math.round(o.y + dy); this.place(id); }
+      const tx = (e.clientX - d.sx) / this.vp.k, ty = (e.clientY - d.sy) / this.vp.k;
+      if (e.altKey) { d.cx = tx; d.cy = ty; } else this.stepGroup(d, tx, ty); // Alt = move through other blocks
+      for (const [id, o] of d.orig) { const n = this.node(id); n.x = Math.round(o.x + d.cx); n.y = Math.round(o.y + d.cy); this.place(id); }
       this.scheduleWires();
     } else if (d.t === 'pan') {
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) > 2) d.moved = true;
@@ -390,7 +469,7 @@ export class Editor {
         this.hooks.toast('Use IF / ELSE / AFTER outputs for flow, and the teal output for a Target connection.');
         return false;
       }
-      if (ca === 'act.loop') {
+if (A.kind === 'act.loop') {
         this.hooks.toast('Loop returns to Start automatically and has no output wires.');
         return false;
       }
@@ -405,51 +484,71 @@ export class Editor {
   // ---------- wires ----------
   scheduleWires() { if (!this.raf) this.raf = requestAnimationFrame(() => { this.raf = 0; this.drawWires(); }); }
 
+  hOf(id) { return this.els.get(id)?.offsetHeight || 90; }
+
   calcRects() {
-    return this.auto.nodes.map(n => ({ id: n.id, r: [n.x - 8, n.y - 8, n.x + W + 8, n.y + (this.els.get(n.id)?.offsetHeight || 90) + 8] }));
+    return this.auto.nodes.map(n => ({ id: n.id, r: [n.x - 10, n.y - 10, n.x + W + 10, n.y + this.hOf(n.id) + 10] }));
   }
 
   route(e, f, t) {
     const a = { x: f.x + W, y: f.y + PORT[e.kind === 'target' ? 'tgt' : e.kind] };
     const b = { x: t.x, y: t.y + PORT.in };
     const rs = (this.rcache || (this.rcache = this.calcRects())).filter(o => o.id !== f.id && o.id !== t.id).map(o => o.r);
-    if (b.x - a.x >= 70) {
-      const dx = Math.max(40, (b.x - a.x) * 0.35), mx = (a.x + b.x) / 2, my0 = (a.y + b.y) / 2;
-      let bend = e.bend || 0;
-      if (!bend && rs.length) {
-        let best = null;
-        const lanes = [0, 40, -40, 80, -80, 130, -130, 200, -200, 290, -290, 400, -400, 540, -540, 700, -700, 900, -900, 1200, -1200];
-        for (const c of lanes) {
-          const my = my0 + c;
-          const P = [a, { x: a.x + dx, y: a.y }, { x: mx - dx * 0.8, y: my }, { x: mx, y: my }, { x: mx + dx * 0.8, y: my }, { x: b.x - dx, y: b.y }, b];
-          const pts = [];
-          for (let i = 0; i <= 16; i++) {
-            pts.push(cub(P[0], P[1], P[2], P[3], i / 16));
-            pts.push(cub(P[3], P[4], P[5], P[6], i / 16));
-          }
-          const collisions = pts.reduce((n, p) => n + rs.filter(r => p.x > r[0] && p.x < r[2] && p.y > r[1] && p.y < r[3]).length, 0);
-          const score = collisions * 100000 + Math.abs(c) + (c === 0 ? 0 : 12);
-          if (!best || score < best.score) best = { c, score };
-          if (collisions === 0 && c === 0) break;
+    const bend = e.bend || 0, dxp = b.x - a.x;
+
+    if (dxp >= 60) {
+      const mx = (a.x + b.x) / 2, my0 = (a.y + b.y) / 2;
+      const direct = () => {
+        const c = clamp(dxp * 0.45, 28, 110);
+        const P = [a, { x: a.x + c, y: a.y }, { x: b.x - c, y: b.y }, b];
+        const pts = [];
+        for (let i = 0; i <= 20; i++) pts.push(cub(P[0], P[1], P[2], P[3], i / 20));
+        return { d: `M${a.x},${a.y} C${P[1].x},${P[1].y} ${P[2].x},${P[2].y} ${b.x},${b.y}`, mid: cub(P[0], P[1], P[2], P[3], 0.5), pts };
+      };
+      const via = off => {
+        const c = clamp(dxp * 0.3, 24, 90), my = my0 + off;
+        const P = [a, { x: a.x + c, y: a.y }, { x: mx - c * 0.8, y: my }, { x: mx, y: my }, { x: mx + c * 0.8, y: my }, { x: b.x - c, y: b.y }, b];
+        const pts = [];
+        for (let i = 0; i <= 12; i++) { pts.push(cub(P[0], P[1], P[2], P[3], i / 12)); pts.push(cub(P[3], P[4], P[5], P[6], i / 12)); }
+        return { d: `M${a.x},${a.y} C${P[1].x},${P[1].y} ${P[2].x},${P[2].y} ${mx},${my} S${P[5].x},${P[5].y} ${b.x},${b.y}`, mid: { x: mx, y: my }, pts };
+      };
+      if (bend) return via(bend);
+      let best = direct(), bestScore = countHits(best.pts, rs) * 1000;
+      if (bestScore) {
+        for (const off of [30, -30, 60, -60, 100, -100, 150, -150]) {
+          const c = via(off), s = countHits(c.pts, rs) * 1000 + Math.abs(off);
+          if (s < bestScore) { best = c; bestScore = s; if (s < 1000) break; }
         }
-        bend = best?.c ?? 1000;
       }
-      const my = my0 + bend;
-      return { d: `M${a.x},${a.y} C${a.x + dx},${a.y} ${mx - dx * 0.8},${my} ${mx},${my} S${b.x - dx},${b.y} ${b.x},${b.y}`, mid: { x: mx, y: my } };
+      return best;
     }
-    // Backward or overlapping connections use an orthogonal lane below the blocks.
-    const hf = this.els.get(f.id)?.offsetHeight || 90, ht = this.els.get(t.id)?.offsetHeight || 90;
-    let low = Math.max(f.y + hf, t.y + ht) + 36;
-    const x1 = a.x + 30, x2 = b.x - 30;
-    if (e.bend) low += e.bend;
-    else {
-      const lo = Math.min(x1, x2), hi = Math.max(x1, x2);
-      for (let i = 0; i < 12; i++) {
-        if (!rs.some(r => r[0] < hi && r[2] > lo && low > r[1] && low < r[3])) break;
-        low += 50;
+
+    // Close or backward blocks: compact orthogonal route through the gap between them, else around them.
+    const x1 = a.x + 22, x2 = b.x - 22;
+    const fTop = f.y, fBot = f.y + this.hOf(f.id), tTop = t.y, tBot = t.y + this.hOf(t.id);
+    const lanes = [];
+    if (tTop > fBot + 14) lanes.push((fBot + tTop) / 2);
+    else if (fTop > tBot + 14) lanes.push((tBot + fTop) / 2);
+    const hasGap = lanes.length === 1;
+    const over = Math.min(fTop, tTop) - 26;
+    lanes.push(Math.max(fBot, tBot) + 26, over);
+    const mk = lane => {
+      const poly = [[a.x, a.y], [x1, a.y], [x1, lane], [x2, lane], [x2, b.y], [b.x, b.y]];
+      return { d: rounded(poly, 12), mid: { x: (x1 + x2) / 2, y: lane }, pts: polyPts(poly) };
+    };
+    if (bend) return mk(lanes[0] + bend);
+    let best = null;
+    for (let li = 0; li < lanes.length; li++) {
+      const lane = lanes[li], maxK = hasGap && li === 0 ? 1 : 5, dir = lane === over ? -1 : 1;
+      for (let k = 0; k < maxK; k++) {
+        const y = lane + dir * 28 * k, c = mk(y);
+        const s = countHits(c.pts, rs) * 1000 + Math.abs(y - (a.y + b.y) / 2) * 0.2 + (li === 0 ? 0 : 5);
+        if (!best || s < best.s) best = { c, s };
+        if (s < 1000) break;
       }
+      if (best && best.s < 1000) break;
     }
-    return { d: rounded([[a.x, a.y], [x1, a.y], [x1, low], [x2, low], [x2, b.y], [b.x, b.y]]), mid: { x: (x1 + x2) / 2, y: low } };
+    return best.c;
   }
 
   drawWires() {
@@ -530,8 +629,10 @@ export class Editor {
   toggleCollapse(n) {
     n.collapsed = !n.collapsed;
     this.els.get(n.id)?.classList.toggle('collapsed', n.collapsed);
+    if (!n.collapsed) this.pushApart(n.id);
     this.scheduleWires(); this.changed();
   }
+
 
   buildFields(n, el, def) {
     const body = el.querySelector('.n-body');
@@ -549,7 +650,7 @@ export class Editor {
         row.classList.add('chk'); row.prepend(inp);
       } else {
         inp = document.createElement('input');
-        inp.type = f.type === 'number' ? 'number' : 'text';
+        inp.type = f.type === 'number' ? 'number' : f.type === 'time' ? 'time' : 'text';
         if (f.type === 'number') { inp.min = f.min; inp.max = f.max; inp.step = f.step || 1; }
         if (f.placeholder) inp.placeholder = f.placeholder;
         inp.spellcheck = false;
@@ -557,7 +658,7 @@ export class Editor {
       }
       inp.addEventListener(f.type === 'select' || f.type === 'bool' ? 'change' : 'input', () => {
         n.cfg[f.key] = f.type === 'bool' ? inp.checked : f.type === 'number' ? (inp.value === '' ? null : Number(inp.value)) : inp.value;
-        this.refresh(n); this.changed('f' + n.id + f.key);
+this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id + f.key);
       });
       if (f.type !== 'bool') row.appendChild(inp);
       if (f.type === 'file') {
@@ -667,9 +768,12 @@ export class Editor {
     const n = { id: uid(), kind, x: Math.round(wp.x), y: Math.round(wp.y), collapsed: false, disabled: false, cfg: structuredClone(def.defaults) };
     if (pending) { n.x = Math.round(wp.x + 30); n.y = Math.round(wp.y - PORT.in); }
     this.auto.nodes.push(n); this.addEl(n);
+    const p = this.freeSpot(n.x, n.y, W, this.hOf(n.id), new Set([n.id]));
+    n.x = Math.round(p.x); n.y = Math.round(p.y); this.place(n.id);
     if (pending) this.connect(pending.from, n.id, pending.kind);
     this.select([n.id]); this.refreshAll(); this.changed();
   }
+
 
   deleteSel() {
     if (this.selEdge) {
@@ -690,7 +794,7 @@ export class Editor {
     if (!this.sel.size) return;
     const ids = this.sel;
     this.clip = {
-      nodes: this.auto.nodes.filter(n => ids.has(n.id)).map(n => structuredClone(n)),
+      nodes: this.auto.nodes.filter(n => ids.has(n.id)).map(n => Object.assign(structuredClone(n), { _h: this.hOf(n.id) })),
       edges: this.auto.edges.filter(e => ids.has(e.from) && ids.has(e.to)).map(e => structuredClone(e)),
     };
   }
@@ -699,10 +803,17 @@ export class Editor {
     const c = this.clip;
     if (!c || !c.nodes.length) return;
     const minX = Math.min(...c.nodes.map(n => n.x)), minY = Math.min(...c.nodes.map(n => n.y));
-    const ox = at ? Math.round(at.x - minX) : 40, oy = at ? Math.round(at.y - minY) : 40;
+    const bx = at ? at.x - minX : 40, by = at ? at.y - minY : 40;
+    const fits = (ox, oy) => !c.nodes.some(n => {
+      const r = { x: n.x + ox, y: n.y + oy, w: W, h: n._h || 90 };
+      return this.auto.nodes.some(q => this.collide(r, this.rectOf(q)));
+    });
+    let ox = Math.round(bx), oy = Math.round(by);
+    for (const [dx, dy] of OFFS) { if (fits(bx + dx, by + dy)) { ox = Math.round(bx + dx); oy = Math.round(by + dy); break; } }
     const map = new Map(), created = [];
     for (const n of c.nodes) {
-      const m = structuredClone(n); m.id = uid(); m.x = n.x + ox; m.y = n.y + oy;
+      const m = structuredClone(n); delete m._h;
+      m.id = uid(); m.x = n.x + ox; m.y = n.y + oy;
       map.set(n.id, m.id); created.push(m.id);
       this.auto.nodes.push(m); this.addEl(m);
     }
@@ -710,6 +821,7 @@ export class Editor {
     if (!at) c.nodes.forEach(n => { n.x += ox; n.y += oy; });
     this.select(created); this.refreshAll(); this.scheduleWires(); this.changed();
   }
+
 
   duplicate() { this.copy(); this.paste(null); }
 
