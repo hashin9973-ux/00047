@@ -778,7 +778,6 @@ function createGlassGpuProcessor() {
 function startGlassBackdrop() {
   if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
   const root = document.documentElement;
-  document.body.classList.add('liquidglass');
   let inFlight = false;
   let loggedFailure = false;
   let gpuProcess;
@@ -813,11 +812,6 @@ function startGlassBackdrop() {
         backdropFrame = gpuProcess(image, frame);
       }
       root.style.setProperty('--glass-backdrop-frame', 'url("' + backdropFrame + '")');
-      const dpr = window.devicePixelRatio || 1;
-      const cropOriginX = (frame.screenX - frame.windowX) / dpr;
-      const cropOriginY = (frame.screenY - frame.windowY) / dpr;
-      root.style.setProperty('--glass-window-frame-x', cropOriginX + 'px');
-      root.style.setProperty('--glass-window-frame-y', cropOriginY + 'px');
       updateBackdropPositions(frame);
       root.classList.add('glass-backdrop-ready');
       loggedFailure = false;
