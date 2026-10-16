@@ -89,9 +89,32 @@ const editor = new Editor($('#ed-host'), {
   },
   toast,
   pickFile: async () => { try { return await invoke('pick_file'); } catch (e) { toast('File picker failed: ' + e, 'err'); return null; } },
+  testBlock: id => testBlock(id),
 });
 $('#ed-undo').addEventListener('click', () => editor.doUndo());
 $('#ed-redo').addEventListener('click', () => editor.doRedo());
+
+async function testBlock(nodeId) {
+  const a = S.autos.find(x => x.id === S.editId);
+  const n = a && a.nodes.find(x => x.id === nodeId);
+  if (!n) return;
+  if (n.kind.startsWith('act.')) {
+    const c = await modal({
+      title: 'Test this block?',
+      body: "Actions run for real (for example, memory trimming or launching a program). The test uses this block's current settings and wired targets.",
+      buttons: [['cancel', 'Cancel'], ['go', 'Run test', 'primary']],
+    });
+    if (c !== 'go') return;
+  }
+  toast('Testing…');
+  try {
+    const result = await invoke('test_block', { auto: JSON.parse(JSON.stringify(a)), nodeId });
+    toast('Test result: ' + result);
+  } catch (e) {
+    toast('Test failed: ' + String(e?.message || e).split('\n').join(' • '), 'err');
+  }
+}
+
 
 const HELP = `<div class="help">
 <b>Add a block:</b> right-click the canvas (or press + Block), type to search, Enter to place.<br>
