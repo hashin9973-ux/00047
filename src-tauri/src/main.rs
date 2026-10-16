@@ -182,6 +182,17 @@ async fn import_automation(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Resul
     Ok(Some(a))
 }
 
+#[tauri::command]
+async fn export_logs(app: AppHandle, csv: String) -> Result<bool, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().add_filter("CSV", &["csv"]).set_file_name("00047-logs.csv")
+        .save_file(move |p| { let _ = tx.send(p); });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(false) };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(path, format!("\u{feff}{csv}")).map_err(|e| format!("write file: {e}"))?;
+    Ok(true)
+}
+
 // ---------- helpers ----------
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -245,6 +256,7 @@ fn main() {
             pick_file,
             export_automation,
             import_automation,
+            export_logs,
             test_block
         ])
         .setup(|app| {
