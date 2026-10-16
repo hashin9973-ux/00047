@@ -291,3 +291,10 @@ textarea.glass.liquidglass-variant {
 .tbl tr[data-act=open]:hover {
   background: rgba(255,255,255,.06) !important;
 }
+
+
+/* App background material: keep WebView pixels transparent so Windows' native Acrylic backdrop is visible. */
+body.liquidglass {
+  background: transparent !important;
+  background-color: transparent !important;
+}
