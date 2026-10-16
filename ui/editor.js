@@ -232,7 +232,7 @@ export class Editor {
       this.auto.edges = this.auto.edges.filter(e => e.id !== id);
       if (this.selEdge === id) this.selEdge = null;
       this.refreshAll(); this.scheduleWires(); this.changed();
-    }, 260);
+    }, 360);
   }
 
   // ---------- pointer ----------
