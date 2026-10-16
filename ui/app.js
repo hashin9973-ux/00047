@@ -778,7 +778,7 @@ function createGlassGpuProcessor() {
     frosts[0] = 0;
     let count = 1;
 
-    const materialSelector = '.glass, button:not(.window-control), input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
+    const materialSelector = '.glass, button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
     for (const el of document.querySelectorAll(materialSelector)) {
       if (el.classList.contains('top')) {
         el.classList.add('liquidglass');
