@@ -764,6 +764,9 @@ function startGlassBackdrop() {
   let loggedFailure = false;
   let gpuProcess;
   try { gpuProcess = createGlassGpuProcessor(); } catch (error) { console.warn('Could not start glass backdrop blur:', error); }
+  // Never present the raw desktop capture as a glass layer if GPU blur failed;
+  // that unblurred image is precisely the wash this effect is intended to avoid.
+  if (!gpuProcess) return;
 
   const updateBackdropPositions = frame => {
     const dpr = window.devicePixelRatio || 1;
