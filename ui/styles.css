@@ -231,63 +231,20 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .bp pre{white-space:pre-wrap;word-break:break-word;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;color:var(--tx);font:12px Consolas,monospace;user-select:text}
 .er{color:var(--er)}
 
-/* LiquidGlass Frosty
-   Shell bars (.top, .ed-bar, .ed-dock) keep the plain LiquidGlass above. The canvas and nodes are untouched.
-   Frosty surfaces have no fill or tint: blur, refraction and exposure come from the shader in app.js,
-   and only white-alpha reflections are drawn here. */
-:root{--fr-grain:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .25 -.095'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+/* LiquidGlass materials: two neutral variants. The editor canvas and nodes retain their own styling. */
+:root{--glass-tint:0,0,0;--glass-bg-opacity:0;--glass-element-opacity:0}
 
-:is(.card,.acard,.ctx,.pop,.mbox,.ck-box,.logs,.eu-bar,.toast).glass{
-  border-width:1px;
-  background:
-    linear-gradient(transparent,transparent) padding-box,
-    linear-gradient(135deg,rgba(255,255,255,.78),rgba(255,255,255,.16) 24%,rgba(255,255,255,.05) 52%,rgba(255,255,255,.14) 76%,rgba(255,255,255,.55)) border-box;
-  box-shadow:
-    0 14px 34px rgba(0,0,0,.26),0 2px 6px rgba(0,0,0,.14),
-    inset 0 1px 0 rgba(255,255,255,.5),inset 1px 0 0 rgba(255,255,255,.14),
-    inset 0 -1px 0 rgba(255,255,255,.12),inset 0 0 22px rgba(255,255,255,.04);
-  text-shadow:0 1px 2px rgba(0,0,0,.30);
-}
-:is(.card,.acard,.ctx,.pop,.mbox,.ck-box,.logs,.eu-bar,.toast).glass::after{
-  background:
-    radial-gradient(120% 55% at 6% -8%,rgba(255,255,255,.20),rgba(255,255,255,.05) 42%,transparent 70%),
-    linear-gradient(112deg,transparent 22%,rgba(255,255,255,.05) 29%,rgba(255,255,255,.17) 31.5%,rgba(255,255,255,.04) 35%,transparent 44%),
-    linear-gradient(180deg,rgba(255,255,255,.34),transparent 2px),
-    linear-gradient(0deg,rgba(255,255,255,.10),transparent 36px),
-    var(--fr-grain);
-  background-size:auto,auto,auto,auto,160px 160px;
-}
-/* Only if the backdrop capture is unavailable: fall back to the old tint so text stays readable. */
-html:not(.glass-backdrop-ready) :is(.card,.acard,.ctx,.pop,.mbox,.ck-box,.logs,.eu-bar,.toast).glass::after{background:rgba(var(--glass-tint),.55)}
+/* Default LiquidGlass: live desktop capture, neutral black absorption, no shine overlays. */
+.glass{background:transparent;border-color:rgba(0,0,0,.24);box-shadow:0 8px 22px rgba(0,0,0,.18)}
+.glass::after{background:rgba(0,0,0,.10)}
+.card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass,.logs.glass,.eu-bar.glass,.toast.glass{background:transparent;border-color:rgba(0,0,0,.28);box-shadow:0 9px 24px rgba(0,0,0,.20)}
+.card.glass::after,.acard.glass::after,.ctx.glass::after,.pop.glass::after,.mbox.glass::after,.ck-box.glass::after,.logs.glass::after,.eu-bar.glass::after,.toast.glass::after{background:rgba(0,0,0,.12)}
 
-.toast.glass{border:1px solid transparent}
-.toast.glass.err{border-left:3px solid var(--er)}
-.modal{background:rgba(0,0,0,.22)}
-#cmdk{background:rgba(0,0,0,.18)}
+/* LiquidGlass variant: slightly stronger blur and shadow, same neutral material. */
+.glass.liquidglass-variant,.liquidglass-variant.glass{border-color:rgba(0,0,0,.32);box-shadow:0 10px 26px rgba(0,0,0,.24)}
+.glass.liquidglass-variant::after,.liquidglass-variant.glass::after{background:rgba(0,0,0,.16)}
 
-/* Controls: clear glass keys (rim + gloss, no grey fill). Nodes on the canvas keep their own style. */
-:is(.btn,.ib,.search,.mq,.ck-in,select):not(.node *){
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.20),rgba(255,255,255,.03) 55%,rgba(255,255,255,.07)) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.62),rgba(255,255,255,.12) 50%,rgba(255,255,255,.34)) border-box;
-  border:1px solid transparent;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 1px 2px rgba(0,0,0,.18);
-}
-:is(.btn,.ib):not(.node *):hover:not(:disabled){
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.32),rgba(255,255,255,.06) 55%,rgba(255,255,255,.12)) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.9),rgba(255,255,255,.2) 50%,rgba(255,255,255,.5)) border-box;
-}
-.btn.primary:not(.node *){
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.30),rgba(255,255,255,.06) 60%,rgba(255,255,255,.12)) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.95),rgba(255,255,255,.22) 50%,rgba(255,255,255,.6)) border-box;
-}
-:is(.search,.mq,.ck-in,select):not(.node *):focus{
-  border-color:transparent;
-  box-shadow:0 0 0 1px rgba(255,255,255,.7),0 0 14px rgba(255,255,255,.22),inset 0 1px 0 rgba(255,255,255,.35);
-}
-.mi.on,.mi:hover,.ck-item.on,.ck-item:hover{
-  background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(255,255,255,.04));
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.3);
-}
+/* Neutral controls; no colored glass treatments. */
+:is(.btn,.ib,.icon-btn,.search,.name,.mq,select,.ck-in,.fld input[type=text],.fld input[type=number],.fld select,.eu-bar button):not(.node *){color:inherit;background:rgba(0,0,0,.12);border-color:rgba(0,0,0,.24);box-shadow:none}
+:is(.btn,.ib,.icon-btn,.search,.name,.mq,select,.ck-in,.fld input[type=text],.fld input[type=number],.fld select,.eu-bar button):not(.node *):hover{background:rgba(0,0,0,.16)}
+:is(.btn,.ib,.icon-btn,.search,.name,.mq,select,.ck-in,.fld input[type=text],.fld input[type=number],.fld select):focus-visible{outline:1px solid rgba(0,0,0,.55);outline-offset:1px}
