@@ -173,7 +173,9 @@ async function control(act, id) {
   if (!id) return;
   try {
     await flushSaves();
-    if (pending.size === 0 && ind.classList.contains('err')) throw new Error('Unsaved changes could not be written; fix the save error first.');
+    if (ind.classList.contains('err') || pending.size > 0) {
+      throw new Error('Unsaved changes could not be written; fix the save error first.');
+    }
     await invoke(act + '_automation', { id });
   } catch (e) { toast(String(e?.message || e).split('\n').join(' • '), 'err'); }
 }
