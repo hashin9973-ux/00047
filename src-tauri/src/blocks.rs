@@ -313,6 +313,36 @@ impl Block for Loop {
     }
 }
 
+struct LogMsg;
+#[async_trait]
+impl Block for LogMsg {
+    fn title(&self) -> &'static str {
+        "Log message"
+    }
+    fn category(&self) -> Cat {
+        Cat::Action
+    }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        let m = text(c, "message");
+        if m.is_empty() {
+            return Err("Message is required".into());
+        }
+        if m.chars().count() > 500 {
+            return Err("Message must be 500 characters or fewer".into());
+        }
+        Ok(())
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let lvl = match text(&cx.cfg, "level").as_str() {
+            "warn" => "warn",
+            "error" => "error",
+            _ => "info",
+        };
+        (cx.log)(lvl, text(&cx.cfg, "message"));
+        Ok(Outcome::Satisfied)
+    }
+}
+
 // ---------- Targets ----------
 struct ProcessTarget;
 impl Block for ProcessTarget {
@@ -372,6 +402,7 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         m.insert("act.wait", Box::new(Wait));
         m.insert("act.start", Box::new(Start));
         m.insert("act.loop", Box::new(Loop));
+        m.insert("act.log", Box::new(LogMsg));
         m.insert("tgt.process", Box::new(ProcessTarget));
         m.insert("tgt.file", Box::new(FileTarget));
         m
