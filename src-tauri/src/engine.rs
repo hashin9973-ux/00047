@@ -395,7 +395,8 @@ impl Ctx {
     }
     /// Runaway guard: too many executions of one block in a short window aborts the automation.
     fn rate_ok(&self, node: &Node) -> bool {
-        let (win, limit) = if node.kind == "act.trim" || node.kind == "act.launch" { (10, 12) } else { (2, 40) };
+        let risky = registry().get(node.kind.as_str()).map(|b| b.risky()).unwrap_or(false);
+        let (win, limit) = if risky || matches!(node.kind.as_str(), "act.trim" | "act.launch" | "act.stop_proc" | "act.notify") { (10, 12) } else { (2, 40) };
         let mut m = self.rate.lock().unwrap();
         let q = m.entry(node.id.clone()).or_default();
         let now = Instant::now();
