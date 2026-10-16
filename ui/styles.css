@@ -187,3 +187,7 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 #toasts{position:fixed;right:16px;bottom:16px;display:grid;gap:8px;z-index:60}
 .toast{background:rgba(30,32,39,.95);border:1px solid var(--line);border-left:3px solid var(--ac);border-radius:10px;padding:10px 14px;max-width:420px;box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .toast.err{border-left-color:var(--er)}
+
+/* disabled automation blocks */
+.node.off { opacity: .5; filter: grayscale(.7); }
+.node.off:not(.collapsed) .n-sum { display: block; font-style: italic; }
