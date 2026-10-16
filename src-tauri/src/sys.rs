@@ -327,7 +327,8 @@ pub fn app_stats(st: &mut CpuState) -> AppStats {
 /// Sends WM_CLOSE to a process's top-level windows, then force-terminates it after 5 seconds.
 #[cfg(windows)]
 pub fn stop_process(pid: u32, force: bool) -> Result<String, String> {
-    use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
     use windows::Win32::System::Threading::{
         OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
     };
