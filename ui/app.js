@@ -649,6 +649,54 @@ async function reloadBlocks() {
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
+function startGlassReflections() {
+  if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
+
+  const root = document.documentElement;
+  let inFlight = false;
+  let loggedFailure = false;
+  const updateReflectionPositions = frame => {
+    const dpr = window.devicePixelRatio || 1;
+    const cropOriginX = (frame.screenX - frame.windowX) / dpr;
+    const cropOriginY = (frame.screenY - frame.windowY) / dpr;
+    root.style.setProperty('--glass-frame-size', (frame.screenWidth / dpr) + 'px ' + (frame.screenHeight / dpr) + 'px');
+    document.querySelectorAll('.glass').forEach(el => {
+      const rect = el.getBoundingClientRect();
+      el.style.setProperty('--glass-frame-x', (cropOriginX - rect.left) + 'px');
+      el.style.setProperty('--glass-frame-y', (cropOriginY - rect.top) + 'px');
+    });
+  };
+
+  const capture = async () => {
+    if (inFlight || document.hidden) return;
+    inFlight = true;
+    try {
+      const frame = await invoke('capture_glass_frame');
+      if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) return;
+      root.style.setProperty('--glass-desktop-frame', 'url("' + frame.dataUrl + '")');
+      updateReflectionPositions(frame);
+      root.classList.add('glass-reflections-ready');
+      loggedFailure = false;
+    } catch (error) {
+      root.classList.remove('glass-reflections-ready');
+      if (!loggedFailure) {
+        console.warn('Live glass reflection capture unavailable:', error);
+        loggedFailure = true;
+      }
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  // Four desktop samples per second: enough for moving windows without pushing
+  // a full-screen image through WebView2 on every animation frame.
+  capture();
+  window.setInterval(capture, 250);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) capture();
+  });
+}
+
 // ---------- init ----------
 (async function init() {
   await loadBlockSpecs();
@@ -658,4 +706,5 @@ $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = t
   } catch (e) { toast('Could not load data: ' + e, 'err'); }
   await bindEvents();
   show('overview');
+  startGlassReflections();
 })();
