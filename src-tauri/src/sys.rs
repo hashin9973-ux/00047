@@ -398,3 +398,29 @@ pub fn show_notification(title: &str, body: &str, sound: bool) -> Result<(), Str
     unsafe { RoUninitialize() };
     result
 }
+
+
+#[repr(C)]
+struct SYSTEMTIME {
+    wYear: u16,
+    wMonth: u16,
+    wDayOfWeek: u16,
+    wDay: u16,
+    wHour: u16,
+    wMinute: u16,
+    wSecond: u16,
+    wMilliseconds: u16,
+}
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetLocalTime(t: *mut SYSTEMTIME);
+}
+
+/// (weekday 0 = Sunday .. 6 = Saturday, minutes since local midnight)
+pub fn local_weekday_minutes() -> (u16, u32) {
+    unsafe {
+        let mut t: SYSTEMTIME = zeroed();
+        GetLocalTime(&mut t);
+        (t.wDayOfWeek, t.wHour as u32 * 60 + t.wMinute as u32)
+    }
+}
