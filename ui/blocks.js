@@ -188,11 +188,13 @@ export function fieldError(f, cfg) {
     if (typeof v !== 'number' || !Number.isFinite(v)) return 'Enter a number';
     if (v < f.min || v > f.max) return `${f.min} – ${f.max}`;
   }
+  if (f.type === 'time' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? ''))) return 'Use HH:MM';
   if (f.type === 'text' || f.type === 'file') {
     const s = String(v ?? '').trim();
     if (f.required && !s) return 'Required';
     if (f.maxLen && s.length > f.maxLen) return `Max ${f.maxLen} characters`;
   }
+  if (f.type === 'bool' && f.required && !v) return 'Required';
   return null;
 }
 
@@ -201,4 +203,51 @@ export function validate(kind, cfg) {
   const b = BLOCKS[kind];
   if (!b) return ['Unknown block type'];
   return b.fields.map(f => { const e = fieldError(f, cfg); return e ? `${f.label}: ${e}` : null; }).filter(Boolean);
+}
+
+
+// ---------- declarative specs (native spec-driven blocks + user block packs) ----------
+const PRESETS = { timeout: TIMEOUT, onFail: ONFAIL };
+const showFn = s => {
+  if (!s || typeof s !== 'object') return undefined;
+  return c => {
+    const v = c[s.key];
+    if ('eq' in s) return v === s.eq;
+    if ('ne' in s) return v !== s.ne;
+    if (Array.isArray(s.in)) return s.in.includes(v);
+    return true;
+  };
+};
+const tpl = (t, c) => String(t).replace(/\{(\w+)(\?([^}]*))?\}/g, (_, k, q, txt) => (q ? (c[k] ? txt : '') : (c[k] ?? '')));
+
+export function compileSpec(sp) {
+  const cat = sp.category === 'condition' ? 'cond' : sp.category === 'target' ? 'tgt' : 'act';
+  const fields = (sp.fields || []).map(f => {
+    const o = { ...(f.preset ? PRESETS[f.preset] : {}), ...f };
+    delete o.preset;
+    if (o.show && typeof o.show === 'object') o.show = showFn(o.show);
+    return o;
+  });
+  const defaults = {};
+  for (const f of fields) {
+    defaults[f.key] = f.default !== undefined ? f.default
+      : f.type === 'bool' ? false
+      : f.type === 'number' ? (f.min ?? 0)
+      : f.type === 'select' ? f.options[0][0] : '';
+  }
+  Object.assign(defaults, sp.defaults || {});
+  const labelled = c => {
+    const o = { ...c };
+    for (const f of fields) if (f.type === 'select') { const m = f.options.find(x => x[0] === c[f.key]); if (m) o[f.key] = m[1]; }
+    return o;
+  };
+  return {
+    cat, title: sp.title, icon: I[sp.icon] || I.note, desc: sp.description || '',
+    defaults, fields, summary: c => tpl(sp.summary || sp.title, labelled(c)), help: sp.help, origin: sp.origin,
+  };
+}
+
+/** Adds blocks described by backend specs. Built-in JS definitions win over a spec with the same kind. */
+export function registerSpecs(specs) {
+  for (const sp of specs) if (sp.kind && !BLOCKS[sp.kind]) BLOCKS[sp.kind] = compileSpec(sp);
 }
