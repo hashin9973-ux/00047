@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod blocks;
+mod custom;
+mod spec;
 mod engine;
 mod logstore;
 mod model;
@@ -198,6 +200,42 @@ async fn export_logs(app: AppHandle, csv: String) -> Result<bool, String> {
     Ok(true)
 }
 
+#[tauri::command]
+fn list_block_specs() -> serde_json::Value {
+    custom::all_specs()
+}
+
+#[tauri::command]
+async fn block_pack_preview(app: AppHandle) -> Result<Option<custom::PackPreview>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().add_filter("00047 block pack", &["json"]).pick_file(move |p| {
+        let _ = tx.send(p);
+    });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    custom::preview(&path).map(Some)
+}
+
+#[tauri::command]
+fn block_pack_install(path: String) -> Result<String, String> {
+    custom::install(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+fn open_blocks_folder() -> Result<(), String> {
+    let d = custom::blocks_dir().ok_or_else(|| "blocks folder is not initialised".to_string())?;
+    let _ = std::fs::create_dir_all(d);
+    sys::start_file(&d.to_string_lossy(), "")
+}
+
+#[tauri::command]
+async fn restart_app(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Result<(), String> {
+    save_window(&app);
+    let e = eng.inner().clone();
+    e.shutdown().await;
+    app.restart()
+}
+
 // ---------- helpers ----------
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -266,11 +304,18 @@ fn main() {
             export_automation,
             import_automation,
             export_logs,
-            test_block
+            test_block,
+            list_block_specs,
+            block_pack_preview,
+            block_pack_install,
+            open_blocks_folder,
+            restart_app
         ])
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            custom::init(dir.join("blocks"));
+            let _ = std::fs::create_dir_all(dir.join("blocks"));
             let (store, warn) = Store::load(&dir);
             let engine = Arc::new(Engine::new(app.handle().clone(), Arc::new(store), &dir));
             app.manage(engine.clone());
