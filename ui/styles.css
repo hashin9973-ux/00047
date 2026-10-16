@@ -233,7 +233,7 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 
 /* Exactly two neutral glass materials. The editor canvas and workflow nodes retain their own styling. */
 body { isolation: isolate; }
-body::before {
+body.liquidglass::before {
   content: "";
   position: fixed;
   inset: 0;
@@ -245,7 +245,7 @@ body::before {
   background-repeat: no-repeat;
   opacity: 0;
 }
-html.glass-backdrop-ready body::before { opacity: 1; }
+html.glass-backdrop-ready body.liquidglass::before { opacity: 1; }
 
 /* Shared transparent base; visible material comes from the sampled, GPU-blurred desktop image. */
 .glass {
@@ -273,12 +273,6 @@ html.glass-backdrop-ready body::before { opacity: 1; }
 }
 .glass::after { content: none !important; display: none !important; }
 html.glass-backdrop-ready .glass::before { opacity: 1; }
-
-/* LiquidGlass: the application background; the base backdrop pass is 16px blur. */
-.glass.liquidglass {
-  border-color: rgba(255,255,255,.12) !important;
-  box-shadow: 0 8px 22px rgba(0,0,0,.20) !important;
-}
 
 /* LiquidGlass Variant: all other surfaces; only a small increase in blur and shadow. */
 .glass.liquidglass-variant {
