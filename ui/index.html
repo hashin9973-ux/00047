@@ -7,15 +7,7 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <svg class="glass-reflection-status" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <filter id="glass-lens-distortion" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB">
-        <feTurbulence type="fractalNoise" baseFrequency="0.007 0.018" numOctaves="1" seed="17" result="surface"/>
-        <feDisplacementMap in="SourceGraphic" in2="surface" scale="7" xChannelSelector="R" yChannelSelector="G"/>
-      </filter>
-    </defs>
-  </svg>
-    <div id="window-titlebar" class="window-titlebar" role="banner" aria-label="Window title bar">
+   <div id="window-titlebar" class="window-titlebar" role="banner" aria-label="Window title bar">
     <div class="window-titlebar-title" data-tauri-drag-region>00047</div>
     <div class="window-titlebar-spacer" data-tauri-drag-region></div>
     <div class="window-controls">
