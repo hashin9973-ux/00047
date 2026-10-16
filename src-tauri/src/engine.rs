@@ -882,7 +882,7 @@ mod loop_semantics_tests {
             ],
         );
         assert!(validate_automation(&a).is_ok());
-        assert!(entry_nodes(&a).is_empty());
+        assert_eq!(entry_nodes(&a), vec!["start".to_string()]);
         assert_eq!(loop_start_id(&a).unwrap(), "start");
     }
 
