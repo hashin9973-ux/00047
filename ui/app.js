@@ -88,7 +88,10 @@ const editor = new Editor($('#ed-host'), {
     if (isRun(a.id)) $('#ed-note').textContent = 'Running a saved snapshot. Restart to apply edits.';
   },
   toast,
+  pickFile: async () => { try { return await invoke('pick_file'); } catch (e) { toast('File picker failed: ' + e, 'err'); return null; } },
 });
+$('#ed-undo').addEventListener('click', () => editor.doUndo());
+$('#ed-redo').addEventListener('click', () => editor.doRedo());
 
 const HELP = `<div class="help">
 <b>Add a block:</b> right-click the canvas (or press + Block), type to search, Enter to place.<br>
@@ -174,11 +177,12 @@ async function control(act, id) {
   try {
     await flushSaves();
     if (ind.classList.contains('err') || pending.size > 0) {
-      throw new Error('Unsaved changes could not be written; fix the save error first.');
+      throw new Error('Your latest changes could not be saved. Fix the save error (click the red indicator to retry) before running.');
     }
     await invoke(act + '_automation', { id });
   } catch (e) { toast(String(e?.message || e).split('\n').join(' • '), 'err'); }
 }
+
 
 function newAuto() {
   const a = { id: uid(), name: 'Untitled automation', nodes: [], edges: [], viewport: { x: 80, y: 80, k: 1 }, autoStart: false };
@@ -203,14 +207,37 @@ async function delAuto(id) {
   }
 }
 
+async function dupAuto(id) {
+  const a = S.autos.find(x => x.id === id); if (!a) return;
+  const c = JSON.parse(JSON.stringify(a));
+  c.id = uid(); c.name = a.name + ' copy'; c.autoStart = false;
+  S.autos.push(c); markDirty(c);
+  try { await flushSaves(); render(); toast('Duplicated'); }
+  catch (e) { toast('Duplicate could not be saved: ' + e, 'err'); }
+}
+async function exportAuto(id) {
+  try { await flushSaves(); if (await invoke('export_automation', { id })) toast('Exported'); }
+  catch (e) { toast('Export failed: ' + e, 'err'); }
+}
+async function importAuto() {
+  try {
+    const a = await invoke('import_automation');
+    if (a) { S.autos.push(a); render(); toast(`Imported "${a.name}"`); }
+  } catch (e) { toast('Import failed: ' + e, 'err'); }
+}
+
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const { act, id } = b.dataset;
   if (act === 'open') openEditor(id);
   else if (act === 'new') newAuto();
   else if (act === 'delete') delAuto(id);
+  else if (act === 'dup') dupAuto(id);
+  else if (act === 'export') exportAuto(id);
+  else if (act === 'import') importAuto();
   else if (['start', 'stop', 'restart'].includes(act)) control(act, id);
 });
+
 
 // ---------- views ----------
 function show(view) {
@@ -284,7 +311,7 @@ setInterval(tickStats, 2000);
 function renderAutomations() {
   const root = $('#view-automations');
   if (!root.dataset.built) {
-    root.innerHTML = `<div class="bar"><input id="au-q" class="search" placeholder="Search automations…" spellcheck="false"><button class="btn primary" data-act="new">+ New automation</button></div><div id="au-list" class="cards"></div>`;
+    root.innerHTML = `<div class="bar"><input id="au-q" class="search" placeholder="Search automations…" spellcheck="false"><button class="btn primary" data-act="new">+ New automation</button><button class="btn" data-act="import">Import…</button></div><div id="au-list" class="cards"></div>`;
     root.dataset.built = '1';
     $('#au-q').addEventListener('input', e => { S.q = e.target.value.toLowerCase(); fillAutos(); });
   }
@@ -294,12 +321,13 @@ function fillAutos() {
   const el = $('#au-list'); if (!el) return;
   const list = S.autos.filter(a => a.name.toLowerCase().includes(S.q));
   el.innerHTML = list.map(a => {
-    const st = stOf(a.id);
+    const st = stOf(a.id), id = esc(a.id);
     return `<div class="acard glass"><h4><span>${esc(a.name)}</span><span class="pill ${st}">${LABEL[st] || st}</span></h4>
       <div class="mu">${a.nodes.length} blocks · ${a.edges.length} wires${a.autoStart ? ' · runs at launch' : ''}</div>
-      <div class="row"><span>${ctl(a.id)}</span><span><button class="btn" data-act="open" data-id="${esc(a.id)}">Open</button><button class="btn danger" data-act="delete" data-id="${esc(a.id)}">Delete</button></span></div></div>`;
+      <div class="row"><span>${ctl(a.id)}</span><span><button class="btn" data-act="open" data-id="${id}">Open</button><button class="btn" data-act="dup" data-id="${id}" title="Duplicate">⧉</button><button class="btn" data-act="export" data-id="${id}" title="Export to a file">⤓</button><button class="btn danger" data-act="delete" data-id="${id}">Delete</button></span></div></div>`;
   }).join('') || '<div class="empty">No automations match.</div>';
 }
+
 
 // Logs
 function renderLogs() {
