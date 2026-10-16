@@ -330,7 +330,6 @@ export class Editor {
         for (const q of this.auto.nodes) if (!orig.has(q.id) && this.collide(r, this.rectOf(q))) ignore.add(q.id);
       }
       this.drag = { t: 'nodes', sx: e.clientX, sy: e.clientY, moved: false, id, mod, orig, ignore, cx: 0, cy: 0 };
-      };
       this.cv.setPointerCapture(e.pointerId); e.preventDefault();
       return;
     }
