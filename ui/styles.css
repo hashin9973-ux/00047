@@ -203,3 +203,12 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .ck-item small{opacity:.5}
 .ck-item.on,.ck-item:hover{background:rgba(139,156,255,.16)}
 .ck-empty{padding:12px;opacity:.5;text-align:center}
+
+
+.mbox.wide{width:min(660px,92vw);max-width:none}
+.mbody{max-height:52vh;overflow:auto;margin-bottom:16px;color:var(--mu)}
+.mbody code{color:var(--tx);user-select:text}
+.bp{padding-left:18px;margin:8px 0}
+.bp li{margin-bottom:10px}
+.bp pre{white-space:pre-wrap;word-break:break-word;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;color:var(--tx);font:12px Consolas,monospace;user-select:text}
+.er{color:var(--er)}
