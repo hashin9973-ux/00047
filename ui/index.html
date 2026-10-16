@@ -7,6 +7,15 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div id="window-titlebar" class="window-titlebar" role="banner" aria-label="Window title bar">
+    <div class="window-titlebar-title" data-tauri-drag-region>00047</div>
+    <div class="window-titlebar-spacer" data-tauri-drag-region></div>
+    <div class="window-controls">
+      <button id="window-minimize" class="window-control" type="button" title="Minimize" aria-label="Minimize window">—</button>
+      <button id="window-maximize" class="window-control" type="button" title="Maximize" aria-label="Maximize window">□</button>
+      <button id="window-close" class="window-control close" type="button" title="Close" aria-label="Close window">×</button>
+    </div>
+  </div>
   <header class="dock top glass">
     <span class="brand">00047</span>
     <nav id="tabs">
