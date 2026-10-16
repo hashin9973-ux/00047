@@ -1,7 +1,12 @@
-:root{--bg:#0d0e11;--line:rgba(255,255,255,.08);--tx:#e9ebf0;--mu:#8c93a1;--ac:#8b9cff;--ok:#4ade80;--er:#ff6b81;--wa:#f5b14a;--bl:#5aa9ff;--glass-tint:28,30,37;--glass-bg-opacity:.20;--glass-element-opacity:.40;--glass-blur:15px;--glass-element-blur:20px;--glass-border-hi:rgba(128,128,128,.314);--glass-border-low:rgba(64,64,64,.314);--glass-element-border-mid:rgba(96,96,96,.314)}
-*{box-sizing:border-box}
+:root{--bg:transparent;--line:rgba(255,255,255,.08);--tx:#e9ebf0;--mu:#8c93a1;--ac:#8b9cff;--ok:#4ade80;--er:#ff6b81;--wa:#f5b14a;--bl:#5aa9ff;--glass-tint:28,30,37;--glass-bg-opacity:.20;--glass-element-opacity:.40;--glass-blur:15px;--glass-element-blur:20px;--glass-border-hi:rgba(128,128,128,.314);--glass-border-low:rgba(64,64,64,.314);--glass-element-border-mid:rgba(96,96,96,.314)}
+*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:rgba(170,180,200,.30) rgba(28,30,37,.12)}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:rgba(28,30,37,.12);border-radius:8px}
+::-webkit-scrollbar-thumb{background:linear-gradient(180deg,rgba(190,200,220,.28),rgba(120,130,150,.22));border:1px solid rgba(255,255,255,.08);border-radius:8px}
+::-webkit-scrollbar-thumb:hover{background:rgba(190,200,220,.38)}
+::-webkit-scrollbar-corner{background:transparent}
 html,body{height:100%;margin:0}
-body{background:radial-gradient(900px 500px at 15% -10%,rgba(139,156,255,.08),transparent 60%),var(--bg);color:var(--tx);font:13px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden;user-select:none}
+body{background:transparent;color:var(--tx);font:13px/1.45 "Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden;user-select:none}
 [hidden]{display:none!important}
 button,input,select{font:inherit;color:inherit}
 input,select{user-select:text}
@@ -9,6 +14,7 @@ button:disabled{opacity:.35;cursor:default}
 .mu{color:var(--mu)}
 .glass{background:linear-gradient(rgba(var(--glass-tint),var(--glass-bg-opacity)),rgba(var(--glass-tint),var(--glass-bg-opacity))) padding-box,linear-gradient(180deg,var(--glass-border-hi) 0%,var(--glass-border-low) 25%,var(--glass-border-hi) 100%) border-box;backdrop-filter:blur(var(--glass-blur));-webkit-backdrop-filter:blur(var(--glass-blur));border-style:solid;border-color:transparent;border-width:1px .3px .3px .3px;box-shadow:none}
 .top.glass,.ed-bar.glass,.ed-dock.glass{border-radius:12px}
+.top.glass{background:rgba(28,30,37,.045);backdrop-filter:blur(15px);-webkit-backdrop-filter:blur(15px);border:1px solid rgba(255,255,255,.05);box-shadow:none}
 .card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{background:linear-gradient(rgba(var(--glass-tint),var(--glass-element-opacity)),rgba(var(--glass-tint),var(--glass-element-opacity))) padding-box,linear-gradient(180deg,var(--glass-element-border-mid) 15%,var(--glass-border-hi) 100%) border-box;backdrop-filter:blur(var(--glass-element-blur));-webkit-backdrop-filter:blur(var(--glass-element-blur));border-width:.3px .3px 1px .3px;border-radius:8px}
 .pop.glass,.ctx.glass,.mbox.glass,.ck-box.glass{box-shadow:0 12px 30px rgba(0,0,0,.28)}
 
@@ -27,6 +33,7 @@ button:disabled{opacity:.35;cursor:default}
 
 main{flex:1;min-height:0;padding:12px;position:relative}
 .view{height:100%;overflow:auto}
+#view-overview{overflow-x:hidden}
 .view.editor{overflow:hidden;position:relative;display:flex;flex-direction:column;padding:0}
 
 /* controls */
