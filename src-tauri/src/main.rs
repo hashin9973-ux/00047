@@ -2,6 +2,7 @@
 
 mod blocks;
 mod engine;
+mod logstore;
 mod model;
 mod store;
 mod sys;
@@ -16,6 +17,7 @@ use tauri::{
     AppHandle, Emitter, Manager, State,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_dialog::DialogExt;
 
 // ---------- commands ----------
 #[tauri::command]
@@ -108,6 +110,65 @@ async fn exit_app(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Result<(), Str
     Ok(())
 }
 
+#[tauri::command]
+async fn pick_file(app: AppHandle) -> Option<String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_file(move |p| {
+        let _ = tx.send(p);
+    });
+    let p = rx.await.ok()??;
+    p.into_path().ok().map(|p| p.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn export_automation(app: AppHandle, eng: State<'_, Arc<Engine>>, id: String) -> Result<bool, String> {
+    let a = eng.store.get(&id).ok_or_else(|| "automation not found".to_string())?;
+    let safe: String = a.name.chars().map(|c| if matches!(c, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control() { '_' } else { c }).collect();
+    let safe = safe.trim().trim_end_matches('.').to_string();
+    let safe = if safe.is_empty() { "automation".to_string() } else { safe };
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .add_filter("00047 automation", &["json"])
+        .set_file_name(format!("{safe}.json"))
+        .save_file(move |p| {
+            let _ = tx.send(p);
+        });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(false) };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&a).map_err(|e| e.to_string())?;
+    std::fs::write(path, bytes).map_err(|e| format!("write file: {e}"))?;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn import_automation(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Result<Option<Automation>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().add_filter("00047 automation", &["json"]).pick_file(move |p| {
+        let _ = tx.send(p);
+    });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("read file: {e}"))?;
+    let mut a: Automation = serde_json::from_slice(&bytes).map_err(|e| format!("not a valid 00047 automation: {e}"))?;
+    if a.nodes.len() > 2000 {
+        return Err("automation is too large (over 2000 blocks)".into());
+    }
+    let base = engine::now_ms();
+    let mut suffix = 0u32;
+    loop {
+        let candidate = if suffix == 0 { format!("imp-{base}") } else { format!("imp-{base}-{suffix}") };
+        if eng.store.get(&candidate).is_none() {
+            a.id = candidate;
+            break;
+        }
+        suffix = suffix.saturating_add(1);
+    }
+    a.auto_start = false;
+    eng.store.upsert(a.clone())?;
+    Ok(Some(a))
+}
+
 // ---------- helpers ----------
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -133,6 +194,7 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
+        .plugin(tauri_plugin_dialog::init())
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
@@ -162,13 +224,16 @@ fn main() {
             get_autostart,
             set_autostart,
             hide_to_tray,
-            exit_app
+            exit_app,
+            pick_file,
+            export_automation,
+            import_automation
         ])
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let (store, warn) = Store::load(&dir);
-            let engine = Arc::new(Engine::new(app.handle().clone(), Arc::new(store)));
+            let engine = Arc::new(Engine::new(app.handle().clone(), Arc::new(store), &dir));
             app.manage(engine.clone());
             app.manage(Mutex::new(sys::CpuState::default()));
             engine.app_log("info", format!("00047 started (data folder: {})", dir.display()));
