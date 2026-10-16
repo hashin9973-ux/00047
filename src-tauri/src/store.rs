@@ -48,18 +48,26 @@ impl Store {
     }
 
     pub fn upsert(&self, a: Automation) -> Result<(), String> {
-        let mut list = self.autos.lock().unwrap();
-        match list.iter_mut().find(|x| x.id == a.id) {
+        let mut current = self.autos.lock().unwrap();
+        // Persist a candidate snapshot before publishing it in memory. If disk I/O
+        // fails, callers and the next read still see the last successfully saved data.
+        let mut candidate = current.clone();
+        match candidate.iter_mut().find(|x| x.id == a.id) {
             Some(slot) => *slot = a,
-            None => list.push(a),
+            None => candidate.push(a),
         }
-        self.flush(&list)
+        self.flush(&candidate)?;
+        *current = candidate;
+        Ok(())
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
-        let mut list = self.autos.lock().unwrap();
-        list.retain(|a| a.id != id);
-        self.flush(&list)
+        let mut current = self.autos.lock().unwrap();
+        let mut candidate = current.clone();
+        candidate.retain(|a| a.id != id);
+        self.flush(&candidate)?;
+        *current = candidate;
+        Ok(())
     }
 
     /// Atomic write: temp file, fsync, rename over the real file.

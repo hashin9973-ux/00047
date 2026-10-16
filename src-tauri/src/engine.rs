@@ -508,6 +508,28 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
     let reg = registry();
     let mut errs: Vec<String> = vec![];
     let find = |id: &str| a.nodes.iter().find(|n| n.id == id);
+    let mut node_ids = std::collections::HashSet::new();
+    let mut edge_ids = std::collections::HashSet::new();
+    for n in &a.nodes {
+        if n.id.trim().is_empty() {
+            errs.push("a block has an empty ID".into());
+        } else if !node_ids.insert(n.id.as_str()) {
+            errs.push(format!("duplicate block ID '{}'", n.id));
+        }
+        if !n.x.is_finite() || !n.y.is_finite() {
+            errs.push(format!("{} has an invalid canvas position", short(n)));
+        }
+    }
+    for e in &a.edges {
+        if e.id.trim().is_empty() {
+            errs.push("a wire has an empty ID".into());
+        } else if !edge_ids.insert(e.id.as_str()) {
+            errs.push(format!("duplicate wire ID '{}'", e.id));
+        }
+        if e.from == e.to {
+            errs.push(format!("wire {} connects a block to itself", e.id));
+        }
+    }
     for n in &a.nodes {
         if n.disabled {
             continue;
