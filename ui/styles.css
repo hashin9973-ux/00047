@@ -360,6 +360,7 @@ input,select,textarea{accent-color:#666}
 .node::before{background:rgba(255,255,255,.52);opacity:1}
 .node .n-title,.node .n-sum,.node .n-detail,.node .fl,.node .fh,
 .node .n-chev,.node .nhelp{color:rgba(25,25,25,.82)}
+.node .n-icon{color:rgba(25,25,25,.72)}
 .node .n-chev:hover{background:rgba(255,255,255,.42);color:#111}
 .node .n-dot{background:#777}
 .node .n-prog{background:rgba(35,35,35,.12)}
