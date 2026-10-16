@@ -717,9 +717,9 @@ function createGlassGpuProcessor() {
     '    if (fr < 0.5) {',
     '      sampled = liquid(uv, bl);',
     '    } else {',
-    '      vec3 c = frosted(uv, bl);
-      c *= 0.92;
-      sampled = clamp(c, 0.0, 1.0);',
+    '      vec3 c = frosted(uv, bl);',
+    '      c *= 0.92;',
+    '      sampled = clamp(c, 0.0, 1.0);',
     '    }',
     '  }',
     '  gl_FragColor = vec4(sampled, 1.0);',
