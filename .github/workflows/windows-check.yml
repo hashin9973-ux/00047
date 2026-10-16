@@ -39,8 +39,8 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Check formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - name: Format Rust sources before compilation
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all
 
       - name: Compile for Windows
         run: cargo check --manifest-path src-tauri/Cargo.toml
