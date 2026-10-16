@@ -768,7 +768,16 @@ function createGlassGpuProcessor() {
     const regions = new Float32Array(32 * 4);
     const blurs = new Float32Array(32);
     const frosts = new Float32Array(32);
-    let count = 0;
+
+    // Region zero is the whole app window, so the background itself is blurred.
+    // Individual controls are added afterward and override it with the variant radius.
+    const baseX = (frame.windowX - frame.screenX) * ratioX;
+    const baseY = (frame.windowY - frame.screenY) * ratioY;
+    regions.set([baseX, baseY, window.innerWidth * dpr * ratioX, window.innerHeight * dpr * ratioY], 0);
+    blurs[0] = 16 * dpr * ratioX;
+    frosts[0] = 0;
+    let count = 1;
+
     const materialSelector = '.glass, button:not(.window-control), input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
     for (const el of document.querySelectorAll(materialSelector)) {
       if (el.classList.contains('top')) {
