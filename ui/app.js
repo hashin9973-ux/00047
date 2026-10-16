@@ -651,8 +651,8 @@ $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = t
 
 function createGlassGpuProcessor() {
   // Frosty material tunables (logical px). Set dim to 1 for zero adaptive dimming, sat to 1 for no saturation boost.
-  const FROST = { blur: 34, bevel: 12, bend: 9, sat: 1.28, dim: 0.62, dimFrom: 0.48, dimTo: 0.90 };
-  const frostSelector = '.card.glass, .acard.glass, .ctx.glass, .pop.glass, .mbox.glass, .ck-box.glass, .logs.glass, .eu-bar.glass, .toast.glass';
+  const FROST = { blur: 19 };
+  const frostSelector = '.glass.liquidglass-variant';
   const f = n => Number(n).toFixed(3);
   const canvas = document.createElement('canvas');
   const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
@@ -717,16 +717,9 @@ function createGlassGpuProcessor() {
     '    if (fr < 0.5) {',
     '      sampled = liquid(uv, bl);',
     '    } else {',
-    '      float l = p.x - r.x; float rt = r.x + r.z - p.x; float t = p.y - r.y; float b = r.y + r.w - p.y;',
-    '      float dx = min(l, rt); float dy = min(t, b);',
-    '      vec2 n = dx < dy ? vec2(l < rt ? -1.0 : 1.0, 0.0) : vec2(0.0, t < b ? -1.0 : 1.0);',
-    '      float k = clamp(1.0 - min(dx, dy) / (' + f(FROST.bevel) + ' * u_scale), 0.0, 1.0);',
-    '      vec2 ruv = (p + n * (' + f(FROST.bend) + ' * u_scale) * k * k) / u_size;',
-    '      vec3 c = frosted(ruv, bl);',
-    '      float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));',
-    '      c = mix(vec3(lum), c, ' + f(FROST.sat) + ');',
-    '      c *= mix(1.0, ' + f(FROST.dim) + ', smoothstep(' + f(FROST.dimFrom) + ', ' + f(FROST.dimTo) + ', lum));',
-    '      sampled = clamp(c, 0.0, 1.0);',
+    '      vec3 c = frosted(uv, bl);
+      c *= 0.92;
+      sampled = clamp(c, 0.0, 1.0);',
     '    }',
     '  }',
     '  gl_FragColor = vec4(sampled, 1.0);',
