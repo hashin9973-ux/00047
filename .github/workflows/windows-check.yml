@@ -50,11 +50,11 @@ jobs:
       - name: Compile for Windows
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+      - name: Install prebuilt Tauri CLI
+        run: npm install --no-save @tauri-apps/cli@^2
 
       - name: Build Windows installer
-        run: cargo tauri build
+        run: npx tauri build
 
       - name: Verify installer output
         shell: pwsh
