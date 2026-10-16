@@ -322,3 +322,78 @@ pub fn app_stats(st: &mut CpuState) -> AppStats {
     st.last = Some((now, ticks));
     AppStats { cpu, ram_mb: mb(ram), procs: n }
 }
+
+
+/// Sends WM_CLOSE to a process's top-level windows, then force-terminates it after 5 seconds.
+#[cfg(windows)]
+pub fn stop_process(pid: u32, force: bool) -> Result<String, String> {
+    use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
+    use windows::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
+    };
+
+    unsafe extern "system" fn close_cb(hwnd: HWND, lp: LPARAM) -> BOOL {
+        let mut window_pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
+        if window_pid == lp.0 as u32 {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+        BOOL(1)
+    }
+
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, false, pid) }
+        .map_err(|e| format!("open process {pid}: {e}"))?;
+    let result = (|| -> Result<String, String> {
+        if !force {
+            unsafe { let _ = EnumWindows(Some(close_cb), LPARAM(pid as isize)); }
+            if unsafe { WaitForSingleObject(handle, 5000) } == WAIT_OBJECT_0 {
+                return Ok("closed gracefully".to_string());
+            }
+        }
+        unsafe { TerminateProcess(handle, 1) }.map_err(|e| format!("TerminateProcess: {e}"))?;
+        unsafe { WaitForSingleObject(handle, 3000); }
+        Ok(if force { "force-killed".to_string() }
+            else { "did not close within 5 s; force-killed".to_string() })
+    })();
+    unsafe { let _ = CloseHandle(handle); }
+    result
+}
+
+/// Displays a Windows toast using the built-in PowerShell AppUserModelID.
+/// Toast delivery for unpackaged desktop apps depends on Windows notification registration.
+#[cfg(windows)]
+pub fn show_notification(title: &str, body: &str, sound: bool) -> Result<(), String> {
+    use windows::core::HSTRING;
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+    use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+
+    unsafe { RoInitialize(RO_INIT_MULTITHREADED) }
+        .map_err(|e| format!("RoInitialize: {e}"))?;
+    let result = (|| -> Result<(), String> {
+        let esc = |s: &str| {
+            s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+                .replace('"', "&quot;").replace('\'', "&apos;")
+        };
+        let audio = if sound { "" } else { "<audio silent=\"true\"/>" };
+        let xml = format!(
+            "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{}</toast>",
+            esc(title), esc(body), audio
+        );
+        let doc = XmlDocument::new().map_err(|e| format!("XmlDocument: {e}"))?;
+        doc.LoadXml(&HSTRING::from(xml)).map_err(|e| format!("LoadXml: {e}"))?;
+        let toast = ToastNotification::CreateToastNotification(&doc).map_err(|e| format!("toast: {e}"))?;
+        let app_id = HSTRING::from(
+            r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe",
+        );
+        ToastNotificationManager::CreateToastNotifierWithId(&app_id)
+            .map_err(|e| format!("notifier: {e}"))?
+            .Show(&toast)
+            .map_err(|e| format!("show: {e}"))
+    })();
+    unsafe { RoUninitialize() };
+    result
+}
