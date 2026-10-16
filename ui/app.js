@@ -189,12 +189,17 @@ async function delAuto(id) {
   const c = await modal({ title: 'Delete automation?', body: `"${a.name}" will be stopped and permanently deleted.`, buttons: [['cancel', 'Cancel'], ['del', 'Delete', 'danger']] });
   if (c !== 'del') return;
   try {
+    // Finish any in-flight save before deleting so it cannot recreate this automation afterward.
+    await flushSaves();
     pending.delete(id);
     await invoke('delete_automation', { id });
     S.autos = S.autos.filter(x => x.id !== id);
     delete S.rt.autos[id]; delete S.rt.nodes[id];
     render();
-  } catch (e) { toast('Delete failed: ' + e, 'err'); }
+  } catch (e) {
+    if (S.autos.some(x => x.id === id)) markDirty(a);
+    toast('Delete failed: ' + e, 'err');
+  }
 }
 
 document.addEventListener('click', e => {
