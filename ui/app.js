@@ -788,10 +788,10 @@ function startGlassReflections() {
     } finally { inFlight = false; }
   };
 
-  // Four capture/render passes per second; the desktop pixels are sampled natively
-  // and refracted by a WebGL shader only within the measured glass-panel bounds.
+  // Target about eight capture/render passes per second. Desktop pixels are sampled
+  // natively and refracted by WebGL only within measured glass-panel bounds.
   capture();
-  window.setInterval(capture, 250);
+  window.setInterval(capture, 120);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) capture(); });
 }
 
