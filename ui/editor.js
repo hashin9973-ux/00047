@@ -32,6 +32,26 @@ function rounded(pts, r = 14) {
   return d + ` L${l[0]},${l[1]}`;
 }
 
+const cub = (p0, p1, p2, p3, t) => {
+  const u = 1 - t;
+  return {
+    x: u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x,
+    y: u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y,
+  };
+};
+const hitsRect = (pts, rs) => pts.some(p => rs.some(r => p.x > r[0] && p.x < r[2] && p.y > r[1] && p.y < r[3]));
+const linePoints = pts => {
+  const out = [];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    for (let j = 0; j <= 12; j++) {
+      const t = j / 12;
+      out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    }
+  }
+  return out;
+};
+
 export class Editor {
   constructor(host, hooks) {
     this.host = host;
@@ -367,22 +387,70 @@ export class Editor {
   // ---------- wires ----------
   scheduleWires() { if (!this.raf) this.raf = requestAnimationFrame(() => { this.raf = 0; this.drawWires(); }); }
 
+  calcRects() {
+    return this.auto.nodes.map(n => ({
+      id: n.id,
+      r: [n.x - 8, n.y - 8, n.x + W + 8, n.y + (this.els.get(n.id)?.offsetHeight || 90) + 8],
+    }));
+  }
+
   route(e, f, t) {
     const a = { x: f.x + W, y: f.y + PORT[e.kind === 'target' ? 'tgt' : e.kind] };
     const b = { x: t.x, y: t.y + PORT.in };
-    const bend = e.bend || 0;
+    const rs = (this.rcache || (this.rcache = this.calcRects()))
+      .filter(o => o.id !== f.id && o.id !== t.id).map(o => o.r);
+
     if (b.x - a.x >= 70) {
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 + bend, dx = Math.max(40, (b.x - a.x) * 0.35);
-      return { d: `M${a.x},${a.y} C${a.x + dx},${a.y} ${mx - dx * 0.8},${my} ${mx},${my} S${b.x - dx},${b.y} ${b.x},${b.y}`, mid: { x: mx, y: my } };
+      const dx = Math.max(40, (b.x - a.x) * 0.35);
+      const mx = (a.x + b.x) / 2, my0 = (a.y + b.y) / 2;
+      let bend = e.bend || 0;
+      if (!e.bend && rs.length) {
+        const candidates = [0, 50, -50, 110, -110, 180, -180, 260, -260, 340, -340];
+        for (const c of candidates) {
+          const my = my0 + c;
+          const p1 = { x: a.x + dx, y: a.y };
+          const p2 = { x: mx - dx * 0.8, y: my };
+          const mid = { x: mx, y: my };
+          const p4 = { x: mx + dx * 0.8, y: my };
+          const p5 = { x: b.x - dx, y: b.y };
+          const pts = [];
+          for (let i = 0; i <= 18; i++) {
+            const u = i / 18;
+            pts.push(cub(a, p1, p2, mid, u), cub(mid, p4, p5, b, u));
+          }
+          bend = c;
+          if (!hitsRect(pts, rs)) break;
+        }
+      }
+      const my = my0 + bend;
+      return {
+        d: `M${a.x},${a.y} C${a.x + dx},${a.y} ${mx - dx * 0.8},${my} ${mx},${my} C${mx + dx * 0.8},${my} ${b.x - dx},${b.y} ${b.x},${b.y}`,
+        mid: { x: mx, y: my },
+      };
     }
-    // backward or overlapping: route under both blocks
+
+    // For backwards/overlapping links, try progressively lower lanes until the route clears other blocks.
     const hf = this.els.get(f.id)?.offsetHeight || 90, ht = this.els.get(t.id)?.offsetHeight || 90;
-    const low = Math.max(f.y + hf, t.y + ht) + 36 + bend;
     const x1 = a.x + 30, x2 = b.x - 30;
-    return { d: rounded([[a.x, a.y], [x1, a.y], [x1, low], [x2, low], [x2, b.y], [b.x, b.y]]), mid: { x: (x1 + x2) / 2, y: low } };
+    const base = Math.max(f.y + hf, t.y + ht) + 36;
+    let low = base + (e.bend || 0);
+    if (!e.bend) {
+      for (const offset of [0, 50, 100, 150, 220, 300, 400, 520]) {
+        const y = base + offset;
+        const pts = linePoints([a, { x: x1, y: a.y }, { x: x1, y }, { x: x2, y }, { x: x2, y: b.y }, b]);
+        low = y;
+        if (!hitsRect(pts, rs)) break;
+      }
+    }
+    return {
+      d: rounded([[a.x, a.y], [x1, a.y], [x1, low], [x2, low], [x2, b.y], [b.x, b.y]]),
+      mid: { x: (x1 + x2) / 2, y: low },
+    };
   }
 
+
   drawWires() {
+    this.rcache = this.calcRects();
     const seen = new Set();
     for (const e of this.auto.edges) {
       const f = this.node(e.from), t = this.node(e.to);
@@ -510,15 +578,26 @@ export class Editor {
   refresh(n) {
     const el = this.els.get(n.id), def = BLOCKS[n.kind];
     if (!el || !def) return;
-    el.querySelector('.n-sum').textContent = def.summary(n.cfg);
+    el.classList.toggle('off', !!n.disabled);
+    el.querySelector('.n-sum').textContent = (n.disabled ? 'Disabled · ' : '') + def.summary(n.cfg);
     el.querySelectorAll('.fld').forEach(r => {
       const f = def.fields.find(x => x.key === r.dataset.key);
       r.hidden = !!(f.show && !f.show(n.cfg));
       r.classList.toggle('bad', !!fieldError(f, n.cfg));
     });
-    const issues = this.issues(n), w = el.querySelector('.n-warn');
+    const issues = n.disabled ? [] : this.issues(n), w = el.querySelector('.n-warn');
     w.textContent = issues[0] || ''; w.title = issues.join('\n');
   }
+
+  toggleDisabled() {
+    const ns = this.auto.nodes.filter(n => this.sel.has(n.id) && BLOCKS[n.kind]?.cat !== 'tgt');
+    if (!ns.length) return;
+    const off = ns.some(n => !n.disabled);
+    for (const n of ns) { n.disabled = off; this.refresh(n); }
+    this.changed();
+  }
+
+
   refreshAll() { for (const n of this.auto.nodes) this.refresh(n); }
 
   paintState(id, st) {
