@@ -651,7 +651,7 @@ $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = t
 
 function createGlassGpuProcessor() {
   // Frosty material tunables (logical px). Set dim to 1 for zero adaptive dimming, sat to 1 for no saturation boost.
-  const FROST = { blur: 19 };
+  const FROST = { blur: 18 };
   const frostSelector = '.glass.liquidglass-variant';
   const f = n => Number(n).toFixed(3);
   const canvas = document.createElement('canvas');
@@ -776,13 +776,20 @@ function createGlassGpuProcessor() {
     const frosts = new Float32Array(32);
     let count = 0;
     for (const el of document.querySelectorAll('.glass')) {
+      if (el.classList.contains('top')) {
+        el.classList.add('liquidglass');
+        el.classList.remove('liquidglass-variant');
+      } else {
+        el.classList.add('liquidglass-variant');
+        el.classList.remove('liquidglass');
+      }
       const r = el.getBoundingClientRect();
       if (r.width < 2 || r.height < 2 || count >= 32) continue;
       const x = (frame.windowX - frame.screenX + r.left * dpr) * ratioX;
       const y = (frame.windowY - frame.screenY + r.top * dpr) * ratioY;
       regions.set([x, y, r.width * dpr * ratioX, r.height * dpr * ratioY], count * 4);
       const frost = el.matches(frostSelector);
-      blurs[count] = (frost ? FROST.blur : 15) * dpr * ratioX;
+      blurs[count] = (frost ? FROST.blur : 16) * dpr * ratioX;
       frosts[count] = frost ? 1 : 0;
       count++;
     }
@@ -840,8 +847,7 @@ function startGlassBackdrop() {
     } finally { inFlight = false; }
   };
 
-  // Match the source theme: 15px backdrop blur for the shell, 20px for elements,
-  // with the source's separate low-opacity tint and gradient border treatment.
+  // Use real sampled-backdrop blur with no tint overlay: 16px shell, 18px controls and surfaces.
   capture();
   window.setInterval(capture, 120);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) capture(); });
