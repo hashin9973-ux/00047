@@ -18,6 +18,7 @@ use tauri::{
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 // ---------- commands ----------
 #[tauri::command]
@@ -96,6 +97,7 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 fn hide_to_tray(app: AppHandle, eng: State<'_, Arc<Engine>>) {
+    save_window(&app);
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.hide();
     }
@@ -104,10 +106,21 @@ fn hide_to_tray(app: AppHandle, eng: State<'_, Arc<Engine>>) {
 
 #[tauri::command]
 async fn exit_app(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Result<(), String> {
+    save_window(&app);
     let e = eng.inner().clone();
     e.shutdown().await;
     app.exit(0);
     Ok(())
+}
+
+#[tauri::command]
+async fn test_block(eng: State<'_, Arc<Engine>>, auto: Automation, node_id: String) -> Result<String, String> {
+    let engine = eng.inner().clone();
+    engine.test_block(auto, node_id).await
+}
+
+fn save_window(app: &AppHandle) {
+    let _ = app.save_window_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED);
 }
 
 #[tauri::command]
@@ -182,6 +195,7 @@ fn show_main(app: &AppHandle) {
 }
 
 fn quit_app(app: &AppHandle) {
+    save_window(app);
     let app = app.clone();
     let eng = app.state::<Arc<Engine>>().inner().clone();
     tauri::async_runtime::spawn(async move {
@@ -195,6 +209,9 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--minimized"])))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default()
+            .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+            .build())
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
@@ -227,7 +244,8 @@ fn main() {
             exit_app,
             pick_file,
             export_automation,
-            import_automation
+            import_automation,
+            test_block
         ])
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
