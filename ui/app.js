@@ -115,6 +115,95 @@ async function testBlock(nodeId) {
 $('#ed-undo').addEventListener('click', () => editor.doUndo());
 $('#ed-redo').addEventListener('click', () => editor.doRedo());
 
+
+// ---------- log filter + CSV export ----------
+const logMatch = e => {
+  const { q, level, auto } = S.lf;
+  if (level && e.level !== level) return false;
+  if (auto === '__app' ? e.autoId !== '' : auto && e.autoId !== auto) return false;
+  if (q && !`${e.msg} ${e.autoName} ${e.nodeLabel || ''}`.toLowerCase().includes(q)) return false;
+  return true;
+};
+const csvCell = v => {
+  let s = String(v ?? '');
+  if (/^[=+\-@]/.test(s)) s = "'" + s;
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+async function exportLogs() {
+  const rows = S.logs.filter(logMatch);
+  if (!rows.length) { toast('No log entries to export'); return; }
+  const day = ts => { const d = new Date(ts); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${fmtTime(ts)}`; };
+  const csv = ['time,level,automation,block,message',
+    ...rows.map(e => [day(e.ts), e.level, e.autoName, e.nodeLabel || '', e.msg].map(csvCell).join(','))].join('\r\n') + '\r\n';
+  try { if (await invoke('export_logs', { csv })) toast(`Exported ${rows.length} entries`); }
+  catch (e) { toast('Log export failed: ' + e, 'err'); }
+}
+
+// ---------- Ctrl+K command palette ----------
+const pal = document.createElement('div');
+pal.id = 'cmdk'; pal.hidden = true;
+pal.innerHTML = '<div class="ck-box glass"><input class="ck-in" placeholder="Type a command…" spellcheck="false"><div class="ck-list"></div></div>';
+document.body.appendChild(pal);
+const ckIn = $('.ck-in', pal), ckList = $('.ck-list', pal);
+const ck = { items: [], i: 0 };
+
+function ckCommands() {
+  const go = v => () => { if (S.view === 'editor') flushSaves(); show(v); };
+  const c = [
+    { t: 'New automation', k: 'Action', f: newAuto },
+    { t: 'Import automation…', k: 'Action', f: importAuto },
+    { t: 'Go to Overview', k: 'View', f: go('overview') },
+    { t: 'Go to Automations', k: 'View', f: go('automations') },
+    { t: 'Go to Logs', k: 'View', f: go('logs') },
+    { t: 'Export logs (CSV)…', k: 'Logs', f: exportLogs },
+  ];
+  if (S.view === 'editor') c.unshift(
+    { t: 'Add block…', k: 'Editor', f: () => editor.openMenuCenter() },
+    { t: 'Undo', k: 'Editor', f: () => editor.doUndo() },
+    { t: 'Redo', k: 'Editor', f: () => editor.doRedo() },
+    { t: 'Fit view', k: 'Editor', f: () => editor.fit() },
+  );
+  for (const a of S.autos) {
+    c.push({ t: `Open: ${a.name}`, k: 'Automation', f: () => openEditor(a.id) });
+    c.push(isRun(a.id)
+      ? { t: `Stop: ${a.name}`, k: 'Automation', f: () => control('stop', a.id) }
+      : { t: `Start: ${a.name}`, k: 'Automation', f: () => control('start', a.id) });
+    c.push({ t: `Restart: ${a.name}`, k: 'Automation', f: () => control('restart', a.id) });
+  }
+  return c;
+}
+function ckRender() {
+  const terms = ckIn.value.toLowerCase().split(/\s+/).filter(Boolean);
+  ck.items = ckCommands().filter(c => terms.every(t => `${c.t} ${c.k}`.toLowerCase().includes(t))).slice(0, 50);
+  ck.i = Math.min(ck.i, Math.max(0, ck.items.length - 1));
+  ckList.innerHTML = ck.items.map((c, i) => `<div class="ck-item${i === ck.i ? ' on' : ''}" data-i="${i}"><span>${esc(c.t)}</span><small>${esc(c.k)}</small></div>`).join('')
+    || '<div class="ck-empty">No matching commands</div>';
+  ckList.querySelector('.on')?.scrollIntoView({ block: 'nearest' });
+}
+const ckClose = () => { pal.hidden = true; };
+function ckOpen() {
+  if (!$('#modal').hidden) return;
+  ck.i = 0; ckIn.value = ''; pal.hidden = false; ckRender(); ckIn.focus();
+}
+function ckRun(i) { const c = ck.items[i]; if (!c) return; ckClose(); setTimeout(c.f, 0); }
+ckIn.addEventListener('input', () => { ck.i = 0; ckRender(); });
+ckIn.addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown') { ck.i = Math.min(ck.items.length - 1, ck.i + 1); ckRender(); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { ck.i = Math.max(0, ck.i - 1); ckRender(); e.preventDefault(); }
+  else if (e.key === 'Enter') { ckRun(ck.i); e.preventDefault(); }
+  else if (e.key === 'Escape') ckClose();
+  e.stopPropagation();
+});
+ckList.addEventListener('click', e => { const it = e.target.closest('.ck-item'); if (it) ckRun(+it.dataset.i); });
+pal.addEventListener('pointerdown', e => { if (e.target === pal) ckClose(); });
+window.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (pal.hidden) ckOpen(); else ckClose();
+  }
+}, true);
+
+
 const HELP = `<div class="help">
 <b>Add a block:</b> right-click the canvas (or press + Block), type to search, Enter to place.<br>
 <b>Connect:</b> drag from a colored port — green IF, red ELSE, blue AFTER. Press 1 / 2 / 3 while dragging to switch type. Drop on empty space to create a connected block. Teal port = bind a Target block.<br>
@@ -257,6 +346,7 @@ document.addEventListener('click', e => {
   else if (act === 'dup') dupAuto(id);
   else if (act === 'export') exportAuto(id);
   else if (act === 'import') importAuto();
+  else if (act === 'export-logs') exportLogs();
   else if (['start', 'stop', 'restart'].includes(act)) control(act, id);
 });
 
@@ -357,7 +447,7 @@ function renderLogs() {
   if (!root.dataset.built) {
     root.innerHTML = `<div class="logbar"><input id="lg-q" class="search" placeholder="Search logs…" spellcheck="false">
       <select id="lg-lv"><option value="">All levels</option><option value="info">Info</option><option value="warn">Warnings</option><option value="error">Errors</option></select>
-      <select id="lg-au"></select><button class="btn" id="lg-clear">Clear</button><span class="mu" id="lg-count"></span></div>
+      <select id="lg-au"></select><button class="btn" id="lg-clear">Clear</button><button class="btn" data-act="export-logs" title="Export the filtered entries to CSV">Export CSV</button><span class="mu" id="lg-count"></span></div>
       <div class="glass logs" id="lg-rows"></div>`;
     root.dataset.built = '1';
     $('#lg-q').addEventListener('input', e => { S.lf.q = e.target.value.toLowerCase(); fillLogs(); });
@@ -372,13 +462,10 @@ function renderLogs() {
 }
 function fillLogs() {
   const el = $('#lg-rows'); if (!el) return;
-  const { q, level, auto } = S.lf;
   const rows = []; let total = 0;
   for (let i = S.logs.length - 1; i >= 0; i--) {
     const e = S.logs[i];
-    if (level && e.level !== level) continue;
-    if (auto === '__app' ? e.autoId !== '' : auto && e.autoId !== auto) continue;
-    if (q && !`${e.msg} ${e.autoName} ${e.nodeLabel || ''}`.toLowerCase().includes(q)) continue;
+    if (!logMatch(e)) continue;
     total++;
     if (rows.length < 500) rows.push(logRow(e));
   }
