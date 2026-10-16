@@ -1,0 +1,46 @@
+name: Windows verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check frontend JavaScript syntax
+        shell: pwsh
+        run: |
+          node --check ui/blocks.js
+          node --check ui/editor.js
+          node --check ui/app.js
+
+      - name: Validate Tauri JSON configuration
+        shell: pwsh
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8'))"
+          node -e "JSON.parse(require('fs').readFileSync('src-tauri/capabilities/default.json', 'utf8'))"
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+
+      - name: Compile for Windows
+        run: cargo check --manifest-path src-tauri/Cargo.toml
