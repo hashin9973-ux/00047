@@ -99,7 +99,12 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
 fn hide_to_tray(app: AppHandle, eng: State<'_, Arc<Engine>>) {
     save_window(&app);
     if let Some(w) = app.get_webview_window("main") {
+        // Hide the native window and its WebView2 controller together to avoid a stale compositor surface.
         let _ = w.hide();
+        #[cfg(target_os = "windows")]
+        let _ = w.with_webview(|webview| unsafe {
+            let _ = webview.controller().SetIsVisible(false);
+        });
     }
     eng.set_ui(false);
 }
@@ -198,6 +203,10 @@ fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
         let _ = w.show();
+        #[cfg(target_os = "windows")]
+        let _ = w.with_webview(|webview| unsafe {
+            let _ = webview.controller().SetIsVisible(true);
+        });
         let _ = w.set_focus();
     }
     if let Some(e) = app.try_state::<Arc<Engine>>() {
