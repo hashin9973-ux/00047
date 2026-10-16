@@ -26,11 +26,20 @@ function rounded(pts, r = 14) {
     const [x0, y0] = pts[i - 1], [x1, y1] = pts[i], [x2, y2] = pts[i + 1];
     const l1 = Math.hypot(x1 - x0, y1 - y0) || 1, l2 = Math.hypot(x2 - x1, y2 - y1) || 1;
     const rr = Math.min(r, l1 / 2, l2 / 2);
-    d += ` L${x1 + (x0 - x1) / l1 * rr},${y1 + (y0 - y1) / l1 * rr} Q${x1},${y1} ${x1 + (x2 - x1) / l2 * rr},${y1 + (y2 - y1) / l2 * rr}`;
+    d += ` L${x1 + (x0 - x1) / l1 * rr},${y1 + (y2 - y1) / l2 * 0 + (y1 - y0) / l1 * rr} Q${x1},${y1} ${x1 + (x2 - x1) / l2 * rr},${y1 + (y2 - y1) / l2 * rr}`;
   }
   const l = pts[pts.length - 1];
   return d + ` L${l[0]},${l[1]}`;
 }
+
+const cub = (p0, p1, p2, p3, t) => {
+  const u = 1 - t;
+  return {
+    x: u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x,
+    y: u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y,
+  };
+};
+const hitsRect = (pts, rs) => pts.some(p => rs.some(r => p.x > r[0] && p.x < r[2] && p.y > r[1] && p.y < r[3]));
 
 export class Editor {
   constructor(host, hooks) {
@@ -319,6 +328,7 @@ export class Editor {
     else if (c && k === 'v') { this.paste(this.hover ? this.cursor : null); e.preventDefault(); }
     else if (c && k === 'd') { this.duplicate(); e.preventDefault(); }
     else if (c && k === 'a') { this.setSel(new Set(this.auto.nodes.map(n => n.id))); e.preventDefault(); }
+    else if (!c && k === 'b') { this.toggleDisabled(); e.preventDefault(); }
     else if (c && k === 'z' && !e.shiftKey) { this.doUndo(); e.preventDefault(); }
     else if (c && (k === 'y' || (k === 'z' && e.shiftKey))) { this.doRedo(); e.preventDefault(); }
     else if (e.key === 'Escape') { this.select([]); this.selEdge = null; this.hideMenu(); this.scheduleWires(); }
@@ -367,22 +377,51 @@ export class Editor {
   // ---------- wires ----------
   scheduleWires() { if (!this.raf) this.raf = requestAnimationFrame(() => { this.raf = 0; this.drawWires(); }); }
 
+  calcRects() {
+    return this.auto.nodes.map(n => ({ id: n.id, r: [n.x - 8, n.y - 8, n.x + W + 8, n.y + (this.els.get(n.id)?.offsetHeight || 90) + 8] }));
+  }
+
   route(e, f, t) {
     const a = { x: f.x + W, y: f.y + PORT[e.kind === 'target' ? 'tgt' : e.kind] };
     const b = { x: t.x, y: t.y + PORT.in };
-    const bend = e.bend || 0;
+    const rs = (this.rcache || (this.rcache = this.calcRects())).filter(o => o.id !== f.id && o.id !== t.id).map(o => o.r);
     if (b.x - a.x >= 70) {
-      const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 + bend, dx = Math.max(40, (b.x - a.x) * 0.35);
+      const dx = Math.max(40, (b.x - a.x) * 0.35), mx = (a.x + b.x) / 2, my0 = (a.y + b.y) / 2;
+      let bend = e.bend || 0;
+      if (!bend && rs.length) {
+        let found = false;
+        for (const c of [0, 50, -50, 110, -110, 180, -180, 260, -260, 360, -360, 500, -500, 700, -700, 900, -900]) {
+          const my = my0 + c;
+          const P = [a, { x: a.x + dx, y: a.y }, { x: mx - dx * 0.8, y: my }, { x: mx, y: my }, { x: mx + dx * 0.8, y: my }, { x: b.x - dx, y: b.y }, b];
+          const pts = [];
+          for (let i = 0; i <= 12; i++) {
+            pts.push(cub(P[0], P[1], P[2], P[3], i / 12));
+            pts.push(cub(P[3], P[4], P[5], P[6], i / 12));
+          }
+          if (!hitsRect(pts, rs)) { bend = c; found = true; break; }
+        }
+        if (!found) bend = 1000;
+      }
+      const my = my0 + bend;
       return { d: `M${a.x},${a.y} C${a.x + dx},${a.y} ${mx - dx * 0.8},${my} ${mx},${my} S${b.x - dx},${b.y} ${b.x},${b.y}`, mid: { x: mx, y: my } };
     }
-    // backward or overlapping: route under both blocks
+    // Backward or overlapping connections use an orthogonal lane below the blocks.
     const hf = this.els.get(f.id)?.offsetHeight || 90, ht = this.els.get(t.id)?.offsetHeight || 90;
-    const low = Math.max(f.y + hf, t.y + ht) + 36 + bend;
+    let low = Math.max(f.y + hf, t.y + ht) + 36;
     const x1 = a.x + 30, x2 = b.x - 30;
+    if (e.bend) low += e.bend;
+    else {
+      const lo = Math.min(x1, x2), hi = Math.max(x1, x2);
+      for (let i = 0; i < 12; i++) {
+        if (!rs.some(r => r[0] < hi && r[2] > lo && low > r[1] && low < r[3])) break;
+        low += 50;
+      }
+    }
     return { d: rounded([[a.x, a.y], [x1, a.y], [x1, low], [x2, low], [x2, b.y], [b.x, b.y]]), mid: { x: (x1 + x2) / 2, y: low } };
   }
 
   drawWires() {
+    this.rcache = this.calcRects();
     const seen = new Set();
     for (const e of this.auto.edges) {
       const f = this.node(e.from), t = this.node(e.to);
@@ -510,14 +549,23 @@ export class Editor {
   refresh(n) {
     const el = this.els.get(n.id), def = BLOCKS[n.kind];
     if (!el || !def) return;
-    el.querySelector('.n-sum').textContent = def.summary(n.cfg);
+    el.classList.toggle('off', !!n.disabled);
+    el.querySelector('.n-sum').textContent = (n.disabled ? 'Disabled · ' : '') + def.summary(n.cfg);
     el.querySelectorAll('.fld').forEach(r => {
       const f = def.fields.find(x => x.key === r.dataset.key);
       r.hidden = !!(f.show && !f.show(n.cfg));
       r.classList.toggle('bad', !!fieldError(f, n.cfg));
     });
-    const issues = this.issues(n), w = el.querySelector('.n-warn');
+    const issues = n.disabled ? [] : this.issues(n), w = el.querySelector('.n-warn');
     w.textContent = issues[0] || ''; w.title = issues.join('\n');
+  }
+
+  toggleDisabled() {
+    const ns = this.auto.nodes.filter(n => this.sel.has(n.id) && BLOCKS[n.kind]?.cat !== 'tgt');
+    if (!ns.length) return;
+    const off = ns.some(n => !n.disabled);
+    for (const n of ns) { n.disabled = off; this.refresh(n); }
+    this.changed();
   }
   refreshAll() { for (const n of this.auto.nodes) this.refresh(n); }
 
@@ -536,7 +584,7 @@ export class Editor {
   // ---------- add / delete / clipboard ----------
   addNode(kind, wp, pending) {
     const def = BLOCKS[kind];
-    const n = { id: uid(), kind, x: Math.round(wp.x), y: Math.round(wp.y), collapsed: false, cfg: structuredClone(def.defaults) };
+    const n = { id: uid(), kind, x: Math.round(wp.x), y: Math.round(wp.y), collapsed: false, disabled: false, cfg: structuredClone(def.defaults) };
     if (pending) { n.x = Math.round(wp.x + 30); n.y = Math.round(wp.y - PORT.in); }
     this.auto.nodes.push(n); this.addEl(n);
     if (pending) this.connect(pending.from, n.id, pending.kind);
@@ -605,18 +653,23 @@ export class Editor {
   hideMenu() { this.menu.hidden = true; this.menu.innerHTML = ''; this.menu.onclick = null; }
 
   nodeMenu(cx, cy, id) {
-    const n = this.node(id), m = this.menu;
+    const n = this.node(id), m = this.menu, isT = BLOCKS[n.kind]?.cat === 'tgt';
     m.className = 'ctx glass';
     m.innerHTML = `<div class="ml">
+      <div class="mi" data-a="test"><span><b>Test this block</b><small>Runs it once with its current settings and wired targets</small></span></div>
+      ${isT ? '' : `<div class="mi" data-a="off"><span><b>${n.disabled ? 'Enable' : 'Disable'} block</b><small>B · a disabled block is skipped; only its AFTER wires continue</small></span></div>`}
       <div class="mi" data-a="dup"><span><b>Duplicate</b><small>Ctrl+D</small></span></div>
       <div class="mi" data-a="col"><span><b>${n.collapsed ? 'Expand' : 'Collapse'} settings</b></span></div>
       <div class="mi" data-a="del"><span><b>Delete</b><small>Del</small></span></div></div>`;
-    this.placeMenu(cx, cy, 300, 170);
+    this.placeMenu(cx, cy, 300, 260);
     m.onclick = e => {
       const it = e.target.closest('.mi'); if (!it) return;
       this.hideMenu();
-      if (it.dataset.a === 'dup') this.duplicate();
-      else if (it.dataset.a === 'del') this.deleteSel();
+      const a = it.dataset.a;
+      if (a === 'test') this.hooks.testBlock(id);
+      else if (a === 'off') this.toggleDisabled();
+      else if (a === 'dup') this.duplicate();
+      else if (a === 'del') this.deleteSel();
       else this.toggleCollapse(n);
     };
   }
