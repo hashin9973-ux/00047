@@ -760,6 +760,7 @@ function createGlassGpuProcessor() {
 function startGlassBackdrop() {
   if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
   const root = document.documentElement;
+  root.style.setProperty('--liquidglass-reflection-image', 'none');
   let inFlight = false;
   let loggedFailure = false;
   let gpuProcess;
@@ -770,14 +771,22 @@ function startGlassBackdrop() {
 
   const updateBackdropPositions = frame => {
     const dpr = window.devicePixelRatio || 1;
-    const cropOriginX = (frame.screenX - frame.windowX) / dpr;
-    const cropOriginY = (frame.screenY - frame.windowY) / dpr;
-    root.style.setProperty('--glass-frame-size', (frame.screenWidth / dpr) + 'px ' + (frame.screenHeight / dpr) + 'px');
-    document.querySelectorAll('.glass').forEach(el => {
+    const sampleWidth = frame.screenWidth / dpr;
+    const sampleHeight = frame.screenHeight / dpr;
+    const originX = (frame.screenX - frame.windowX) / dpr;
+    const originY = (frame.screenY - frame.windowY) / dpr;
+
+    for (const el of document.querySelectorAll('.glass.liquidglass-variant')) {
       const rect = el.getBoundingClientRect();
-      el.style.setProperty('--glass-frame-x', (cropOriginX - rect.left) + 'px');
-      el.style.setProperty('--glass-frame-y', (cropOriginY - rect.top) + 'px');
-    });
+      if (
+        rect.width <= 0 || rect.height <= 0 ||
+        rect.right <= 0 || rect.bottom <= 0 ||
+        rect.left >= window.innerWidth || rect.top >= window.innerHeight
+      ) continue;
+
+      el.style.setProperty('--liquidglass-reflection-size', `${sampleWidth}px ${sampleHeight}px`);
+      el.style.setProperty('--liquidglass-reflection-position', `${originX - rect.left}px ${originY - rect.top}px`);
+    }
   };
 
   const capture = async () => {
@@ -793,12 +802,10 @@ function startGlassBackdrop() {
         await image.decode();
         backdropFrame = gpuProcess(image, frame);
       }
-      root.style.setProperty('--glass-backdrop-frame', 'url("' + backdropFrame + '")');
+      root.style.setProperty('--liquidglass-reflection-image', 'url("' + backdropFrame + '")');
       updateBackdropPositions(frame);
-      root.classList.add('glass-backdrop-ready');
       loggedFailure = false;
     } catch (error) {
-      root.classList.remove('glass-backdrop-ready');
       if (!loggedFailure) { console.warn('Glass backdrop capture unavailable:', error); loggedFailure = true; }
     } finally { inFlight = false; }
   };
@@ -828,6 +835,27 @@ function startGlassBackdrop() {
   });
 }
 
+function setupGlassMaterials() {
+  const selector = '.glass, button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
+  const apply = root => {
+    if (root.nodeType !== 1) return;
+    if (root.matches(selector)) {
+      root.classList.add('glass', 'liquidglass-variant');
+      root.classList.remove('liquidglass');
+    }
+    root.querySelectorAll?.(selector).forEach(el => {
+      el.classList.add('glass', 'liquidglass-variant');
+      el.classList.remove('liquidglass');
+    });
+  };
+  apply(document.documentElement);
+  new MutationObserver(records => {
+    for (const record of records) {
+      for (const node of record.addedNodes) apply(node);
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+}
+
 // ---------- init ----------
 (async function init() {
   await loadBlockSpecs();
@@ -837,5 +865,6 @@ function startGlassBackdrop() {
   } catch (e) { toast('Could not load data: ' + e, 'err'); }
   await bindEvents();
   show('overview');
+  setupGlassMaterials();
   startGlassBackdrop();
 })();
