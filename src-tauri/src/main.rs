@@ -62,19 +62,18 @@ fn apply_liquidglass_backdrop(window: &tauri::WebviewWindow) {
     }
 
     let Ok(hwnd) = window.hwnd() else { return; };
-    let user32: Vec<u16> = "user32.dll\\0".encode_utf16().collect();
+    let user32: Vec<u16> = "user32.dll\0".encode_utf16().collect();
     let procedure = unsafe {
         let module = GetModuleHandleW(user32.as_ptr());
         if module.is_null() { return; }
-        GetProcAddress(module, b"SetWindowCompositionAttribute\\0".as_ptr())
+        GetProcAddress(module, b"SetWindowCompositionAttribute\0".as_ptr())
     };
     if procedure.is_null() { return; }
 
-    // Use Windows' blur-behind composition only. State 3 is
-    // ACCENT_ENABLE_BLURBEHIND; unlike Acrylic, it adds no material tint.
+    // Native blur only; do not apply the Windows Acrylic tint.
     let set_attribute: SetCompositionAttribute = unsafe { transmute(procedure) };
     let mut accent = AccentPolicy {
-        accent_state: 3,
+        accent_state: 3, // ACCENT_ENABLE_BLURBEHIND
         accent_flags: 0,
         gradient_color: 0,
         animation_id: 0,
