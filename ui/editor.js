@@ -94,10 +94,10 @@ export class Editor {
             `<marker id="ar-${k}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${v.color}"/></marker>`).join('')}</defs><g class="wl"></g></svg>
           <div class="nodes"></div>
         </div>
-        <div class="marquee glass" hidden></div>
+        <div class="marquee" hidden></div>
         <div class="edge-ui" hidden>
           <div class="eu-bar glass"><button data-k="if">IF</button><button data-k="else">ELSE</button><button data-k="after">AFTER</button><button data-del="1" title="Disconnect wire">Disconnect ✕</button></div>
-          <div class="eu-handle glass" title="Drag to reroute"></div>
+          <div class="eu-handle" title="Drag to reroute"></div>
         </div>
         <div class="ctx glass" hidden></div>
       </div>`;
