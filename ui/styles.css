@@ -271,7 +271,7 @@ body.liquidglass {
   z-index: -1;
   pointer-events: none;
   border-radius: inherit;
-  background-image: none;
+  background-image: var(--liquidglass-reflection-image, none);
   background-size: var(--liquidglass-reflection-size);
   background-position: var(--liquidglass-reflection-position);
   background-repeat: no-repeat;
@@ -310,7 +310,10 @@ select.glass.liquidglass-variant,
 textarea.glass.liquidglass-variant {
   background: transparent !important;
   background-color: transparent !important;
-  background-image: none !important;
+  background-image: var(--liquidglass-reflection-image, none) !important;
+  background-size: var(--liquidglass-reflection-size) !important;
+  background-position: var(--liquidglass-reflection-position) !important;
+  background-repeat: no-repeat !important;
   color: var(--tx) !important;
 }
 
