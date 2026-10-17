@@ -649,6 +649,27 @@ async function reloadBlocks() {
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
+function setupGlassMaterials() {
+  const selector = '.glass, button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
+  const apply = root => {
+    if (root.nodeType !== 1) return;
+    if (root.matches(selector)) {
+      root.classList.add('glass', 'liquidglass-variant');
+      root.classList.remove('liquidglass');
+    }
+    root.querySelectorAll?.(selector).forEach(el => {
+      el.classList.add('glass', 'liquidglass-variant');
+      el.classList.remove('liquidglass');
+    });
+  };
+  apply(document.documentElement);
+  new MutationObserver(records => {
+    for (const record of records) {
+      for (const node of record.addedNodes) apply(node);
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+}
+
 // ---------- init ----------
 (async function init() {
   await loadBlockSpecs();
@@ -658,4 +679,5 @@ $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = t
   } catch (e) { toast('Could not load data: ' + e, 'err'); }
   await bindEvents();
   show('overview');
+  setupGlassMaterials();
 })();
