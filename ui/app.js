@@ -755,22 +755,32 @@ function startGlassReflection() {
     }
   };
 
-  // Run at the WebView's native vsync cadence. Capture stays in flight only for
-  // the actual native/IPC work; no extra timer throttles the achievable rate.
-  const tick = () => {
-    if (!document.hidden) void capture();
-    window.requestAnimationFrame(tick);
+  // Desktop capture is CPU/IPC-heavy. Sample reflections at 10 Hz maximum
+  // rather than coupling full screen capture to every WebView refresh. The
+  // interface itself remains driven by native vsync; only reflection updates
+  // are sampled, and overlapping capture requests are skipped.
+  const CAPTURE_INTERVAL_MS = 100;
+  let captureTimer = 0;
+  const startCaptures = () => {
+    if (captureTimer) window.clearInterval(captureTimer);
+    markGeometryDirty();
+    void capture();
+    captureTimer = window.setInterval(() => {
+      if (!document.hidden) void capture();
+    }, CAPTURE_INTERVAL_MS);
   };
+  const stopCaptures = () => {
+    if (captureTimer) window.clearInterval(captureTimer);
+    captureTimer = 0;
+  };
+
   window.addEventListener('resize', markGeometryDirty, { passive: true });
   window.addEventListener('scroll', markGeometryDirty, { passive: true, capture: true });
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) {
-      markGeometryDirty();
-      void capture();
-    }
+    if (document.hidden) stopCaptures();
+    else startCaptures();
   });
-  void capture();
-  window.requestAnimationFrame(tick);
+  startCaptures();
 }
 
 function setupGlassMaterials() {
