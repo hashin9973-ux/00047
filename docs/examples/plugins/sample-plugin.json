@@ -1,0 +1,49 @@
+{
+  "plugin": {
+    "id": "sample.basics",
+    "name": "Sample Basics",
+    "version": "1.0.0",
+    "author": "00047 examples",
+    "description": "A harmless example condition and action for testing plugin imports."
+  },
+  "blocks": [
+    {
+      "kind": "user.sample.is_weekday",
+      "category": "condition",
+      "title": "Is Weekday",
+      "icon": "clock",
+      "description": "Satisfied Monday through Friday.",
+      "fields": [],
+      "summary": "Today is a weekday",
+      "run": {
+        "type": "powershell",
+        "script": "if ((Get-Date).DayOfWeek -in @('Saturday','Sunday')) { exit 1 } else { exit 0 }"
+      }
+    },
+    {
+      "kind": "user.sample.write_log",
+      "category": "action",
+      "title": "Write Log Note",
+      "icon": "note",
+      "description": "Writes a custom note to the automation log without changing files or system settings.",
+      "fields": [
+        {
+          "key": "message",
+          "label": "Log message",
+          "type": "text",
+          "default": "Hello from the sample plugin",
+          "required": true,
+          "maxLen": 300
+        },
+        {
+          "preset": "onFail"
+        }
+      ],
+      "summary": "Log: {message}",
+      "run": {
+        "type": "powershell",
+        "script": "Write-Output $env:FIELD_MESSAGE"
+      }
+    }
+  ]
+}
