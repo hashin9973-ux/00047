@@ -619,8 +619,8 @@ async function openBlocksManager() {
     : '<p>No custom blocks installed yet.</p>';
   const errs = info.errors.length ? `<p class="er">${info.errors.map(esc).join('<br>')}</p>` : '';
   const c = await htmlModal('Custom blocks',
-    `<p>Folder: <code>${esc(info.dir)}</code></p>${list}${errs}<p>Custom blocks can run programs and scripts with your permissions. Only install packs you trust. See docs/ADDING_BLOCKS.md.</p>`,
-    [['close', 'Close'], ['folder', 'Open folder'], ['install', 'Install pack…', 'primary'], ['reload', 'Reload (restarts 00047)']]);
+    `<p>Folder: <code>${esc(info.dir)}</code></p>${list}${errs}<p>ZIP plugin packs contain a manifest plus scripts. They can run any installed interpreter or executable with your Windows account permissions. Only install code you trust. See docs/ADDING_BLOCKS.md.</p>`,
+    [['close', 'Close'], ['folder', 'Open folder'], ['install', 'Install ZIP plugin…', 'primary'], ['reload', 'Reload (restarts 00047)']]);
   if (c === 'folder') invoke('open_blocks_folder').catch(e => toast(String(e), 'err'));
   else if (c === 'install') installPack();
   else if (c === 'reload') reloadBlocks();
@@ -633,7 +633,7 @@ async function installPack() {
     const rows = pv.blocks.map(b => `<li><b>${esc(b.title)}</b> <small>${esc(b.category)} · ${esc(b.kind)}</small><pre>${esc(b.command)}</pre></li>`).join('');
     const errs = pv.errors.length ? `<p class="er">Skipped: ${pv.errors.map(esc).join('<br>')}</p>` : '';
     const c = await htmlModal(`Install "${pv.file}"?`,
-      `<p>These blocks will be able to run the following on this PC:</p><ul class="bp">${rows}</ul>${errs}`,
+      `<p>This ZIP will install these blocks. The listed runtime commands can execute code with your Windows account permissions:</p><ul class="bp">${rows}</ul>${errs}`,
       [['cancel', 'Cancel'], ['go', 'Install', 'primary']]);
     if (c !== 'go') return;
     await invoke('block_pack_install', { path: pv.path });
