@@ -22,7 +22,12 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::HWND;
+use windows::{core::Interface, Win32::Foundation::HWND};
+#[cfg(target_os = "windows")]
+use webview2_com::{
+    Microsoft::Web::WebView2::Win32::ICoreWebView2_3,
+    TrySuspendCompletedHandler,
+};
 
 #[derive(serde::Deserialize)]
 struct GlassSurface {
@@ -60,6 +65,33 @@ fn set_native_blur_visible(window: &tauri::WebviewWindow, visible: bool) {
         if webview.controller().ParentWindow(&mut hwnd).is_ok() {
             windhawk_blur_set_visible(hwnd.0 as isize, visible);
         }
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn suspend_native_webview(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(core3) = core.cast::<ICoreWebView2_3>() else {
+            return;
+        };
+        let callback = TrySuspendCompletedHandler::create(Box::new(|_result, _success| Ok(())));
+        let _ = core3.TrySuspend(callback);
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn resume_native_webview(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(core3) = core.cast::<ICoreWebView2_3>() else {
+            return;
+        };
+        let _ = core3.Resume();
     });
 }
 
@@ -223,6 +255,10 @@ fn hide_to_tray(app: AppHandle, eng: State<'_, Arc<Engine>>) {
         let _ = w.with_webview(|webview| unsafe {
             let _ = webview.controller().SetIsVisible(false);
         });
+        // Suspend the renderer after hiding it. This pauses page timers/animations
+        // and lets WebView2 reclaim memory while Rust automations keep running.
+        #[cfg(target_os = "windows")]
+        suspend_native_webview(&w);
     }
     eng.set_ui(false);
 }
@@ -356,6 +392,8 @@ async fn restart_app(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Result<(), 
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.unminimize();
+        #[cfg(target_os = "windows")]
+        resume_native_webview(&w);
         let _ = w.show();
         #[cfg(target_os = "windows")]
         let _ = w.with_webview(|webview| unsafe {
