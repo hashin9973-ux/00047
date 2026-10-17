@@ -132,7 +132,7 @@ async function testBlock(nodeId) {
 if (BLOCKS[n.kind]?.cat === 'act') {
     const c = await modal({
       title: 'Test this block?',
-      body: "Actions run for real (for example a trim or a launch). The test uses the block's current settings and wired targets.",
+      body: "Actions run for real (for example a trim or a launch). The test uses the block's current settings and wired inputs.",
       buttons: [['cancel', 'Cancel'], ['go', 'Run test', 'primary']],
     });
     if (c !== 'go') return;
@@ -240,7 +240,7 @@ window.addEventListener('keydown', e => {
 
 const HELP = `<div class="help">
 <b>Add a block:</b> right-click the canvas (or press + Block), type to search, Enter to place.<br>
-<b>Connect:</b> drag from a colored port — green IF, red ELSE, blue AFTER. Press 1 / 2 / 3 while dragging to switch type. Drop on empty space to create a connected block. Teal port = bind a Target block.<br>
+<b>Connect:</b> drag from a colored port — green IF, red ELSE, blue AFTER. Press 1 / 2 / 3 while dragging to switch type. Drop on empty space to create a connected block. Teal port = bind an Input block.<br>
 <b>Wires:</b> click a wire to change its type, delete it, or drag its white dot to reroute.<br>
 <b>Select:</b> click, Ctrl/Shift-click, or Shift/Ctrl-drag a box. <b>Pan:</b> drag empty space, middle-drag, or Space-drag. <b>Zoom:</b> scroll wheel.<br>
 <b>Keys:</b> Ctrl+C / Ctrl+V (keeps internal wires), Ctrl+D duplicate, Ctrl+A select all, B disable, Del delete, Esc deselect. Blocks cannot overlap while dragging; hold Alt to move through other blocks.<br>

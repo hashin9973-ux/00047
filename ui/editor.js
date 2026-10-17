@@ -6,7 +6,7 @@ const KINDS = {
   if: { label: 'IF', color: '#4ade80' },
   else: { label: 'ELSE', color: '#ff6b81' },
   after: { label: 'AFTER', color: '#5aa9ff' },
-  target: { label: 'TARGET', color: '#3ddbd9' },
+  target: { label: 'INPUT', color: '#3ddbd9' },
 };
 const NS = 'http://www.w3.org/2000/svg';
 const svg = (t, a = {}) => { const e = document.createElementNS(NS, t); for (const k in a) e.setAttribute(k, a[k]); return e; };
@@ -460,12 +460,12 @@ export class Editor {
 
     if (kind === 'target') {
       if (ca !== 'tgt' || cb === 'tgt' || B.kind === 'act.start' || B.kind === 'act.loop') {
-        this.hooks.toast('A Target can only bind to a Condition or an Action that consumes it, such as Launch File.');
+        this.hooks.toast('An Input can only bind to a Condition or Action that consumes it, such as Visible Windows or Launch File.');
         return false;
       }
     } else {
       if (!['if', 'else', 'after'].includes(kind) || ca === 'tgt') {
-        this.hooks.toast('Use IF / ELSE / AFTER outputs for flow, and the teal output for a Target connection.');
+        this.hooks.toast('Use IF / ELSE / AFTER outputs for flow, and the teal output for an Input connection.');
         return false;
       }
 if (A.kind === 'act.loop') {
@@ -609,7 +609,7 @@ if (A.kind === 'act.loop') {
          <b class="pl if">IF</b><b class="pl else">ELSE</b><b class="pl after">AFTER</b>`;
     const ports = isT
       ? `<i class="port in tgt-in" title="Flow input"></i>
-         <i class="port out tgt" data-t="target" title="Target output: bind this target and continue the workflow"></i>`
+         <i class="port out tgt" data-t="target" title="Input output: bind this input and continue the workflow"></i>`
       : isLoop
         ? `<i class="port in" title="Flow input. Loop returns automatically to Start."></i>`
         : `<i class="port in" title="Flow input. Multiple incoming wires may converge here."></i>${flowOut}`;
@@ -695,7 +695,7 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
         }
       }
     }
-    // Preserve the supported form where a required Target is placed directly after the consumer.
+    // Preserve the supported form where a required Input is placed directly after the consumer.
     return this.auto.edges.some(e => e.from === id && e.kind !== 'target' && this.node(e.to)?.kind === kind);
   }
 
@@ -704,7 +704,7 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
     if (!def) return ['Unknown block type'];
     const out = validate(n.kind, n.cfg);
     if (def.requires && !this.hasTarget(def.requires, n.id)) {
-      out.push(`Connect a "${BLOCKS[def.requires].title}" target to this block or earlier in its flow`);
+      out.push(`Connect the required "${BLOCKS[def.requires].title}" to this block or earlier in its flow`);
     }
     if (n.kind === 'act.loop') {
       const starts = this.auto.nodes.filter(x => x.kind === 'act.start' && !x.disabled);
@@ -847,7 +847,7 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
     const n = this.node(id), m = this.menu, isT = BLOCKS[n.kind]?.cat === 'tgt';
     m.className = 'ctx glass';
     m.innerHTML = `<div class="ml">
-      <div class="mi" data-a="test"><span><b>Test this block</b><small>Runs it once with its current settings and wired targets</small></span></div>
+      <div class="mi" data-a="test"><span><b>Test this block</b><small>Runs it once with its current settings and wired inputs</small></span></div>
       ${isT ? '' : `<div class="mi" data-a="off"><span><b>${n.disabled ? 'Enable' : 'Disable'} block</b><small>B · a disabled block is skipped; only its AFTER wires continue</small></span></div>`}
       <div class="mi" data-a="dup"><span><b>Duplicate</b><small>Ctrl+D</small></span></div>
       <div class="mi" data-a="col"><span><b>${n.collapsed ? 'Expand' : 'Collapse'} settings</b></span></div>

@@ -40,7 +40,7 @@ pub struct NodeCx {
     /// report(state "running"|"waiting", progress 0..1, detail text)
     pub report: Report,
     pub log: LogFn,
-    /// Resolves the Target blocks wired into this block (evaluated fresh each call).
+    /// Resolves the Input blocks wired into this block (evaluated fresh each call).
     pub resolve: Resolve,
     pub visible: Flag,
 }
@@ -50,7 +50,7 @@ pub trait Block: Send + Sync {
     fn title(&self) -> &'static str;
     fn category(&self) -> Cat;
     fn validate(&self, cfg: &Value) -> Result<(), String>;
-    /// Target block kind this block requires, e.g. Some("tgt.process").
+    /// Input block kind this block requires, e.g. Some("tgt.process").
     fn requires_target(&self) -> Option<&'static str> {
         None
     }
@@ -71,7 +71,7 @@ pub trait Block: Send + Sync {
         Err("this block is not executable".into())
     }
     fn resolve(&self, _cfg: &Value) -> Result<Target, String> {
-        Err("this block is not a target".into())
+        Err("this block is not an input".into())
     }
 }
 
@@ -117,12 +117,96 @@ async fn sleep_progress(cx: &NodeCx, secs: f64, label: &str) -> bool {
 
 fn first_process(cx: &NodeCx) -> Result<(u32, String), String> {
     for t in (cx.resolve)()? {
-        if let Target::Process { pid, name } = t {
-            return Ok((pid, name));
-        }
+        if let Target::Process { pid, name } = t { return Ok((pid, name)); }
     }
-    Err("no Active process target is connected to this block".into())
+    Err("no Process Input is connected to this block".into())
 }
+
+fn visible_windows_spec() -> Value {
+    json!({
+        "category": "condition", "title": "Visible Windows", "icon": "window",
+        "description": "Counts visible, non-minimized top-level windows owned by the connected process input.",
+        "requires": "tgt.process",
+        "fields": [
+            {"key":"op","label":"Match","type":"select","default":"at_least",
+             "options":[["at_least","At least"],["at_most","At most"],["exactly","Exactly"]]},
+            {"key":"count","label":"Window count","type":"number","min":0,"max":10000,"step":1,"default":1},
+            {"preset":"onFail"}
+        ],
+        "summary": "{op} {count} visible windows",
+        "help": "Requires a Process Input. Counts top-level windows Windows marks visible and that are not minimized. Windows hidden behind other windows may still count; this does not measure unobscured pixels."
+    })
+}
+
+fn expected_window_count(c: &Value) -> Result<usize, String> {
+    let n = rng(c, "count", 1.0, 0.0, 10000.0, "Window count")?;
+    if n.fract() != 0.0 { return Err("Window count must be a whole number".into()); }
+    Ok(n as usize)
+}
+
+fn window_count_matches(mode: &str, actual: usize, expected: usize) -> bool {
+    match mode { "at_most" => actual <= expected, "exactly" => actual == expected, _ => actual >= expected }
+}
+
+struct VisibleWindows;
+#[async_trait]
+impl Block for VisibleWindows {
+    fn title(&self) -> &'static str { "Visible Windows" }
+    fn category(&self) -> Cat { Cat::Condition }
+    fn requires_target(&self) -> Option<&'static str> { Some("tgt.process") }
+    fn spec(&self) -> Option<Value> { Some(visible_windows_spec()) }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        spec::validate(&visible_windows_spec(), c)?;
+        expected_window_count(c).map(|_| ())
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let (pid, name) = first_process(cx)?;
+        let expected = expected_window_count(&cx.cfg)?;
+        let count = tokio::task::spawn_blocking(move || sys::visible_window_count(pid))
+            .await.map_err(|e| e.to_string())??;
+        let mode = text(&cx.cfg, "op");
+        let satisfied = window_count_matches(&mode, count, expected);
+        (cx.report)("running", None, format!("{name}: {count} visible window(s); needs {} {expected}", match mode.as_str() {
+            "at_most" => "at most", "exactly" => "exactly", _ => "at least"
+        }));
+        Ok(if satisfied { Outcome::Satisfied } else { Outcome::NotSatisfied })
+    }
+}
+
+fn process_audio_spec() -> Value {
+    json!({
+        "category": "condition", "title": "Process Outputting Audio", "icon": "bell",
+        "requires": "tgt.process",
+        "description": "Checks whether the connected process has an active Windows audio-render session.",
+        "fields": [
+            {"key":"state","label":"Condition","type":"select","default":"outputting",
+             "options":[["outputting","Outputting audio"],["not_outputting","Not outputting audio"]]},
+            {"preset":"onFail"}
+        ],
+        "summary": "Process audio: {state}",
+        "help": "Requires a Process Input. A matching active audio-render session means the process has a running audio stream. A muted or silent stream can still count as active; this does not measure audible volume."
+    })
+}
+struct ProcessAudio;
+#[async_trait]
+impl Block for ProcessAudio {
+    fn title(&self) -> &'static str { "Process Outputting Audio" }
+    fn category(&self) -> Cat { Cat::Condition }
+    fn requires_target(&self) -> Option<&'static str> { Some("tgt.process") }
+    fn spec(&self) -> Option<Value> { Some(process_audio_spec()) }
+    fn validate(&self, c: &Value) -> Result<(), String> { spec::validate(&process_audio_spec(), c) }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        let (pid, name) = first_process(cx)?;
+        let state = text(&cx.cfg, "state");
+        let outputting = tokio::task::spawn_blocking(move || sys::process_outputting_audio(pid))
+            .await.map_err(|e| e.to_string())??;
+        let satisfied = (state == "not_outputting") != outputting;
+        (cx.report)("running", None, format!("{name}: {}", if outputting { "audio stream active" } else { "no active audio stream" }));
+        Ok(if satisfied { Outcome::Satisfied } else { Outcome::NotSatisfied })
+    }
+}
+
+
 
 // ---------- Conditions ----------
 struct Interval;
@@ -397,7 +481,7 @@ impl Block for LaunchFile {
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         let path = (cx.resolve)()?.into_iter()
             .find_map(|t| if let Target::File { path } = t { Some(path) } else { None })
-            .ok_or("no File target is connected to Launch File")?;
+            .ok_or("no File Input is connected to Launch File")?;
         if !std::path::Path::new(&path).exists() {
             return Err(format!("file not found: {path}"));
         }
@@ -509,7 +593,7 @@ struct ProcessTarget;
 #[async_trait]
 impl Block for ProcessTarget {
     fn title(&self) -> &'static str {
-        "Active process"
+        "Process Input"
     }
     fn category(&self) -> Cat {
         Cat::Target
@@ -542,7 +626,7 @@ struct FileTarget;
 #[async_trait]
 impl Block for FileTarget {
     fn title(&self) -> &'static str {
-        "File"
+        "File Input"
     }
     fn category(&self) -> Cat {
         Cat::Target
@@ -570,6 +654,8 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         m.insert("cond.interval", Box::new(Interval));
         m.insert("cond.ram", Box::new(Ram));
         m.insert("cond.proc_running", Box::new(ProcRunning));
+        m.insert("cond.visible_windows", Box::new(VisibleWindows));
+        m.insert("cond.process_audio", Box::new(ProcessAudio));
         m.insert("act.trim", Box::new(Trim));
         m.insert("act.stop_proc", Box::new(StopProc));
         m.insert("act.wait", Box::new(Wait));
@@ -584,4 +670,42 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         crate::custom::load_into(&mut m);
         m
     })
+}
+
+
+#[cfg(test)]
+mod input_condition_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn visible_window_comparisons_cover_all_modes() {
+        assert!(window_count_matches("at_least", 3, 2));
+        assert!(!window_count_matches("at_least", 1, 2));
+        assert!(window_count_matches("at_most", 1, 2));
+        assert!(!window_count_matches("at_most", 3, 2));
+        assert!(window_count_matches("exactly", 2, 2));
+        assert!(!window_count_matches("exactly", 3, 2));
+    }
+
+    #[test]
+    fn visible_window_count_rejects_fractional_values() {
+        assert_eq!(expected_window_count(&json!({"count": 4})).unwrap(), 4);
+        assert!(expected_window_count(&json!({"count": 4.5})).is_err());
+    }
+
+    #[test]
+    fn new_conditions_require_process_input_and_validate_specs() {
+        let visible = registry().get("cond.visible_windows").unwrap();
+        assert_eq!(visible.category(), Cat::Condition);
+        assert_eq!(visible.requires_target(), Some("tgt.process"));
+        assert!(visible.validate(&json!({"op":"at_least","count":2,"onFail":"stop"})).is_ok());
+        assert!(visible.validate(&json!({"op":"unknown","count":2,"onFail":"stop"})).is_err());
+
+        let audio = registry().get("cond.process_audio").unwrap();
+        assert_eq!(audio.category(), Cat::Condition);
+        assert_eq!(audio.requires_target(), Some("tgt.process"));
+        assert!(audio.validate(&json!({"state":"outputting","onFail":"stop"})).is_ok());
+        assert!(audio.validate(&json!({"state":"unknown","onFail":"stop"})).is_err());
+    }
 }
