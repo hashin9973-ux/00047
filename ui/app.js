@@ -655,12 +655,43 @@ function startGlassReflection() {
   // Main app background is intentionally not represented by a screenshot layer.
   // Desktop pixels are applied only to the small set of LiquidGlass variant surfaces.
   let inFlight = false;
+  let geometryDirty = true;
+  let lastGeometrySignature = '';
   const reflectedSurfaceSelector = '.glass.liquidglass-variant:not(input[type="checkbox"]):not(input[type="radio"])';
 
-  // Store the captured frame once; each variant surface paints only its own crop.
-  // This is an image source, not a full-window background layer.
+  // Update the shared image every captured frame, but compute each surface's
+  // crop only when layout/viewport geometry changes. Measuring every glass card
+  // after every screenshot forced repeated synchronous layout work at frame rate.
   const reflectionRoot = document.documentElement;
   reflectionRoot.style.setProperty('--liquidglass-reflection-image', 'none');
+  const markGeometryDirty = () => { geometryDirty = true; };
+  const geometryObserver = new MutationObserver(markGeometryDirty);
+  geometryObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'hidden'],
+  });
+
+  const updateSurfaceGeometry = (frame, scale) => {
+    const sampleWidth = frame.screenWidth / scale;
+    const sampleHeight = frame.screenHeight / scale;
+    const originX = (frame.screenX - frame.windowX) / scale;
+    const originY = (frame.screenY - frame.windowY) / scale;
+
+    for (const surface of document.querySelectorAll(reflectedSurfaceSelector)) {
+      const rect = surface.getBoundingClientRect();
+      if (
+        rect.width <= 0 || rect.height <= 0 ||
+        rect.right <= 0 || rect.bottom <= 0 ||
+        rect.left >= window.innerWidth || rect.top >= window.innerHeight
+      ) continue;
+
+      surface.style.setProperty('--liquidglass-reflection-size', `${sampleWidth}px ${sampleHeight}px`);
+      surface.style.setProperty('--liquidglass-reflection-position', `${originX - rect.left}px ${originY - rect.top}px`);
+    }
+    geometryDirty = false;
+  };
 
   const capture = async () => {
     if (inFlight || document.hidden) return;
@@ -672,48 +703,38 @@ function startGlassReflection() {
       }
 
       const scale = window.devicePixelRatio || 1;
-      // The same desktop sample is clipped independently to each visible variant.
-      // Positioning is relative to each surface, so the pixels stay screen-aligned.
-      const sampleWidth = frame.screenWidth / scale;
-      const sampleHeight = frame.screenHeight / scale;
-      const originX = (frame.screenX - frame.windowX) / scale;
-      const originY = (frame.screenY - frame.windowY) / scale;
-      const image = `url("${frame.dataUrl}")`;
-      reflectionRoot.style.setProperty('--liquidglass-reflection-image', image);
-
-      for (const surface of document.querySelectorAll(reflectedSurfaceSelector)) {
-        const rect = surface.getBoundingClientRect();
-        if (
-          rect.width <= 0 || rect.height <= 0 ||
-          rect.right <= 0 || rect.bottom <= 0 ||
-          rect.left >= window.innerWidth || rect.top >= window.innerHeight
-        ) continue;
-
-        const x = `${originX - rect.left}px`;
-        const y = `${originY - rect.top}px`;
-        surface.style.setProperty('--liquidglass-reflection-size', `${sampleWidth}px ${sampleHeight}px`);
-        surface.style.setProperty('--liquidglass-reflection-position', `${x} ${y}`);
+      const signature = `${frame.screenWidth}x${frame.screenHeight}@${scale}`;
+      if (geometryDirty || signature !== lastGeometrySignature) {
+        updateSurfaceGeometry(frame, scale);
+        lastGeometrySignature = signature;
       }
+
+      // Only this one shared value changes on each frame; the main app surface
+      // remains transparent and is never painted with the screenshot.
+      reflectionRoot.style.setProperty('--liquidglass-reflection-image', `url("${frame.dataUrl}")`);
     } catch (error) {
-      // Leave the native transparent app background untouched on capture failures.
       console.warn('LiquidGlass surface reflection unavailable:', error);
     } finally {
       inFlight = false;
     }
   };
 
-  // Refresh-synchronized attempts; no overlap and no full-window screenshot layer.
+  // Run at the WebView's native vsync cadence. Capture stays in flight only for
+  // the actual native/IPC work; no extra timer throttles the achievable rate.
   const tick = () => {
     if (!document.hidden) void capture();
     window.requestAnimationFrame(tick);
   };
+  window.addEventListener('resize', markGeometryDirty, { passive: true });
+  window.addEventListener('scroll', markGeometryDirty, { passive: true, capture: true });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      markGeometryDirty();
+      void capture();
+    }
+  });
   void capture();
   window.requestAnimationFrame(tick);
-  window.addEventListener('resize', capture);
-  window.addEventListener('scroll', capture, true);
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) void capture();
-  });
 }
 
 function setupGlassMaterials() {
