@@ -5,6 +5,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <dwmapi.h>
 #include <unknwn.h>
 #include <d2d1_1.h>
 #include <d2d1effects.h>
@@ -1128,6 +1129,13 @@ void EnsureOverlay(OverlayState& state, HWND owner) {
         kOverlayClass, L"", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!state.overlay) winrt::throw_last_error();
 
+    // Host backdrop brushes are disabled for classic Win32 windows unless
+    // DWMWA_USE_HOSTBACKDROPBRUSH is explicitly enabled (Windows 11+).
+    BOOL useHostBackdropBrush = TRUE;
+    const HRESULT backdropStatus = DwmSetWindowAttribute(
+        state.overlay, DWMWA_USE_HOSTBACKDROPBRUSH,
+        &useHostBackdropBrush, sizeof(useHostBackdropBrush));
+
     state.compositor = muc::Compositor();
     namespace abi = ABI::Windows::UI::Composition::Desktop;
     auto interop = state.compositor.as<abi::ICompositorDesktopInterop>();
@@ -1140,7 +1148,8 @@ void EnsureOverlay(OverlayState& state, HWND owner) {
 
     const winrt::Windows::UI::Color tint{kTintA, kTintR, kTintG, kTintB};
     try {
-        if (!winrt::Windows::UI::ViewManagement::UISettings().AdvancedEffectsEnabled()) {
+        if (!winrt::Windows::UI::ViewManagement::UISettings().AdvancedEffectsEnabled() ||
+            FAILED(backdropStatus)) {
             state.brush = state.compositor.CreateColorBrush(tint);
         } else {
             state.brush = CreateWindhawkBlurBrush(
