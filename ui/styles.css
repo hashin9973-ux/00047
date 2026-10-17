@@ -230,220 +230,182 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .bp li{margin-bottom:10px}
 .bp pre{white-space:pre-wrap;word-break:break-word;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;color:var(--tx);font:12px Consolas,monospace;user-select:text}
 .er{color:var(--er)}
-
-/* LiquidGlass Frosty: reflection-first material.
-   The canvas background/grid above is intentionally not overridden.
-   Surfaces stay transparent; visible material comes from the live blurred
-   desktop backdrop, specular streaks, and reflective edge highlights. */
+/* LiquidGlass Frosty: neutral, low-chroma material treatment.
+   Preserve .canvas and its grid exactly; the frosted treatment applies to the UI
+   around it, including panels, controls, overlays, and workflow nodes. */
 :root{
   --tx:#202020;
-  --mu:#555;
-  --line:rgba(255,255,255,.28);
-  --ac:#666;
-  --glass-tint:255,255,255;
-  --glass-bg-opacity:0;
-  --glass-element-opacity:0;
-  --glass-border-hi:rgba(255,255,255,.94);
-  --glass-border-low:rgba(255,255,255,.08);
-  --glass-element-border-mid:rgba(255,255,255,.58);
+  --mu:#555555;
+  --line:rgba(36,36,36,.17);
+  --ac:#626262;
+  --glass-tint:250,250,250;
+  --glass-bg-opacity:.12;
+  --glass-element-opacity:.19;
+  --glass-blur:15px;
+  --glass-element-blur:20px;
+  --glass-border-hi:rgba(255,255,255,.82);
+  --glass-border-low:rgba(45,45,45,.26);
+  --glass-element-border-mid:rgba(255,255,255,.68);
 }
-*{scrollbar-color:rgba(255,255,255,.28) transparent}
-::-webkit-scrollbar-track{background:transparent}
+*{
+  scrollbar-color:rgba(80,80,80,.30) rgba(255,255,255,.10);
+}
+::-webkit-scrollbar-track{background:rgba(255,255,255,.10)}
 ::-webkit-scrollbar-thumb{
-  background:linear-gradient(180deg,rgba(255,255,255,.68),rgba(255,255,255,.08));
-  border-color:rgba(255,255,255,.45);
+  background:linear-gradient(180deg,rgba(255,255,255,.52),rgba(80,80,80,.18));
+  border-color:rgba(255,255,255,.42);
 }
-::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.8)}
-
-/* Neutral typography only; no colored or grey surface wash. */
-.window-titlebar{color:#202020;border-bottom-color:rgba(255,255,255,.4)}
-.window-titlebar-title{color:rgba(20,20,20,.76)}
-.window-control{color:rgba(20,20,20,.86)}
-.window-control:hover{background:rgba(255,255,255,.20);color:#111}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.65)}
+.window-titlebar{color:#222;border-bottom-color:rgba(255,255,255,.22)}
+.window-titlebar-title{color:rgba(25,25,25,.72)}
+.window-control{color:rgba(25,25,25,.82)}
+.window-control:hover{background:rgba(255,255,255,.28);color:#111}
 .window-control.close:hover{background:#c42b1c;color:#fff}
+
+/* Real backdrop blur lives in .glass::before (GPU-blurred desktop capture).
+   Keep the fill achromatic and restrained; let the backdrop and reflective edge
+   do the work instead of painting the surface blue, purple, or charcoal. */
+.glass{
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.26),inset 0 -1px 0 rgba(0,0,0,.045);
+}
+.glass::after{background:rgba(var(--glass-tint),var(--glass-bg-opacity))}
+.card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{
+  box-shadow:0 8px 28px rgba(0,0,0,.13),inset 0 1px 0 rgba(255,255,255,.38);
+}
+.card.glass::after,.acard.glass::after,.ctx.glass::after,.pop.glass::after,.mbox.glass::after,.ck-box.glass::after{
+  background:rgba(var(--glass-tint),var(--glass-element-opacity));
+}
+
+/* Neutral ink and quiet structural lines throughout non-canvas UI. */
 .mu,.brand,.save.ok,.icon-btn,.tbl th,.res span,.recent div,.empty,
 .lr .t,.lr .an,.lr .bl,.help,.fl,.fh,.mempty,.mbody,
 .ck-item small,.ck-empty{color:var(--mu)}
 .card h3,.acard h4,.tbl td,.tbl th,.chead,.help b,
 .mbox h3,.mbox p,.mbody,.mbody code,.bp pre{color:var(--tx)}
-.tbl th,.tbl td{border-bottom-color:rgba(255,255,255,.22)}
-.tbl tr[data-act=open]:hover{background:rgba(255,255,255,.10)}
-.res i{background:rgba(255,255,255,.16)}
+.tbl th,.tbl td{border-bottom-color:rgba(40,40,40,.11)}
+.tbl tr[data-act=open]:hover{background:rgba(255,255,255,.22)}
+.res i{background:rgba(50,50,50,.10)}
 .res u{background:var(--ac)}
-.lr{border-bottom-color:rgba(255,255,255,.18)}
+.lr{border-bottom-color:rgba(35,35,35,.10)}
 .logs,.lr{color:var(--tx)}
 .lr .t,.lr .an,.lr .bl{color:var(--mu)}
 
-/* The backdrop snapshot remains the optical base. This overlay paints no fill:
-   it adds a broad reflected window strip, a thin specular edge, and corner glints. */
-.glass{
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.84),
-    inset 1px 0 0 rgba(255,255,255,.28),
-    inset -1px 0 0 rgba(255,255,255,.18),
-    inset 0 -1px 0 rgba(255,255,255,.20);
-}
-.glass::after{
-  background:
-    radial-gradient(ellipse 78% 40% at 12% -3%,rgba(255,255,255,.22) 0%,rgba(255,255,255,.07) 34%,transparent 72%),
-    linear-gradient(116deg,transparent 0%,transparent 30%,rgba(255,255,255,.025) 32%,rgba(255,255,255,.26) 33.2%,rgba(255,255,255,.07) 34.6%,transparent 39%),
-    linear-gradient(180deg,rgba(255,255,255,.64) 0,rgba(255,255,255,.16) 1px,transparent 11px),
-    linear-gradient(0deg,rgba(255,255,255,.22) 0,transparent 2px),
-    linear-gradient(90deg,rgba(255,255,255,.16) 0,transparent 1px  calc(100% - 1px),rgba(255,255,255,.10) 100%);
-}
-.card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{
-  box-shadow:
-    0 10px 28px rgba(0,0,0,.14),
-    inset 0 1px 0 rgba(255,255,255,.9),
-    inset 1px 0 0 rgba(255,255,255,.30),
-    inset -1px 0 0 rgba(255,255,255,.20),
-    inset 0 -1px 0 rgba(255,255,255,.24);
-}
-.card.glass::after,.acard.glass::after,.ctx.glass::after,.pop.glass::after,.mbox.glass::after,.ck-box.glass::after{
-  background:
-    radial-gradient(ellipse 90% 42% at 9% 0%,rgba(255,255,255,.22),rgba(255,255,255,.06) 38%,transparent 75%),
-    linear-gradient(119deg,transparent 0%,transparent 29%,rgba(255,255,255,.02) 31.5%,rgba(255,255,255,.24) 33%,rgba(255,255,255,.045) 34.5%,transparent 41%),
-    linear-gradient(180deg,rgba(255,255,255,.78) 0,rgba(255,255,255,.15) 1px,transparent 13px),
-    linear-gradient(0deg,rgba(255,255,255,.24),transparent 2px);
-}
-
-/* Controls are clear glass, edged by highlights instead of a grey fill. */
-.btn,.ib,.icon-btn,.eu-bar button,
+/* Glass controls: clear neutral surfaces, soft defocus, and monochrome rims. */
+.btn,.ib,.icon-btn,.window-control,.eu-bar button,
 .search,.name,.mq,select,.ck-in,
 .fld input[type=text],.fld input[type=number],.fld select,
 .bp pre{
   color:#202020;
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.25),transparent 72%) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.94),rgba(255,255,255,.12) 42%,rgba(255,255,255,.52)) border-box;
+  background:linear-gradient(180deg,rgba(255,255,255,.24),rgba(235,235,235,.11)) padding-box,
+    linear-gradient(180deg,rgba(255,255,255,.78),rgba(55,55,55,.22)) border-box;
   border:1px solid transparent;
-  -webkit-backdrop-filter:blur(14px);
-  backdrop-filter:blur(14px);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.78),inset 0 -1px 0 rgba(255,255,255,.12);
+  -webkit-backdrop-filter:blur(14px) saturate(1);
+  backdrop-filter:blur(14px) saturate(1);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.38);
 }
 .btn:hover:not(:disabled),.ib:hover:not(:disabled),.icon-btn:hover,
 .eu-bar button:hover,.ck-item:hover,.ck-item.on,
 #tabs button:hover,#dock-tabs button:hover{
   color:#111;
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.38),rgba(255,255,255,.02)) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,1),rgba(255,255,255,.20)) border-box;
+  background:rgba(255,255,255,.40);
 }
 .btn.primary,.btn.danger,.btn.danger:hover:not(:disabled){
   color:#202020;
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.35),transparent 78%) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.94),rgba(255,255,255,.18)) border-box;
-  border-color:transparent;
+  background:linear-gradient(180deg,rgba(255,255,255,.30),rgba(220,220,220,.13));
+  border-color:rgba(255,255,255,.55);
 }
 .btn:focus-visible,.ib:focus-visible,.icon-btn:focus-visible,
 input:focus-visible,select:focus-visible,button:focus-visible{
-  outline:1px solid rgba(255,255,255,.9);
+  outline:1px solid rgba(35,35,35,.58);
   outline-offset:1px;
 }
 .search:focus,.name:focus,.mq:focus,select:focus,
 .fld input:focus,.fld select:focus,.ck-in:focus{
-  border-color:rgba(255,255,255,.95);
+  border-color:rgba(45,45,45,.48);
   outline:none;
 }
 input,select,textarea{accent-color:#666}
-#tabs button,#dock-tabs button{color:rgba(32,32,32,.70)}
+#tabs button,#dock-tabs button{
+  color:rgba(32,32,32,.66);
+}
 #tabs button:hover,#dock-tabs button:hover{color:#111}
 #tabs button.on,#dock-tabs button.on{
   color:#171717;
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.32),transparent 85%);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.9),inset 0 0 0 1px rgba(255,255,255,.30);
+  background:rgba(255,255,255,.32);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.70),inset 0 0 0 1px rgba(40,40,40,.12);
 }
 .pill{
   color:#292929;
-  background:linear-gradient(180deg,rgba(255,255,255,.25),transparent);
-  border:1px solid rgba(255,255,255,.48);
+  background:rgba(255,255,255,.24);
+  border:1px solid rgba(255,255,255,.40);
 }
 .pill.stopped{color:#555}
-/* Execution state color is semantic status, not the glass material. */
 .pill.running{background:rgba(90,169,255,.14);color:#27618d}
 .pill.completed{background:rgba(74,222,128,.14);color:#25643b}
 .pill.failed{background:rgba(255,107,129,.14);color:#8e2939}
 .pill.stopping{background:rgba(245,177,74,.14);color:#80541c}
 
-/* Workflow blocks are transparent, blurred glass with visible specular streaks.
-   The editor canvas's own background and grid are left exactly as before. */
+/* Leave the .canvas background/grid unchanged. Workflow blocks themselves get
+   neutral glass bodies rather than pastel-colored fills. */
 .node{
   color:#202020;
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.28),transparent 24%),
-    linear-gradient(119deg,transparent 0%,transparent 28%,rgba(255,255,255,.025) 30.5%,rgba(255,255,255,.23) 32%,rgba(255,255,255,.035) 34%,transparent 42%),
-    linear-gradient(90deg,rgba(255,255,255,.10),transparent 14% 86%,rgba(255,255,255,.08));
-  border:1px solid rgba(255,255,255,.62);
+  background:linear-gradient(145deg,rgba(255,255,255,.22),rgba(225,225,225,.09)) padding-box,
+    linear-gradient(180deg,rgba(255,255,255,.85),rgba(45,45,45,.28)) border-box;
+  border:1px solid transparent;
   border-radius:14px;
-  box-shadow:
-    0 8px 22px rgba(0,0,0,.20),
-    inset 0 1px 0 rgba(255,255,255,.92),
-    inset 1px 0 0 rgba(255,255,255,.42),
-    inset -1px 0 0 rgba(255,255,255,.30),
-    inset 0 -1px 0 rgba(255,255,255,.20);
-  -webkit-backdrop-filter:blur(18px);
-  backdrop-filter:blur(18px);
+  box-shadow:0 8px 22px rgba(0,0,0,.20),inset 0 1px 0 rgba(255,255,255,.55);
+  -webkit-backdrop-filter:blur(18px) saturate(1);
+  backdrop-filter:blur(18px) saturate(1);
 }
-.node::before{
-  background:linear-gradient(90deg,transparent,rgba(255,255,255,.76) 18%,rgba(255,255,255,.22) 52%,rgba(255,255,255,.62) 84%,transparent);
-  opacity:1;
-}
+.node::before{background:rgba(255,255,255,.52);opacity:1}
 .node .n-title,.node .n-sum,.node .n-detail,.node .fl,.node .fh,
 .node .n-chev,.node .nhelp{color:rgba(25,25,25,.82)}
 .node .n-icon{color:rgba(25,25,25,.72)}
-.node .n-chev:hover{background:rgba(255,255,255,.24);color:#111}
-.node .n-dot{background:rgba(255,255,255,.88);box-shadow:0 0 0 1px rgba(0,0,0,.20),0 0 6px rgba(255,255,255,.5)}
-.node .n-prog{background:rgba(255,255,255,.14)}
+.node .n-chev:hover{background:rgba(255,255,255,.42);color:#111}
+.node .n-dot{background:#777}
+.node .n-prog{background:rgba(35,35,35,.12)}
 .node.sel{
-  box-shadow:
-    0 0 0 1.5px rgba(255,255,255,.96),
-    0 8px 24px rgba(0,0,0,.22),
-    inset 0 1px 0 rgba(255,255,255,1),
-    inset 1px 0 0 rgba(255,255,255,.55),
-    inset -1px 0 0 rgba(255,255,255,.35);
+  box-shadow:0 0 0 1.5px rgba(255,255,255,.85),0 8px 24px rgba(0,0,0,.22),
+    inset 0 1px 0 rgba(255,255,255,.60);
 }
 .node.unknown{color:#7a2525}
 .fld input[type=text],.fld input[type=number],.fld select{
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.22),transparent 78%) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.92),rgba(255,255,255,.12)) border-box;
+  background:rgba(255,255,255,.22);
   color:#202020;
 }
-.fld input:focus,.fld select:focus{border-color:rgba(255,255,255,.95)}
-.port{background:rgba(255,255,255,.92);border-color:rgba(255,255,255,.95);box-shadow:0 0 0 1px rgba(0,0,0,.30)}
-.port.in,.port.tgt-in{border-color:rgba(255,255,255,.95)}
+.fld input:focus,.fld select:focus{border-color:rgba(40,40,40,.50)}
+.port{background:rgba(245,245,245,.90);border-color:#707070}
+.port.in,.port.tgt-in{border-color:#707070}
 
-/* Toasts and command surfaces get the same edge glints and reflected strips. */
+/* Secondary surfaces that were previously opaque charcoal. */
 .toast{
   position:relative;
   isolation:isolate;
   color:#202020;
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.24),transparent 76%) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.92),rgba(255,255,255,.13) 50%,rgba(255,255,255,.56)) border-box;
+  background:linear-gradient(145deg,rgba(255,255,255,.27),rgba(225,225,225,.13)) padding-box,
+    linear-gradient(180deg,rgba(255,255,255,.82),rgba(55,55,55,.25)) border-box;
   border:1px solid transparent;
-  border-left:3px solid rgba(255,255,255,.72);
-  box-shadow:0 8px 24px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.88);
-  -webkit-backdrop-filter:blur(18px);
-  backdrop-filter:blur(18px);
+  border-left:3px solid rgba(75,75,75,.60);
+  box-shadow:0 8px 24px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.45);
+  -webkit-backdrop-filter:blur(18px) saturate(1);
+  backdrop-filter:blur(18px) saturate(1);
 }
-.toast.err{border-left-color:rgba(255,255,255,.86)}
+.toast.err{border-left-color:#7f4343}
 .modal,#cmdk{
-  background:rgba(0,0,0,.12);
-  -webkit-backdrop-filter:blur(10px);
-  backdrop-filter:blur(10px);
+  background:rgba(35,35,35,.14);
+  -webkit-backdrop-filter:blur(10px) saturate(1);
+  backdrop-filter:blur(10px) saturate(1);
 }
-.ck-in{background:linear-gradient(180deg,rgba(255,255,255,.22),transparent)}
+.ck-in{
+  background:rgba(255,255,255,.20);
+  border-color:rgba(255,255,255,.52);
+}
 .ck-item{color:#202020}
-.ck-item.on,.ck-item:hover{background:rgba(255,255,255,.20)}
+.ck-item.on,.ck-item:hover{background:rgba(255,255,255,.38)}
 .ck-item small,.ck-empty{color:#555}
 .bp pre{
-  background:
-    linear-gradient(180deg,rgba(255,255,255,.22),transparent 82%) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.88),rgba(255,255,255,.10)) border-box;
-  border-color:transparent;
+  background:rgba(255,255,255,.18);
+  border-color:rgba(255,255,255,.42);
 }
 .mbody code{color:#202020}
 
