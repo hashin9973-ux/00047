@@ -1,6 +1,6 @@
-//! User-defined blocks. Each JSON file in `<app data>/blocks/` may define blocks that run a program or a
-//! PowerShell script. No shell string building: arguments are passed separately, and PowerShell scripts read
-//! field values from environment variables (FIELD_<KEY>), so field text can never be injected as code.
+//! User-defined blocks. The preferred format is a ZIP plugin with a root manifest.json and scripts/assets.
+//! A manifest can launch any executable/runtime by command plus separate arguments. Legacy JSON block files
+//! remain supported for compatibility. Field values are exposed as FIELD_<KEY> environment variables.
 use crate::{
     blocks::{registry, Block, Cat, NodeCx, Outcome},
     spec,
