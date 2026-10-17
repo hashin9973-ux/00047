@@ -778,6 +778,10 @@ function startGlassBackdrop() {
     if (mode === 'off') {
       root.style.setProperty('--liquidglass-reflection-image', 'none');
       setStatus('Desktop blur off · no screen capture');
+      void invoke('set_glass_capture_enabled', { enabled: false }).catch(error => {
+        setStatus('Blur is off, but Windows could not restore normal screen capture.');
+        console.warn('Could not restore normal screen capture:', error);
+      });
       return;
     }
     setStatus(`Starting desktop blur · ${mode} FPS`);
