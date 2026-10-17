@@ -675,14 +675,14 @@ function startGlassBackdrop() {
     inFlight = true;
     try {
       const frame = await invoke('capture_glass_frame');
-      if (!frame?.data_url || !frame.screen_width || !frame.screen_height) {
+      if (!frame?.data_url || !frame.screenWidth || !frame.screenHeight) {
         throw new Error('Desktop backdrop capture returned an empty frame.');
       }
       const scale = window.devicePixelRatio || 1;
-      layer.style.left = `${(frame.screen_x - frame.window_x) / scale}px`;
-      layer.style.top = `${(frame.screen_y - frame.window_y) / scale}px`;
-      layer.style.width = `${frame.screen_width / scale}px`;
-      layer.style.height = `${frame.screen_height / scale}px`;
+      layer.style.left = `${(frame.screenX - frame.windowX) / scale}px`;
+      layer.style.top = `${(frame.screenY - frame.windowY) / scale}px`;
+      layer.style.width = `${frame.screenWidth / scale}px`;
+      layer.style.height = `${frame.screenHeight / scale}px`;
       layer.style.backgroundImage = `url("${frame.data_url}")`;
       layer.style.opacity = '1';
       hasFrame = true;
