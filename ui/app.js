@@ -748,6 +748,11 @@ function startGlassBackdrop() {
       if (captureInterval) window.clearInterval(captureInterval);
       captureInterval = 0;
       root.style.setProperty('--liquidglass-reflection-image', 'none');
+      // If capture fails after enabling exclusion, immediately restore normal
+      // screenshot behavior while the UI falls back to a translucent surface.
+      void invoke('set_glass_capture_enabled', { enabled: false }).catch(restoreError => {
+        console.warn('Could not restore normal screen capture after blur failure:', restoreError);
+      });
       setStatus('Desktop blur capture unavailable; translucent fallback is active.');
       console.warn('WindhawkBlur-style desktop capture unavailable:', error);
       // Avoid hot-looping if Windows refuses to exclude this window from capture.
