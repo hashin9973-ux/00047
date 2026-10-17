@@ -651,30 +651,15 @@ $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = t
 
 function startGlassBackdrop() {
   const refreshStatus = $('#glass-refresh-status');
-  if (!appWindow) {
-    if (refreshStatus) refreshStatus.textContent = 'Native window effects are unavailable in this runtime.';
-    return;
-  }
   if (!/Win/i.test(navigator.userAgent)) {
-    if (refreshStatus) refreshStatus.textContent = 'Native Windows Acrylic is available on Windows only.';
+    if (refreshStatus) refreshStatus.textContent = 'Live panel blur is available on Windows.';
     return;
   }
-  if (typeof appWindow.setEffects !== 'function') {
-    if (refreshStatus) refreshStatus.textContent = 'This Tauri runtime does not expose native window effects.';
-    return;
-  }
-
-  // Use the Windows compositor's live Acrylic material. No desktop screenshots,
-  // image conversion, CSS image blur, or per-frame refresh loop is involved.
-  if (refreshStatus) refreshStatus.textContent = 'Applying native Windows Acrylic…';
-  appWindow.setEffects({ effects: ['acrylic'] })
-    .then(() => {
-      if (refreshStatus) refreshStatus.textContent = 'Native Windows Acrylic · compositor-driven live blur · window-wide';
-    })
-    .catch(error => {
-      console.error('Native Windows Acrylic could not be applied:', error);
-      if (refreshStatus) refreshStatus.textContent = 'Native blur failed: ' + String(error?.message || error);
-    });
+  // Keep the native window transparent. Applying native Acrylic here blurs the
+  // entire window, which is intentionally avoided; individual panels use the
+  // WebView compositor's live backdrop-filter instead.
+  if (refreshStatus) refreshStatus.textContent =
+    'Scoped live panel blur · Windows Transparency effects must be enabled in system settings.';
 }
 
 function setupGlassMaterials() {
@@ -683,7 +668,15 @@ function setupGlassMaterials() {
     // Keep workflow blocks and their embedded fields on the editor's original
     // canvas material. Floating canvas overlays remain LiquidGlass surfaces.
     if (el.closest('.canvas') && !el.closest('.ctx, .eu-bar, .eu-handle')) return;
-    el.classList.add('glass', 'liquidglass-variant');
+    el.classList.add('glass');
+    // Main navigation/editor bars use clear LiquidGlass. Other surfaces use
+    // compositor-backed live blur. Canvas nodes and fields stay untouched.
+    if (el.matches('.top, .ed-bar, .window-titlebar') || el.closest('.canvas') && !el.closest('.ctx, .eu-bar, .eu-handle')) {
+      el.classList.remove('liquidglass-variant');
+      el.classList.add('liquidglass');
+      return;
+    }
+    el.classList.add('liquidglass-variant');
     el.classList.remove('liquidglass');
   };
   const apply = root => {
