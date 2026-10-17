@@ -120,11 +120,10 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
 
     let hwnd = window.hwnd().map_err(|e| format!("Native window handle unavailable: {e}"))?.0;
     unsafe {
-        // Windows deliberately omits this app's window from desktop captures;
-        // otherwise each reflection frame would recursively capture itself.
-        if SetWindowDisplayAffinity(hwnd, 0x00000011) == 0 {
-            return Err("Windows could not exclude 00047 from desktop capture.".to_string());
-        }
+        // Best-effort only: Windows may reject display affinity on transparent
+        // or layered HWNDs. Keep capture running when that exclusion is unavailable;
+        // otherwise one failed API call disables every glass reflection frame.
+        let _capture_exclusion_enabled = SetWindowDisplayAffinity(hwnd, 0x00000011) != 0;
 
         let screen_dc = GetDC(null_mut());
         if screen_dc.is_null() {
