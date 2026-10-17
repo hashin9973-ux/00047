@@ -635,8 +635,14 @@ fn extract_plugin(path: &Path, destination: &Path) -> Result<(), String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("invalid ZIP archive: {e}"))?;
     fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+    let mut total_written = 0u64;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|e| format!("cannot read ZIP entry: {e}"))?;
+        let declared_size = entry.size();
+        total_written = total_written.saturating_add(declared_size);
+        if total_written > MAX_PLUGIN_UNPACKED {
+            return Err("plugin ZIP expands beyond the 50 MB unpacked-size limit".into());
+        }
         let relative = entry.enclosed_name().ok_or_else(|| format!("unsafe ZIP path: {}", entry.name()))?.to_path_buf();
         if let Some(mode) = entry.unix_mode() {
             if mode & 0o170000 == 0o120000 {
@@ -651,8 +657,8 @@ fn extract_plugin(path: &Path, destination: &Path) -> Result<(), String> {
         if let Some(parent) = out.parent() { fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
         let mut target = File::create(&out).map_err(|e| e.to_string())?;
         let copied = std::io::copy(&mut entry, &mut target).map_err(|e| format!("extract failed: {e}"))?;
-        if copied > MAX_PLUGIN_UNPACKED {
-            return Err("extracted plugin exceeded the unpacked-size limit".into());
+        if copied != declared_size {
+            return Err(format!("ZIP entry size mismatch: {}", relative.display()));
         }
     }
     Ok(())
@@ -675,15 +681,17 @@ fn install_plugin(path: &Path, file_name: &str) -> Result<String, String> {
     }
     // Validate the actual extracted tree before replacing an installed version.
     let manifest_blocks = archive.manifest["blocks"].as_array().cloned().unwrap_or_default();
+    let mut valid_blocks = 0usize;
     for block in &manifest_blocks {
-        let spec = match normalize_plugin_block(block, &stage, true).and_then(|spec| {
-            check_spec(&spec)?;
-            Ok(spec)
-        }) {
-            Ok(spec) => spec,
-            Err(e) => { let _ = fs::remove_dir_all(&stage); return Err(e); }
-        };
-        let _ = spec;
+        if let Ok(spec) = normalize_plugin_block(block, &stage, true) {
+            if check_spec(&spec).is_ok() {
+                valid_blocks += 1;
+            }
+        }
+    }
+    if valid_blocks == 0 {
+        let _ = fs::remove_dir_all(&stage);
+        return Err("plugin contained no valid blocks after extraction".into());
     }
     if target.exists() {
         fs::rename(&target, &backup).map_err(|e| format!("could not stage previous plugin version: {e}"))?;
