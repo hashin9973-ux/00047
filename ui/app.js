@@ -657,7 +657,8 @@ async function installPack() {
       [['cancel', 'Cancel'], ['go', 'Import blocks', 'primary']]);
     if (c !== 'go') return;
     await invoke('block_pack_install', { path: pv.path });
-    toast('Imported actions/conditions. Choose "Reload" in Custom blocks to load them.');
+    toast('Imported actions/conditions. Review the list and choose Reload to activate them.');
+    await openBlocksManager();
   } catch (e) { toast('Block import failed: ' + e, 'err'); }
 }
 
@@ -672,8 +673,8 @@ async function installPlugin() {
       [['cancel', 'Cancel'], ['go', 'Import plugin', 'primary']]);
     if (c !== 'go') return;
     await invoke('plugin_pack_install', { path: pv.path });
-    toast(`Imported plugin "${plugin.name}". Choose "Reload" to activate its blocks.`);
-    openBlocksManager();
+    toast(`Imported plugin "${plugin.name}". Review the list and choose Reload to activate its blocks.`);
+    await openBlocksManager();
   } catch (e) { toast('Plugin import failed: ' + e, 'err'); }
 }
 
