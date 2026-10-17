@@ -738,7 +738,7 @@ function createGlassGpuProcessor() {
     const regions = new Float32Array(32 * 4);
     const blurs = new Float32Array(32);
     let count = 0;
-    const elementSelector = '.card.glass, .acard.glass, .ctx.glass, .eu-bar.glass, .pop.glass, .mbox.glass, .ck-box.glass';
+    const elementSelector = '.card.glass, .acard.glass, .ctx.glass, .pop.glass, .mbox.glass, .ck-box.glass';
     for (const el of document.querySelectorAll('.glass')) {
       const r = el.getBoundingClientRect();
       if (r.width < 2 || r.height < 2 || count >= 32) continue;
