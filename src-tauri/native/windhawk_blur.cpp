@@ -1041,6 +1041,10 @@ muc::CompositionBrush CreateWindhawkBlurBrush(muc::Compositor const& compositor,
 }
 
 
+struct NativeGlassRect {
+    float x, y, width, height, radius, opacity;
+};
+
 namespace {
 constexpr wchar_t kOverlayClass[] = L"00047.WindhawkCompositionOverlay";
 constexpr uint8_t kTintR = 24, kTintG = 26, kTintB = 32, kTintA = 61;
@@ -1049,9 +1053,6 @@ constexpr float kTintSaturation = 1.15f;
 constexpr float kNoiseOpacity = 0.035f;
 constexpr float kNoiseDensity = 0.85f;
 
-struct NativeGlassRect {
-    float x, y, width, height, radius, opacity;
-};
 struct OverlayState {
     HWND owner{};
     HWND overlay{};
