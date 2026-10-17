@@ -446,3 +446,30 @@ input,select,textarea{accent-color:#666}
   border-color:transparent;
 }
 .mbody code{color:#202020}
+
+
+/* Plugins tab */
+.plugins-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:4px 2px 18px;flex-wrap:wrap}
+.plugins-head h2{font-size:21px;margin:0 0 4px;font-weight:650}
+.plugins-head p{margin:0}
+.plugins-actions{display:flex;gap:8px;flex-wrap:wrap}
+.plugin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:14px}
+.plugin-card{display:flex;align-items:flex-start;gap:14px;padding:18px}
+.plugin-card h3,.plugin-list h3{margin:0 0 5px;font-size:14px}
+.plugin-card p{margin:0;max-width:560px}
+.plugin-icon{width:40px;height:40px;flex:0 0 40px;border-radius:12px;display:grid;place-items:center;background:rgba(139,156,255,.13);color:var(--tx);font-size:21px}
+.plugin-icon.small{width:34px;height:34px;flex-basis:34px;font-size:17px}
+.plugin-list{padding:18px}
+.plugin-list .sec{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.plugin-items{display:flex;flex-direction:column}
+.plugin-item{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+.plugin-info{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.plugin-info b{overflow-wrap:anywhere}
+.plugin-info small{color:var(--mu)}
+.plugin-status{font-size:11px;border:1px solid var(--line);border-radius:99px;padding:4px 8px;color:var(--mu);white-space:nowrap}
+.plugin-empty{display:flex;align-items:center;flex-direction:column;text-align:center;gap:8px;padding:32px 12px;border-top:1px solid var(--line)}
+.plugin-empty p{margin:0 0 8px}
+.plugin-errors{margin-top:12px;padding:12px;border:1px solid rgba(245,177,74,.28);border-radius:10px;color:var(--tx);background:rgba(245,177,74,.06)}
+.plugin-errors ul{margin:8px 0 0;padding-left:20px;color:var(--mu)}
+.plugin-errors li{margin:4px 0;overflow-wrap:anywhere}
+@media(max-width:760px){.plugin-grid{grid-template-columns:1fr}.plugins-head{align-items:flex-start;flex-direction:column}.plugins-actions{width:100%}}
