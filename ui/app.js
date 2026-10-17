@@ -656,7 +656,6 @@ function startGlassReflection() {
   // Desktop pixels are applied only to the small set of LiquidGlass variant surfaces.
   let inFlight = false;
   const reflectedSurfaceSelector = '.glass.liquidglass-variant:not(input[type="checkbox"]):not(input[type="radio"])';
-  const directBackgroundSelector = 'input.glass.liquidglass-variant:not([type="checkbox"]):not([type="radio"]), select.glass.liquidglass-variant, textarea.glass.liquidglass-variant';
 
   // Store the captured frame once; each variant surface paints only its own crop.
   // This is an image source, not a full-window background layer.
