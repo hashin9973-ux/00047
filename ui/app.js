@@ -189,6 +189,7 @@ function ckCommands() {
     { t: 'Go to Overview', k: 'View', f: go('overview') },
     { t: 'Go to Automations', k: 'View', f: go('automations') },
     { t: 'Go to Logs', k: 'View', f: go('logs') },
+    { t: 'Go to Plugins', k: 'View', f: go('plugins') },
     { t: 'Export logs (CSV)…', k: 'Logs', f: exportLogs },
   ];
   if (S.view === 'editor') c.unshift(
@@ -388,7 +389,7 @@ document.addEventListener('click', e => {
 // ---------- views ----------
 function show(view) {
   S.view = view;
-  for (const v of ['overview', 'automations', 'logs', 'editor']) $('#view-' + v).hidden = v !== view;
+  for (const v of ['overview', 'automations', 'logs', 'plugins', 'editor']) $('#view-' + v).hidden = v !== view;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? 'automations' : view)));
   editor.setActive(view === 'editor');
   render();
@@ -397,6 +398,7 @@ function render() {
   if (S.view === 'overview') buildOverview();
   else if (S.view === 'automations') renderAutomations();
   else if (S.view === 'logs') renderLogs();
+  else if (S.view === 'plugins') renderPlugins();
   else renderDock();
 }
 document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => { if (S.view === 'editor') flushSaves(); show(b.dataset.view); }));
@@ -608,6 +610,16 @@ function htmlModal(title, html, buttons) {
 async function loadBlockSpecs() {
   try { registerSpecs((await invoke('list_block_specs')).specs); }
   catch (e) { toast('Could not load extra blocks: ' + e, 'err'); }
+}
+
+async function renderPlugins() {
+ const host=$('#view-plugins');
+ host.innerHTML='<div class="plugins-head"><div><h2>Plugins</h2><p class="mu">Install and manage trusted 00047 block packs.</p></div><div class="plugins-actions"><button class="btn" data-plugin-action="folder">Open plugins folder</button><button class="btn" data-plugin-action="reload">Reload plugins</button><button class="btn primary" data-plugin-action="install">+ Install plugin</button></div></div><div class="plugin-grid"><article class="card glass plugin-card"><div class="plugin-icon">▦</div><div><h3>Block packs</h3><p class="mu">Add custom conditions and actions to the automation editor using a JSON block pack.</p></div></article><article class="card glass plugin-card"><div class="plugin-icon">⚠</div><div><h3>Trust and permissions</h3><p class="mu">Installed blocks can run programs and scripts with your Windows account permissions. Review commands before installing.</p></div></article></div><div class="card glass plugin-list"><div class="sec"><h3>Installed plugins</h3><span class="mu" id="plugin-count">Loading…</span></div><div id="plugin-items" class="plugin-items"><p class="mu">Loading installed block packs…</p></div><div id="plugin-errors"></div></div>';
+ host.querySelectorAll('[data-plugin-action]').forEach(b=>b.addEventListener('click',async()=>{const a=b.dataset.pluginAction;if(a==='folder'){try{await invoke('open_blocks_folder')}catch(e){toast('Could not open plugins folder: '+e,'err')}}else if(a==='install')await installPack();else if(a==='reload')await reloadBlocks()}));
+ try{const info=await invoke('list_block_specs');if(S.view!=='plugins')return;const custom=info.specs.filter(x=>x.origin==='custom');$('#plugin-count').textContent=`${custom.length} installed`;
+ $('#plugin-items').innerHTML=custom.length?custom.map(x=>`<div class="plugin-item"><div class="plugin-icon small">▦</div><div class="plugin-info"><b>${esc(x.title)}</b><small>${esc(x.category)} · ${esc(x.kind)}</small></div><span class="plugin-status">Installed</span></div>`).join(''):'<div class="plugin-empty"><div class="plugin-icon">＋</div><b>No plugins installed</b><p class="mu">Install a trusted JSON block pack to add custom blocks.</p><button class="btn primary" data-plugin-action="install">Install your first plugin</button></div>';
+ const b=$('#plugin-items [data-plugin-action="install"]');if(b)b.addEventListener('click',installPack);$('#plugin-errors').innerHTML=info.errors.length?`<div class="plugin-errors"><b>Plugin loading warnings</b><ul>${info.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`:'';
+ }catch(e){$('#plugin-count').textContent='Unavailable';$('#plugin-items').innerHTML=`<p class="er">Could not load plugins: ${esc(e)}</p><button class="btn" data-plugin-action="retry">Retry</button>`;}
 }
 
 async function openBlocksManager() {
