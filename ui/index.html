@@ -6,7 +6,7 @@
   <title>00047</title>
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="liquidglass">
    <div id="window-titlebar" class="window-titlebar" role="banner" aria-label="Window title bar">
     <div class="window-titlebar-title" data-tauri-drag-region>00047</div>
     <div class="window-titlebar-spacer" data-tauri-drag-region></div>
@@ -70,6 +70,10 @@
   <div id="pop-settings" class="glass pop" hidden>
     <label class="chk"><input type="checkbox" id="set-autostart"> Launch at Windows sign-in (minimized to tray)</label>
     <small class="mu">Closing the window asks whether to minimize to the tray or exit.</small>
+    <div class="settings-choice">
+      <strong>LiquidGlass backdrop</strong>
+      <small id="glass-refresh-status" class="mu">Applying native Windows Acrylic…</small>
+    </div>
     <button class="btn" id="btn-blocks">Custom blocks…</button>
   </div>
   <div id="modal" class="modal" hidden></div>

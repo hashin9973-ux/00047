@@ -619,8 +619,8 @@ async function openBlocksManager() {
     : '<p>No custom blocks installed yet.</p>';
   const errs = info.errors.length ? `<p class="er">${info.errors.map(esc).join('<br>')}</p>` : '';
   const c = await htmlModal('Custom blocks',
-    `<p>Folder: <code>${esc(info.dir)}</code></p>${list}${errs}<p>Custom blocks can run programs and scripts with your permissions. Only install packs you trust. See docs/ADDING_BLOCKS.md.</p>`,
-    [['close', 'Close'], ['folder', 'Open folder'], ['install', 'Install pack…', 'primary'], ['reload', 'Reload (restarts 00047)']]);
+    `<p>Folder: <code>${esc(info.dir)}</code></p>${list}${errs}<p>ZIP plugin packs contain a manifest plus scripts. They can run any installed interpreter or executable with your Windows account permissions. Only install code you trust. See docs/ADDING_BLOCKS.md.</p>`,
+    [['close', 'Close'], ['folder', 'Open folder'], ['install', 'Install ZIP plugin…', 'primary'], ['reload', 'Reload (restarts 00047)']]);
   if (c === 'folder') invoke('open_blocks_folder').catch(e => toast(String(e), 'err'));
   else if (c === 'install') installPack();
   else if (c === 'reload') reloadBlocks();
@@ -633,11 +633,11 @@ async function installPack() {
     const rows = pv.blocks.map(b => `<li><b>${esc(b.title)}</b> <small>${esc(b.category)} · ${esc(b.kind)}</small><pre>${esc(b.command)}</pre></li>`).join('');
     const errs = pv.errors.length ? `<p class="er">Skipped: ${pv.errors.map(esc).join('<br>')}</p>` : '';
     const c = await htmlModal(`Install "${pv.file}"?`,
-      `<p>These blocks will be able to run the following on this PC:</p><ul class="bp">${rows}</ul>${errs}`,
+      `<p>This ZIP will install these blocks. The listed runtime commands can execute code with your Windows account permissions:</p><ul class="bp">${rows}</ul>${errs}`,
       [['cancel', 'Cancel'], ['go', 'Install', 'primary']]);
     if (c !== 'go') return;
     await invoke('block_pack_install', { path: pv.path });
-    toast('Installed. Choose "Reload" in Custom blocks to load it.');
+    toast('Plugin installed. Choose "Reload" in Custom blocks to load it.');
   } catch (e) { toast('Install failed: ' + e, 'err'); }
 }
 
@@ -649,167 +649,48 @@ async function reloadBlocks() {
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
-function createGlassGpuProcessor() {
-  const canvas = document.createElement('canvas');
-  const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
-  if (!gl) return null;
-  const vertexSource = 'attribute vec2 a_position; varying vec2 v_uv; void main(){ v_uv = a_position * 0.5 + 0.5; gl_Position = vec4(a_position, 0.0, 1.0); }';
-  const fragmentSource = [
-    'precision mediump float;',
-    'uniform sampler2D u_frame;',
-    'uniform vec2 u_size;',
-    'uniform int u_count;',
-    'uniform vec4 u_regions[32];',
-    'uniform float u_blurs[32];',
-    'varying vec2 v_uv;',
-    'vec3 sampleBackdrop(vec2 uv, float radius) {',
-    '  vec2 d = vec2(radius / u_size.x, radius / u_size.y) * 0.72;',
-    '  vec3 c = texture2D(u_frame, clamp(uv, vec2(0.001), vec2(0.999))).rgb * 0.20;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x, 0.0), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x, 0.0), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(0.0,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(0.0, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  return c;',
-    '}',
-    'void main(){',
-    '  vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);',
-    '  vec2 p = uv * u_size;',
-    '  vec3 sampled = texture2D(u_frame, clamp(uv, vec2(0.001), vec2(0.999))).rgb;',
-    '  for (int i = 0; i < 32; i++) {',
-    '    if (i >= u_count) break;',
-    '    vec4 r = u_regions[i];',
-    '    if (p.x >= r.x && p.y >= r.y && p.x <= r.x + r.z && p.y <= r.y + r.w) {',
-    '      sampled = sampleBackdrop(uv, u_blurs[i]);',
-    '      break;',
-    '    }',
-    '  }',
-    '  gl_FragColor = vec4(sampled, 1.0);',
-    '}'
-  ].join('\n');
-  const compile = (type, source) => {
-    const shader = gl.createShader(type);
-    if (!shader) throw new Error('WebGL could not allocate a shader');
-    gl.shaderSource(shader, source); gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) { const message = gl.getShaderInfoLog(shader) || 'shader compilation failed'; gl.deleteShader(shader); throw new Error(message); }
-    return shader;
-  };
-  let program, texture, buffer;
-  try {
-    const vs = compile(gl.VERTEX_SHADER, vertexSource);
-    const fs = compile(gl.FRAGMENT_SHADER, fragmentSource);
-    program = gl.createProgram();
-    if (!program) throw new Error('WebGL could not allocate a program');
-    gl.attachShader(program, vs); gl.attachShader(program, fs); gl.linkProgram(program);
-    gl.deleteShader(vs); gl.deleteShader(fs);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || 'shader link failed');
-    texture = gl.createTexture(); buffer = gl.createBuffer();
-    if (!texture || !buffer) throw new Error('WebGL could not allocate backdrop resources');
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-    gl.useProgram(program);
-    const position = gl.getAttribLocation(program, 'a_position');
-    gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
-    gl.uniform1i(gl.getUniformLocation(program, 'u_frame'), 0);
-    gl.uniform2f(gl.getUniformLocation(program, 'u_size'), 1, 1);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  } catch (error) {
-    console.warn('GPU backdrop blur unavailable:', error);
-    return null;
-  }
-
-  return (image, frame) => {
-    canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.useProgram(program);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, image);
-    gl.uniform2f(gl.getUniformLocation(program, 'u_size'), canvas.width, canvas.height);
-    const dpr = window.devicePixelRatio || 1;
-    const ratioX = canvas.width / frame.screenWidth;
-    const ratioY = canvas.height / frame.screenHeight;
-    const regions = new Float32Array(32 * 4);
-    const blurs = new Float32Array(32);
-    let count = 0;
-    const elementSelector = '.card.glass, .acard.glass, .ctx.glass, .pop.glass, .mbox.glass, .ck-box.glass';
-    for (const el of document.querySelectorAll('.glass')) {
-      const r = el.getBoundingClientRect();
-      if (r.width < 2 || r.height < 2 || count >= 32) continue;
-      const x = (frame.windowX - frame.screenX + r.left * dpr) * ratioX;
-      const y = (frame.windowY - frame.screenY + r.top * dpr) * ratioY;
-      regions.set([x, y, r.width * dpr * ratioX, r.height * dpr * ratioY], count * 4);
-      const logicalBlur = el.matches(elementSelector) ? 20 : 15;
-      blurs[count] = logicalBlur * dpr * ratioX;
-      count++;
-    }
-    gl.uniform1i(gl.getUniformLocation(program, 'u_count'), count);
-    gl.uniform4fv(gl.getUniformLocation(program, 'u_regions[0]'), regions);
-    gl.uniform1fv(gl.getUniformLocation(program, 'u_blurs[0]'), blurs);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    return canvas.toDataURL('image/jpeg', 0.86);
-  };
-}
-
 function startGlassBackdrop() {
-  if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
-  const root = document.documentElement;
-  let inFlight = false;
-  let loggedFailure = false;
-  let gpuProcess;
-  try { gpuProcess = createGlassGpuProcessor(); } catch (error) { console.warn('Could not start glass backdrop blur:', error); }
-  // Never present the raw desktop capture as a glass layer if GPU blur failed;
-  // that unblurred image is precisely the wash this effect is intended to avoid.
-  if (!gpuProcess) return;
-
-  const updateBackdropPositions = frame => {
-    const dpr = window.devicePixelRatio || 1;
-    const cropOriginX = (frame.screenX - frame.windowX) / dpr;
-    const cropOriginY = (frame.screenY - frame.windowY) / dpr;
-    root.style.setProperty('--glass-frame-size', (frame.screenWidth / dpr) + 'px ' + (frame.screenHeight / dpr) + 'px');
-    document.querySelectorAll('.glass').forEach(el => {
-      const rect = el.getBoundingClientRect();
-      el.style.setProperty('--glass-frame-x', (cropOriginX - rect.left) + 'px');
-      el.style.setProperty('--glass-frame-y', (cropOriginY - rect.top) + 'px');
-    });
-  };
-
-  const capture = async () => {
-    if (inFlight || document.hidden) return;
-    inFlight = true;
-    try {
-      const frame = await invoke('capture_glass_frame');
-      if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) return;
-      let backdropFrame = frame.dataUrl;
-      if (gpuProcess) {
-        const image = new Image();
-        image.src = frame.dataUrl;
-        await image.decode();
-        backdropFrame = gpuProcess(image, frame);
-      }
-      root.style.setProperty('--glass-backdrop-frame', 'url("' + backdropFrame + '")');
-      updateBackdropPositions(frame);
-      root.classList.add('glass-backdrop-ready');
-      loggedFailure = false;
-    } catch (error) {
-      root.classList.remove('glass-backdrop-ready');
-      if (!loggedFailure) { console.warn('Glass backdrop capture unavailable:', error); loggedFailure = true; }
-    } finally { inFlight = false; }
-  };
-
-  // Match the source theme: 15px backdrop blur for the shell, 20px for elements,
-  // with the source's separate low-opacity tint and gradient border treatment.
-  capture();
-  window.setInterval(capture, 120);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) capture(); });
+  const refreshStatus = $('#glass-refresh-status');
+  if (!/Win/i.test(navigator.userAgent)) {
+    if (refreshStatus) refreshStatus.textContent = 'Live panel blur is available on Windows.';
+    return;
+  }
+  // Keep the native window transparent. Applying native Acrylic here blurs the
+  // entire window, which is intentionally avoided; individual panels use the
+  // WebView compositor's live backdrop-filter instead.
+  if (refreshStatus) refreshStatus.textContent =
+    'Scoped live panel blur · Windows Transparency effects must be enabled in system settings.';
 }
 
+function setupGlassMaterials() {
+  const selector = '.glass, button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
+  const applyMaterial = el => {
+    // Keep workflow blocks and their embedded fields on the editor's original
+    // canvas material. Floating canvas overlays remain LiquidGlass surfaces.
+    if (el.closest('.canvas') && !el.closest('.ctx, .eu-bar, .eu-handle')) return;
+    el.classList.add('glass');
+    // Main navigation/editor bars use clear LiquidGlass. Other surfaces use
+    // compositor-backed live blur. Canvas nodes and fields stay untouched.
+    if (el.matches('.top, .ed-bar, .window-titlebar') || el.closest('.canvas') && !el.closest('.ctx, .eu-bar, .eu-handle')) {
+      el.classList.remove('liquidglass-variant');
+      el.classList.add('liquidglass');
+      return;
+    }
+    el.classList.add('liquidglass-variant');
+    el.classList.remove('liquidglass');
+  };
+  const apply = root => {
+    if (root.nodeType !== 1) return;
+    if (root.matches(selector)) applyMaterial(root);
+    root.querySelectorAll?.(selector).forEach(applyMaterial);
+  };
+  apply(document.documentElement);
+  new MutationObserver(records => {
+    for (const record of records) {
+      for (const node of record.addedNodes) apply(node);
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+}
 // ---------- init ----------
 (async function init() {
   await loadBlockSpecs();
@@ -819,5 +700,6 @@ function startGlassBackdrop() {
   } catch (e) { toast('Could not load data: ' + e, 'err'); }
   await bindEvents();
   show('overview');
+  setupGlassMaterials();
   startGlassBackdrop();
 })();
