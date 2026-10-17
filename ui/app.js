@@ -649,148 +649,49 @@ async function reloadBlocks() {
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
-function createGlassGpuProcessor() {
-  const canvas = document.createElement('canvas');
-  const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
-  if (!gl) return null;
-  const vertexSource = 'attribute vec2 a_position; varying vec2 v_uv; void main(){ v_uv = a_position * 0.5 + 0.5; gl_Position = vec4(a_position, 0.0, 1.0); }';
-  const fragmentSource = [
-    'precision mediump float;',
-    'uniform sampler2D u_frame;',
-    'uniform vec2 u_size;',
-    'uniform int u_count;',
-    'uniform vec4 u_regions[32];',
-    'uniform float u_blurs[32];',
-    'varying vec2 v_uv;',
-    'vec3 sampleBackdrop(vec2 uv, float radius) {',
-    '  vec2 d = vec2(radius / u_size.x, radius / u_size.y) * 0.72;',
-    '  vec3 c = texture2D(u_frame, clamp(uv, vec2(0.001), vec2(0.999))).rgb * 0.20;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x, 0.0), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x, 0.0), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(0.0,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(0.0, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  return c;',
-    '}',
-    'void main(){',
-    '  vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);',
-    '  vec2 p = uv * u_size;',
-    '  vec3 sampled = texture2D(u_frame, clamp(uv, vec2(0.001), vec2(0.999))).rgb;',
-    '  for (int i = 0; i < 32; i++) {',
-    '    if (i >= u_count) break;',
-    '    vec4 r = u_regions[i];',
-    '    if (p.x >= r.x && p.y >= r.y && p.x <= r.x + r.z && p.y <= r.y + r.w) {',
-    '      sampled = sampleBackdrop(uv, u_blurs[i]);',
-    '      break;',
-    '    }',
-    '  }',
-    '  gl_FragColor = vec4(sampled, 1.0);',
-    '}'
-  ].join('\n');
-  const compile = (type, source) => {
-    const shader = gl.createShader(type);
-    if (!shader) throw new Error('WebGL could not allocate a shader');
-    gl.shaderSource(shader, source); gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) { const message = gl.getShaderInfoLog(shader) || 'shader compilation failed'; gl.deleteShader(shader); throw new Error(message); }
-    return shader;
-  };
-  let program, texture, buffer;
-  try {
-    const vs = compile(gl.VERTEX_SHADER, vertexSource);
-    const fs = compile(gl.FRAGMENT_SHADER, fragmentSource);
-    program = gl.createProgram();
-    if (!program) throw new Error('WebGL could not allocate a program');
-    gl.attachShader(program, vs); gl.attachShader(program, fs); gl.linkProgram(program);
-    gl.deleteShader(vs); gl.deleteShader(fs);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || 'shader link failed');
-    texture = gl.createTexture(); buffer = gl.createBuffer();
-    if (!texture || !buffer) throw new Error('WebGL could not allocate backdrop resources');
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-    gl.useProgram(program);
-    const position = gl.getAttribLocation(program, 'a_position');
-    gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
-    gl.uniform1i(gl.getUniformLocation(program, 'u_frame'), 0);
-    gl.uniform2f(gl.getUniformLocation(program, 'u_size'), 1, 1);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  } catch (error) {
-    console.warn('GPU backdrop blur unavailable:', error);
-    return null;
-  }
-
-  return (image, frame) => {
-    canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.useProgram(program);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, image);
-    gl.uniform2f(gl.getUniformLocation(program, 'u_size'), canvas.width, canvas.height);
-    const dpr = window.devicePixelRatio || 1;
-    const ratioX = canvas.width / frame.screenWidth;
-    const ratioY = canvas.height / frame.screenHeight;
-    const regions = new Float32Array(32 * 4);
-    const blurs = new Float32Array(32);
-    let count = 0;
-    const elementSelector = '.card.glass, .acard.glass, .ctx.glass, .pop.glass, .mbox.glass, .ck-box.glass';
-    for (const el of document.querySelectorAll('.glass')) {
-      const r = el.getBoundingClientRect();
-      if (r.width < 2 || r.height < 2 || count >= 32) continue;
-      const x = (frame.windowX - frame.screenX + r.left * dpr) * ratioX;
-      const y = (frame.windowY - frame.screenY + r.top * dpr) * ratioY;
-      regions.set([x, y, r.width * dpr * ratioX, r.height * dpr * ratioY], count * 4);
-      const logicalBlur = el.matches(elementSelector) ? 20 : 15;
-      blurs[count] = logicalBlur * dpr * ratioX;
-      count++;
-    }
-    gl.uniform1i(gl.getUniformLocation(program, 'u_count'), count);
-    gl.uniform4fv(gl.getUniformLocation(program, 'u_regions[0]'), regions);
-    gl.uniform1fv(gl.getUniformLocation(program, 'u_blurs[0]'), blurs);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    return canvas.toDataURL('image/jpeg', 0.86);
-  };
-}
-
 function startGlassBackdrop() {
   if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
-  const root = document.documentElement;
-  root.style.setProperty('--liquidglass-reflection-image', 'none');
+
+  // The variant uses the actual desktop pixels as its background image.
+  // CSS applies the existing blur on each surface; do not replace this with a
+  // tint or require WebGL to display the captured backdrop.
+  const reflectionRoot = document.documentElement;
+  reflectionRoot.style.setProperty('--liquidglass-reflection-image', 'none');
+
   let inFlight = false;
   let loggedFailure = false;
-  let gpuProcess;
-  try { gpuProcess = createGlassGpuProcessor(); } catch (error) { console.warn('Could not start glass backdrop blur:', error); }
-  // GPU processing is an optimization, not a prerequisite. The captured desktop
-  // frame is painted only through the variant surface's CSS blur layer, so the
-  // same real backdrop still renders when WebGL is unavailable.
-  let loggedGpuFallback = false;
-  if (!gpuProcess) {
-    console.warn('GPU backdrop blur unavailable; using the CSS-blurred desktop capture.');
-  }
+  let geometryDirty = true;
+  let lastGeometrySignature = '';
+  const reflectedSurfaceSelector = '.glass.liquidglass-variant:not(input[type="checkbox"]):not(input[type="radio"])';
 
-  const updateBackdropPositions = frame => {
-    const dpr = window.devicePixelRatio || 1;
-    const sampleWidth = frame.screenWidth / dpr;
-    const sampleHeight = frame.screenHeight / dpr;
-    const originX = (frame.screenX - frame.windowX) / dpr;
-    const originY = (frame.screenY - frame.windowY) / dpr;
+  const markGeometryDirty = () => { geometryDirty = true; };
+  const geometryObserver = new MutationObserver(markGeometryDirty);
+  geometryObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'hidden', 'style'],
+  });
 
-    for (const el of document.querySelectorAll('.glass.liquidglass-variant')) {
-      const rect = el.getBoundingClientRect();
+  const updateSurfaceGeometry = frame => {
+    const scale = window.devicePixelRatio || 1;
+    const sampleWidth = frame.screenWidth / scale;
+    const sampleHeight = frame.screenHeight / scale;
+    const originX = (frame.screenX - frame.windowX) / scale;
+    const originY = (frame.screenY - frame.windowY) / scale;
+
+    for (const surface of document.querySelectorAll(reflectedSurfaceSelector)) {
+      const rect = surface.getBoundingClientRect();
       if (
         rect.width <= 0 || rect.height <= 0 ||
         rect.right <= 0 || rect.bottom <= 0 ||
         rect.left >= window.innerWidth || rect.top >= window.innerHeight
       ) continue;
 
-      el.style.setProperty('--liquidglass-reflection-size', `${sampleWidth}px ${sampleHeight}px`);
-      el.style.setProperty('--liquidglass-reflection-position', `${originX - rect.left}px ${originY - rect.top}px`);
+      surface.style.setProperty('--liquidglass-reflection-size', `${sampleWidth}px ${sampleHeight}px`);
+      surface.style.setProperty('--liquidglass-reflection-position', `${originX - rect.left}px ${originY - rect.top}px`);
     }
+    geometryDirty = false;
   };
 
   const capture = async () => {
@@ -798,35 +699,31 @@ function startGlassBackdrop() {
     inFlight = true;
     try {
       const frame = await invoke('capture_glass_frame');
-      if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) return;
-      let backdropFrame = frame.dataUrl;
-      if (gpuProcess) {
-        try {
-          const image = new Image();
-          image.src = frame.dataUrl;
-          await image.decode();
-          backdropFrame = gpuProcess(image, frame);
-        } catch (error) {
-          // A GPU context can fail after startup too. Keep displaying a real,
-          // CSS-blurred capture instead of silently falling back to tinted glass.
-          gpuProcess = null;
-          if (!loggedGpuFallback) {
-            console.warn('GPU backdrop processing failed; using the CSS-blurred desktop capture:', error);
-            loggedGpuFallback = true;
-          }
-        }
+      if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) {
+        throw new Error('Desktop capture returned an empty frame.');
       }
-      root.style.setProperty('--liquidglass-reflection-image', 'url("' + backdropFrame + '")');
-      updateBackdropPositions(frame);
+
+      const scale = window.devicePixelRatio || 1;
+      const signature = `${frame.screenWidth}x${frame.screenHeight}@${scale}`;
+      if (geometryDirty || signature !== lastGeometrySignature) {
+        updateSurfaceGeometry(frame);
+        lastGeometrySignature = signature;
+      }
+
+      // Paint the captured desktop itself. The existing variant pseudo-element
+      // applies filter: blur(12px), so a missing GPU context cannot reduce it to tint.
+      reflectionRoot.style.setProperty('--liquidglass-reflection-image', `url("${frame.dataUrl}")`);
       loggedFailure = false;
     } catch (error) {
-      if (!loggedFailure) { console.warn('Glass backdrop capture unavailable:', error); loggedFailure = true; }
-    } finally { inFlight = false; }
+      if (!loggedFailure) {
+        console.warn('LiquidGlass desktop capture unavailable:', error);
+        loggedFailure = true;
+      }
+    } finally {
+      inFlight = false;
+    }
   };
 
-  // Keep the backdrop live without overlapping native captures. requestAnimationFrame
-  // drives updates at display cadence; the inFlight guard naturally caps throughput
-  // at the capture/decode/GPU pipeline's real speed instead of queuing stale frames.
   let frameRequest = 0;
   const tick = () => {
     frameRequest = 0;
@@ -835,18 +732,28 @@ function startGlassBackdrop() {
     frameRequest = window.requestAnimationFrame(tick);
   };
   const startFrames = () => {
-    if (!document.hidden && !frameRequest) frameRequest = window.requestAnimationFrame(tick);
+    if (!document.hidden && !frameRequest) {
+      frameRequest = window.requestAnimationFrame(tick);
+    }
   };
   const stopFrames = () => {
     if (frameRequest) window.cancelAnimationFrame(frameRequest);
     frameRequest = 0;
   };
-  void capture();
-  startFrames();
+
+  window.addEventListener('resize', markGeometryDirty, { passive: true });
+  window.addEventListener('scroll', markGeometryDirty, { passive: true, capture: true });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopFrames();
-    else { void capture(); startFrames(); }
+    else {
+      markGeometryDirty();
+      void capture();
+      startFrames();
+    }
   });
+
+  void capture();
+  startFrames();
 }
 
 function setupGlassMaterials() {
