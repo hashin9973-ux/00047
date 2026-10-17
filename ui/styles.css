@@ -254,34 +254,7 @@ body.liquidglass {
   backdrop-filter: none !important;
 }
 
-/* Desktop reflection is painted inside variant surfaces only, never across the app. */
-.glass.liquidglass-variant {
-  --liquidglass-reflection-size: 0px 0px;
-  --liquidglass-reflection-position: 0 0;
-  isolation: isolate;
-}
-
-/* The main liquidglass surface remains native-transparent with no sampled image or blur. */
-/* Variant reflections use screen-aligned desktop pixels clipped to each surface. */
-.glass.liquidglass-variant::before {
-  content: "" !important;
-  display: block !important;
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  border-radius: inherit;
-  background-image: var(--liquidglass-reflection-image, none);
-  background-size: var(--liquidglass-reflection-size);
-  background-position: var(--liquidglass-reflection-position);
-  background-repeat: no-repeat;
-  /* Keep the sampled layer translucent so a transparent-window capture
-     retains real desktop pixels instead of recursively copying an opaque layer. */
-  opacity: .72;
-  filter: blur(12px);
-  will-change: filter;
-}
-
+/* Native Windows Acrylic is composited behind the transparent WebView window. */
 /* The two material styles share transparent fills. Variant blur applies only inside each control. */
 .glass {
   background: transparent !important;
@@ -290,8 +263,6 @@ body.liquidglass {
   color: var(--tx) !important;
   border: 1px solid rgba(255,255,255,.12) !important;
   box-shadow: none !important;
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
   isolation: isolate;
   position: relative;
 }
@@ -304,18 +275,12 @@ body.liquidglass {
   background-color: transparent !important;
   border-color: rgba(255,255,255,.14) !important;
   box-shadow: none !important;
-  -webkit-backdrop-filter: blur(18px);
-  backdrop-filter: blur(18px);
 }
 input.glass.liquidglass-variant,
 select.glass.liquidglass-variant,
 textarea.glass.liquidglass-variant {
   background: transparent !important;
   background-color: transparent !important;
-  background-image: var(--liquidglass-reflection-image, none) !important;
-  background-size: var(--liquidglass-reflection-size) !important;
-  background-position: var(--liquidglass-reflection-position) !important;
-  background-repeat: no-repeat !important;
   color: var(--tx) !important;
 }
 
