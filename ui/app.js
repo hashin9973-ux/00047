@@ -803,11 +803,29 @@ function startGlassBackdrop() {
     } finally { inFlight = false; }
   };
 
-  // Match the source theme: 15px backdrop blur for the shell, 20px for elements,
-  // with the source's separate low-opacity tint and gradient border treatment.
-  capture();
-  window.setInterval(capture, 120);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) capture(); });
+  // Keep the backdrop live without overlapping native captures. requestAnimationFrame
+  // drives updates at display cadence; the inFlight guard naturally caps throughput
+  // at the capture/decode/GPU pipeline's real speed instead of queuing stale frames.
+  let frameRequest = 0;
+  const tick = () => {
+    frameRequest = 0;
+    if (document.hidden) return;
+    if (!inFlight) void capture();
+    frameRequest = window.requestAnimationFrame(tick);
+  };
+  const startFrames = () => {
+    if (!document.hidden && !frameRequest) frameRequest = window.requestAnimationFrame(tick);
+  };
+  const stopFrames = () => {
+    if (frameRequest) window.cancelAnimationFrame(frameRequest);
+    frameRequest = 0;
+  };
+  void capture();
+  startFrames();
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopFrames();
+    else { void capture(); startFrames(); }
+  });
 }
 
 // ---------- init ----------
