@@ -134,7 +134,10 @@ export class Editor {
   }
 
   // ---------- public API ----------
-  setActive(v) { this.active = v; }
+  setActive(v) {
+    this.active = v;
+    if (v) this.scheduleWires();
+  }
 
   load(auto) {
     this.auto = auto;
@@ -374,7 +377,12 @@ export class Editor {
       d.p = this.cursor; this.drawTemp();
     } else if (d.t === 'bend') {
       const ed = this.auto.edges.find(x => x.id === d.id);
-      if (ed) { ed.bend = Math.round(d.orig + (e.clientY - d.sy) / this.vp.k); this.scheduleWires(); }
+      if (ed) {
+        ed.bend = Math.round(d.orig + (e.clientY - d.sy) / this.vp.k);
+        const wire = this.wires.get(ed.id);
+        if (wire) wire.physics = null;
+        this.scheduleWires();
+      }
     }
   }
 
@@ -483,6 +491,93 @@ if (A.kind === 'act.loop') {
   // ---------- wires ----------
   scheduleWires() { if (!this.raf) this.raf = requestAnimationFrame(() => { this.raf = 0; this.drawWires(); }); }
 
+  // Verlet rope simulation: only wire particles receive gravity; blocks remain fixed unless dragged.
+  initWirePhysics(e, a, b) {
+    const distance = Math.hypot(b.x - a.x, b.y - a.y);
+    const segments = clamp(Math.ceil(distance / 24), 8, 32);
+    const slack = Math.max(distance * 1.16, distance + 24);
+    const rest = slack / segments;
+    const particles = [];
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const sag = Math.sin(Math.PI * t) * (Math.min(20, distance * 0.04) + (e.bend || 0));
+      const x = a.x + (b.x - a.x) * t;
+      const y = a.y + (b.y - a.y) * t + sag;
+      particles.push({ x, y, px: x, py: y });
+    }
+    return { particles, rest, segments, a: { ...a }, b: { ...b } };
+  }
+
+  collideWireParticle(p, rects) {
+    const radius = 4;
+    for (const r of rects) {
+      if (p.x < r[0] - radius || p.x > r[2] + radius || p.y < r[1] - radius || p.y > r[3] + radius) continue;
+      const left = Math.abs(p.x - (r[0] - radius));
+      const right = Math.abs((r[2] + radius) - p.x);
+      const top = Math.abs(p.y - (r[1] - radius));
+      const bottom = Math.abs((r[3] + radius) - p.y);
+      const edge = Math.min(left, right, top, bottom);
+      if (edge === left) p.x = r[0] - radius;
+      else if (edge === right) p.x = r[2] + radius;
+      else if (edge === top) p.y = r[1] - radius;
+      else p.y = r[3] + radius;
+      p.px = p.x; p.py = p.y;
+    }
+  }
+
+  simulateWire(e, f, t, w, dt) {
+    const a = { x: f.x + W, y: f.y + PORT[e.kind === 'target' ? 'tgt' : e.kind] };
+    const b = { x: t.x, y: t.y + PORT.in };
+    if (!w.physics) w.physics = this.initWirePhysics(e, a, b);
+    const sim = w.physics, ps = sim.particles;
+    // Carry the rope ends with their ports while preserving the rope's momentum.
+    const da = { x: a.x - sim.a.x, y: a.y - sim.a.y };
+    const db = { x: b.x - sim.b.x, y: b.y - sim.b.y };
+    for (let i = 1; i < ps.length - 1; i++) {
+      const u = i / (ps.length - 1);
+      ps[i].x += da.x * (1 - u) + db.x * u;
+      ps[i].y += da.y * (1 - u) + db.y * u;
+      const vx = (ps[i].x - ps[i].px) * 0.985;
+      const vy = (ps[i].y - ps[i].py) * 0.985;
+      ps[i].px = ps[i].x;
+      ps[i].py = ps[i].y;
+      const scale = clamp(dt / 16.667, 0.5, 2);
+      ps[i].x += vx;
+      ps[i].y += vy + 0.22 * scale * scale;
+    }
+    const last = ps.length - 1;
+    ps[0].x = a.x; ps[0].y = a.y; ps[0].px = a.x; ps[0].py = a.y;
+    ps[last].x = b.x; ps[last].y = b.y; ps[last].px = b.x; ps[last].py = b.y;
+
+    const rects = this.calcRects()
+      .filter(o => o.id !== f.id && o.id !== t.id)
+      .map(o => o.r);
+    for (let iteration = 0; iteration < 7; iteration++) {
+      // Fixed-length segments constrain the cable while gravity creates a natural sag.
+      for (let i = 0; i < last; i++) {
+        const p = ps[i], q = ps[i + 1];
+        const dx = q.x - p.x, dy = q.y - p.y;
+        const distance = Math.hypot(dx, dy) || 0.001;
+        const correction = (distance - sim.rest) / distance;
+        const cx = dx * correction, cy = dy * correction;
+        if (i === 0) { q.x -= cx; q.y -= cy; }
+        else if (i + 1 === last) { p.x += cx; p.y += cy; }
+        else { p.x += cx * 0.5; p.y += cy * 0.5; q.x -= cx * 0.5; q.y -= cy * 0.5; }
+      }
+      ps[0].x = a.x; ps[0].y = a.y;
+      ps[last].x = b.x; ps[last].y = b.y;
+      for (let i = 1; i < last; i++) this.collideWireParticle(ps[i], rects);
+    }
+    sim.a = { ...a }; sim.b = { ...b };
+    let d = `M${ps[0].x},${ps[0].y}`;
+    for (let i = 1; i < last; i++) {
+      const p = ps[i], q = ps[i + 1];
+      d += ` Q${p.x},${p.y} ${(p.x + q.x) / 2},${(p.y + q.y) / 2}`;
+    }
+    d += ` Q${ps[last - 1].x},${ps[last - 1].y} ${b.x},${b.y}`;
+    return { d, mid: { x: ps[Math.floor(last / 2)].x, y: ps[Math.floor(last / 2)].y } };
+  }
+
   hOf(id) { return this.els.get(id)?.offsetHeight || 90; }
 
   calcRects() {
@@ -551,6 +646,9 @@ if (A.kind === 'act.loop') {
   }
 
   drawWires() {
+    const now = performance.now();
+    const dt = this.lastPhysicsTime ? Math.min(32, now - this.lastPhysicsTime) : 16.667;
+    this.lastPhysicsTime = now;
     this.rcache = this.calcRects();
     const seen = new Set();
     for (const e of this.auto.edges) {
@@ -568,7 +666,7 @@ if (A.kind === 'act.loop') {
         this.wl.appendChild(w.hit); this.wl.appendChild(w.vis);
         this.wires.set(e.id, w);
       }
-      const { d, mid } = this.route(e, f, t);
+      const { d, mid } = this.simulateWire(e, f, t, w, dt);
       w.mid = mid;
       w.hit.setAttribute('d', d); w.vis.setAttribute('d', d);
       w.vis.setAttribute('class', `wire k-${e.kind}${this.selEdge === e.id ? ' sel' : ''}`);
@@ -576,6 +674,10 @@ if (A.kind === 'act.loop') {
     }
     for (const [id, w] of this.wires) if (!seen.has(id)) { w.hit.remove(); w.vis.remove(); this.wires.delete(id); }
     this.placeEdgeUI();
+    // Keep the rope simulation alive only while the editor is visible.
+    if (this.active && this.auto.edges.length && !this.raf) {
+      this.raf = requestAnimationFrame(() => { this.raf = 0; this.drawWires(); });
+    }
   }
 
   placeEdgeUI() {
