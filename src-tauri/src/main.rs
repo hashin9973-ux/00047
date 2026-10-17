@@ -424,6 +424,27 @@ fn block_pack_install(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn plugin_pack_preview(app: AppHandle) -> Result<Option<custom::PluginPreview>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().add_filter("00047 plugin package", &["json"]).pick_file(move |p| {
+        let _ = tx.send(p);
+    });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    custom::plugin_preview(&path).map(Some)
+}
+
+#[tauri::command]
+fn plugin_pack_install(path: String) -> Result<String, String> {
+    custom::install_plugin(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+fn uninstall_plugin(id: String) -> Result<String, String> {
+    custom::uninstall_plugin(&id)
+}
+
+#[tauri::command]
 fn open_blocks_folder() -> Result<(), String> {
     let d = custom::blocks_dir().ok_or_else(|| "blocks folder is not initialised".to_string())?;
     let _ = std::fs::create_dir_all(d);
@@ -513,6 +534,9 @@ fn main() {
             list_block_specs,
             block_pack_preview,
             block_pack_install,
+            plugin_pack_preview,
+            plugin_pack_install,
+            uninstall_plugin,
             open_blocks_folder,
             restart_app
         ])
