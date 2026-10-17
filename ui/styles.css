@@ -240,14 +240,42 @@ body.liquidglass {
   color-scheme: dark;
 }
 
-/* LiquidGlass: actual backdrop filtering, with no white/grey material fill. */
+/* True LiquidGlass: render a blurred sample of actual desktop pixels; do not tint it. */
+html,
+body.liquidglass {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+body.liquidglass {
+  position: relative;
+  isolation: isolate;
+  color: var(--tx);
+  color-scheme: dark;
+}
+
+/* Desktop sample layer is populated only after a successful screen capture. */
+#liquidglass-desktop-backdrop {
+  position: fixed;
+  z-index: -1;
+  pointer-events: none;
+  border: 0 !important;
+  box-shadow: none !important;
+  background-color: transparent !important;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  filter: blur(16px);
+  opacity: 0;
+  transform: translateZ(0);
+}
+
+/* The two material styles share transparent fills. Blur is from pixels behind them. */
 .glass {
   background: transparent !important;
   background-color: transparent !important;
   background-image: none !important;
   color: var(--tx) !important;
   border: 1px solid rgba(255,255,255,.12) !important;
-  box-shadow: 0 4px 14px rgba(0,0,0,.12) !important;
+  box-shadow: none !important;
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
   isolation: isolate;
@@ -258,13 +286,11 @@ body.liquidglass {
   content: none !important;
   display: none !important;
 }
-
-/* LiquidGlass Variant: stronger blur for controls, bars and other surfaces. */
 .glass.liquidglass-variant {
   background: transparent !important;
   background-color: transparent !important;
   border-color: rgba(255,255,255,.14) !important;
-  box-shadow: 0 4px 14px rgba(0,0,0,.14) !important;
+  box-shadow: none !important;
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }
@@ -277,7 +303,7 @@ textarea.glass.liquidglass-variant {
   color: var(--tx) !important;
 }
 
-/* Keep the non-canvas interface neutral; the editor canvas is unchanged. */
+/* Keep the non-canvas interface achromatic; workflow-canvas colors are untouched. */
 .save.busy, .save.err, .note,
 .pill.running, .pill.completed, .pill.failed, .pill.stopping,
 .recent .er, .recent .wa,
@@ -285,8 +311,15 @@ textarea.glass.liquidglass-variant {
 .er, .window-control.close:hover {
   color: var(--tx) !important;
 }
-.res u { background: var(--mu) !important; }
+.btn.primary, .btn.danger,
+.pill.running, .pill.completed, .pill.failed, .pill.stopping {
+  background: rgba(255,255,255,.045) !important;
+  border-color: rgba(255,255,255,.10) !important;
+}
+#tabs button.on, #dock-tabs button.on,
 .mi.on, .mi:hover, .ck-item.on, .ck-item:hover,
 .tbl tr[data-act=open]:hover {
-  background: rgba(255,255,255,.06) !important;
+  background: rgba(255,255,255,.045) !important;
+  box-shadow: none !important;
 }
+.res u { background: var(--mu) !important; }
