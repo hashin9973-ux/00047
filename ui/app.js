@@ -649,55 +649,66 @@ async function reloadBlocks() {
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
-function startGlassBackdrop() {
+function startGlassReflection() {
   if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
 
-  const layer = document.createElement('div');
-  layer.id = 'liquidglass-desktop-backdrop';
-  layer.setAttribute('aria-hidden', 'true');
-  Object.assign(layer.style, {
-    position: 'fixed',
-    zIndex: '-1',
-    pointerEvents: 'none',
-    backgroundRepeat: 'no-repeat',
-    backgroundSize: '100% 100%',
-    filter: 'none',
-    opacity: '0',
-    willChange: 'background-image',
-    transform: 'translateZ(0)'
-  });
-  document.body.prepend(layer);
-
+  // Main app background is intentionally not represented by a screenshot layer.
+  // Desktop pixels are applied only to the small set of LiquidGlass variant surfaces.
   let inFlight = false;
-  let hasFrame = false;
+  const reflectedSurfaceSelector = '.glass.liquidglass-variant:not(input[type="checkbox"]):not(input[type="radio"])';
+  const directBackgroundSelector = 'input.glass.liquidglass-variant:not([type="checkbox"]):not([type="radio"]), select.glass.liquidglass-variant, textarea.glass.liquidglass-variant';
+
   const capture = async () => {
     if (inFlight || document.hidden) return;
     inFlight = true;
     try {
       const frame = await invoke('capture_glass_frame');
       if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) {
-        throw new Error('Desktop backdrop capture returned an empty frame.');
+        throw new Error('Desktop reflection capture returned an empty frame.');
       }
+
       const scale = window.devicePixelRatio || 1;
-      layer.style.left = `${(frame.screenX - frame.windowX) / scale}px`;
-      layer.style.top = `${(frame.screenY - frame.windowY) / scale}px`;
-      layer.style.width = `${frame.screenWidth / scale}px`;
-      layer.style.height = `${frame.screenHeight / scale}px`;
-      layer.style.backgroundImage = `url("${frame.dataUrl}")`;
-      layer.style.opacity = '1';
-      hasFrame = true;
+      // The same desktop sample is clipped independently to each visible variant.
+      // Positioning is relative to each surface, so the pixels stay screen-aligned.
+      const sampleWidth = frame.screenWidth / scale;
+      const sampleHeight = frame.screenHeight / scale;
+      const originX = (frame.screenX - frame.windowX) / scale;
+      const originY = (frame.screenY - frame.windowY) / scale;
+      const image = `url("${frame.dataUrl}")`;
+      const directBackgrounds = new Set(document.querySelectorAll(directBackgroundSelector));
+
+      for (const surface of document.querySelectorAll(reflectedSurfaceSelector)) {
+        const rect = surface.getBoundingClientRect();
+        if (
+          rect.width <= 0 || rect.height <= 0 ||
+          rect.right <= 0 || rect.bottom <= 0 ||
+          rect.left >= window.innerWidth || rect.top >= window.innerHeight
+        ) continue;
+
+        const x = `${originX - rect.left}px`;
+        const y = `${originY - rect.top}px`;
+        surface.style.setProperty('--liquidglass-reflection-image', image);
+        surface.style.setProperty('--liquidglass-reflection-size', `${sampleWidth}px ${sampleHeight}px`);
+        surface.style.setProperty('--liquidglass-reflection-position', `${x} ${y}`);
+
+        // Generated pseudo-elements do not render consistently on form controls,
+        // so use the element's own background for inputs, selects, and textareas.
+        if (directBackgrounds.has(surface)) {
+          surface.style.setProperty('background-image', image, 'important');
+          surface.style.setProperty('background-size', `${sampleWidth}px ${sampleHeight}px`, 'important');
+          surface.style.setProperty('background-position', `${x} ${y}`, 'important');
+          surface.style.setProperty('background-repeat', 'no-repeat', 'important');
+        }
+      }
     } catch (error) {
-      // Never substitute a grey/black fill when capture is unavailable.
-      if (!hasFrame) layer.style.opacity = '0';
-      console.debug('LiquidGlass desktop sample unavailable:', error);
+      // Leave the native transparent app background untouched on capture failures.
+      console.debug('LiquidGlass surface reflection unavailable:', error);
     } finally {
       inFlight = false;
     }
   };
 
-  // requestAnimationFrame follows the WebView compositor's native vsync cadence
-  // (for example 60/120/144 Hz). Captures never queue: if one is still running,
-  // the next display tick is skipped and the next available tick starts a fresh sample.
+  // Refresh-synchronized attempts; no overlap and no full-window screenshot layer.
   const tick = () => {
     if (!document.hidden) void capture();
     window.requestAnimationFrame(tick);
@@ -705,6 +716,7 @@ function startGlassBackdrop() {
   void capture();
   window.requestAnimationFrame(tick);
   window.addEventListener('resize', capture);
+  window.addEventListener('scroll', capture, true);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) void capture();
   });
@@ -741,5 +753,5 @@ function setupGlassMaterials() {
   await bindEvents();
   show('overview');
   setupGlassMaterials();
-  startGlassBackdrop();
+  startGlassReflection();
 })();
