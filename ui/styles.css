@@ -21,7 +21,7 @@ button:disabled{opacity:.35;cursor:default}
 .mu{color:var(--mu)}
 .glass{background:linear-gradient(transparent,transparent) padding-box,linear-gradient(180deg,var(--glass-border-hi) 0%,var(--glass-border-low) 25%,var(--glass-border-hi) 100%) border-box;border-style:solid;border-color:transparent;border-width:1px .3px .3px .3px;box-shadow:none;isolation:isolate;position:relative}
 .top.glass,.ed-bar.glass,.ed-dock.glass{border-radius:12px}
-.card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{background:linear-gradient(transparent,transparent) padding-box,linear-gradient(180deg,var(--glass-element-border-mid) 15%,var(--glass-border-hi) 100%) border-box;border-width:.3px .3px 1px .3px;border-radius:8px;box-shadow:none;isolation:isolate}
+.card.glass,.acard.glass,.ctx.glass,.eu-bar.glass,.pop.glass,.mbox.glass,.ck-box.glass{background:linear-gradient(transparent,transparent) padding-box,linear-gradient(180deg,var(--glass-element-border-mid) 15%,var(--glass-border-hi) 100%) border-box;border-width:.3px .3px 1px .3px;border-radius:8px;box-shadow:none;isolation:isolate}
 .glass::before{content:"";position:absolute;inset:0;z-index:-2;border-radius:inherit;background-image:var(--glass-backdrop-frame,none);background-size:var(--glass-frame-size,100% 100%);background-position:var(--glass-frame-x,0px) var(--glass-frame-y,0px);background-repeat:no-repeat;opacity:0;pointer-events:none;transition:opacity .12s ease}
 .glass::after{content:"";position:absolute;inset:0;z-index:-1;border-radius:inherit;background:rgba(var(--glass-tint),var(--glass-bg-opacity));pointer-events:none}
 .card.glass::after,.acard.glass::after,.ctx.glass::after,.pop.glass::after,.mbox.glass::after,.ck-box.glass::after{background:rgba(var(--glass-tint),var(--glass-element-opacity))}
@@ -291,7 +291,7 @@ main{flex:1;min-height:0;padding:12px;position:relative}
     linear-gradient(0deg,rgba(255,255,255,.22) 0,transparent 2px),
     linear-gradient(90deg,rgba(255,255,255,.16) 0,transparent 1px  calc(100% - 1px),rgba(255,255,255,.10) 100%);
 }
-.card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{
+.card.glass,.acard.glass,.ctx.glass,.eu-bar.glass,.pop.glass,.mbox.glass,.ck-box.glass{
   box-shadow:
     0 10px 28px rgba(0,0,0,.14),
     inset 0 1px 0 rgba(255,255,255,.9),
@@ -446,3 +446,26 @@ input,select,textarea{accent-color:#666}
   border-color:transparent;
 }
 .mbody code{color:#202020}
+
+
+/* Editor-canvas overlays use the reflection-first glass material, not the legacy solid fills. */
+.eu-bar.glass {
+  border-radius: 12px;
+}
+.marquee.glass {
+  background: transparent;
+  border: 1px solid rgba(255,255,255,.86);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.18);
+  --glass-bg-opacity: .035;
+}
+.eu-handle.glass {
+  background: transparent;
+  border: 2px solid rgba(255,255,255,.9);
+  border-radius: 50%;
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,.22),
+    inset 0 1px 0 rgba(255,255,255,.96),
+    0 0 6px rgba(255,255,255,.24);
+  --glass-bg-opacity: .10;
+}
