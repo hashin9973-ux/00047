@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
-// Windhawk Composition blur graph integrated into 00047.
-// Effect classes and effect graph are sourced from Windhawk File Explorer Styler.
-// Copyright/attribution: https://github.com/ramensoftware/windhawk-mods
+// Based on code from Windhawk File Explorer Styler.
+// Upstream: https://github.com/ramensoftware/windhawk-mods
 // License text: src-tauri/native/COPYING.GPL-3.0
-
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
@@ -23,10 +21,8 @@
 #include <winrt/Windows.UI.Composition.Desktop.h>
 #include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
-
 #include <algorithm>
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -34,7 +30,6 @@
 #include <random>
 #include <string_view>
 #include <vector>
-
 namespace wf = winrt::Windows::Foundation;
 namespace wge = winrt::Windows::Graphics::Effects;
 namespace muc = winrt::Windows::UI::Composition;
@@ -126,18 +121,798 @@ winrt::Windows::Storage::Streams::IRandomAccessStream CreateNoiseStream(
     return cachedStream.CloneStream();
 }
 
-template <> inline constexpr winrt::guid winrt::impl::guid_v<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>{
-    winrt::impl::guid_v<winrt::Windows::Foundation::IPropertyValue>
+// windows.graphics.effects.interop.h
+#ifndef BUILD_WINDOWS
+namespace ABI {
+#endif
+namespace Windows {
+namespace Graphics {
+namespace Effects {
+
+typedef interface IGraphicsEffectSource                         IGraphicsEffectSource;
+typedef interface IGraphicsEffectD2D1Interop                    IGraphicsEffectD2D1Interop;
+
+
+typedef enum GRAPHICS_EFFECT_PROPERTY_MAPPING
+{
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_UNKNOWN,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_VECTORX,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_VECTORY,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_VECTORZ,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_VECTORW,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_RECT_TO_VECTOR4,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_RADIANS_TO_DEGREES,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_COLORMATRIX_ALPHA_MODE,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_COLOR_TO_VECTOR3,
+    GRAPHICS_EFFECT_PROPERTY_MAPPING_COLOR_TO_VECTOR4
+} GRAPHICS_EFFECT_PROPERTY_MAPPING;
+
+//+-----------------------------------------------------------------------------
+//
+//  Interface:
+//      IGraphicsEffectD2D1Interop
+//
+//  Synopsis:
+//      An interface providing a Interop counterpart to IGraphicsEffect
+//      and allowing for metadata queries.
+//
+//------------------------------------------------------------------------------
+
+#undef INTERFACE
+#define INTERFACE IGraphicsEffectD2D1Interop
+DECLARE_INTERFACE_IID_(IGraphicsEffectD2D1Interop, IUnknown, "2FC57384-A068-44D7-A331-30982FCF7177")
+{
+    STDMETHOD(GetEffectId)(
+        _Out_ GUID * id
+        ) PURE;
+
+    STDMETHOD(GetNamedPropertyMapping)(
+        LPCWSTR name,
+        _Out_ UINT * index,
+        _Out_ GRAPHICS_EFFECT_PROPERTY_MAPPING * mapping
+        ) PURE;
+
+    STDMETHOD(GetPropertyCount)(
+        _Out_ UINT * count
+        ) PURE;
+
+    STDMETHOD(GetProperty)(
+        UINT index,
+        _Outptr_ winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue> ** value
+        ) PURE;
+
+    STDMETHOD(GetSource)(
+        UINT index,
+        _Outptr_ IGraphicsEffectSource ** source
+        ) PURE;
+
+    STDMETHOD(GetSourceCount)(
+        _Out_ UINT * count
+        ) PURE;
 };
 
-typedef enum MY_D2D1_GAUSSIANBLUR_OPTIMIZATION
-{
-    MY_D2D1_GAUSSIANBLUR_OPTIMIZATION_SPEED = 0,
-    MY_D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED = 1,
-    MY_D2D1_GAUSSIANBLUR_OPTIMIZATION_QUALITY = 2,
-    MY_D2D1_GAUSSIANBLUR_OPTIMIZATION_FORCE_DWORD = 0xffffffff
 
-} MY_D2D1_GAUSSIANBLUR_OPTIMIZATION;
+} // namespace Effects
+} // namespace Graphics
+} // namespace Windows
+#ifndef BUILD_WINDOWS
+} // namespace ABI
+#endif
+
+template <> inline constexpr winrt::guid winrt::impl::guid_v<ABI::Windows::Graphics::Effects::IGraphicsEffectD2D1Interop>{
+    0x2FC57384, 0xA068, 0x44D7, { 0xA3, 0x31, 0x30, 0x98, 0x2F, 0xCF, 0x71, 0x77 }
+};
+
+
+////////////////////////////////////////////////////////////////////////////////
+// CompositeEffect.h
+struct CompositeEffect : winrt::implements<CompositeEffect, wge::IGraphicsEffect, wge::IGraphicsEffectSource, awge::IGraphicsEffectD2D1Interop>
+{
+public:
+    // IGraphicsEffectD2D1Interop
+    HRESULT STDMETHODCALLTYPE GetEffectId(GUID* id) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetPropertyCount(UINT* count) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetSourceCount(UINT* count) noexcept override;
+
+    // IGraphicsEffect
+    winrt::hstring Name();
+    void Name(winrt::hstring name);
+
+    std::vector<wge::IGraphicsEffectSource> Sources;
+    D2D1_COMPOSITE_MODE Mode = D2D1_COMPOSITE_MODE_SOURCE_OVER;
+private:
+    winrt::hstring m_name = L"CompositeEffect";
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// CompositeEffect.cpp
+HRESULT CompositeEffect::GetEffectId(GUID* id) noexcept
+{
+    if (id == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    *id = CLSID_D2D1Composite;
+    return S_OK;
+}
+
+HRESULT CompositeEffect::GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept
+{
+    if (index == nullptr || mapping == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    const std::wstring_view nameView(name);
+    if (nameView == L"Mode")
+    {
+        *index = D2D1_COMPOSITE_PROP_MODE;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        return S_OK;
+    }
+
+    return E_INVALIDARG;
+}
+
+HRESULT CompositeEffect::GetPropertyCount(UINT* count) noexcept
+{
+    if (count == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    *count = 1;
+    return S_OK;
+}
+
+HRESULT CompositeEffect::GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept try
+{
+    if (value == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    switch (index)
+    {
+        case D2D1_COMPOSITE_PROP_MODE:
+            *value = wf::PropertyValue::CreateUInt32((UINT32)Mode).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+            break;
+
+        default:
+            return E_BOUNDS;
+    }
+
+    return S_OK;
+}
+catch (...)
+{
+    return winrt::to_hresult();
+}
+
+HRESULT CompositeEffect::GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept try
+{
+    if (source == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    winrt::copy_to_abi(Sources.at(index), *reinterpret_cast<void**>(source));
+    return S_OK;
+}
+catch (...)
+{
+    return winrt::to_hresult();
+}
+
+HRESULT CompositeEffect::GetSourceCount(UINT* count) noexcept
+{
+    if (count == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    *count = static_cast<UINT>(Sources.size());
+    return S_OK;
+}
+
+winrt::hstring CompositeEffect::Name()
+{
+    return m_name;
+}
+
+void CompositeEffect::Name(winrt::hstring name)
+{
+    m_name = name;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// FloodEffect.h
+struct FloodEffect : winrt::implements<FloodEffect, wge::IGraphicsEffect, wge::IGraphicsEffectSource, awge::IGraphicsEffectD2D1Interop>
+{
+public:
+    // IGraphicsEffectD2D1Interop
+    HRESULT STDMETHODCALLTYPE GetEffectId(GUID* id) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetPropertyCount(UINT* count) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetSourceCount(UINT* count) noexcept override;
+
+    // IGraphicsEffect
+    winrt::hstring Name();
+    void Name(winrt::hstring name);
+
+    winrt::Windows::UI::Color Color{};
+private:
+    winrt::hstring m_name = L"FloodEffect";
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// FloodEffect.cpp
+HRESULT FloodEffect::GetEffectId(GUID* id) noexcept
+{
+    if (id == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    *id = CLSID_D2D1Flood;
+    return S_OK;
+}
+
+HRESULT FloodEffect::GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept
+{
+    if (index == nullptr || mapping == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    const std::wstring_view nameView(name);
+    if (nameView == L"Color")
+    {
+        *index = D2D1_FLOOD_PROP_COLOR;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        return S_OK;
+    }
+
+    return E_INVALIDARG;
+}
+
+HRESULT FloodEffect::GetPropertyCount(UINT* count) noexcept
+{
+    if (count == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    *count = 1;
+    return S_OK;
+}
+
+HRESULT FloodEffect::GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept try
+{
+    if (value == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    switch (index)
+    {
+        case D2D1_FLOOD_PROP_COLOR:
+            *value = wf::PropertyValue::CreateSingleArray({
+                Color.R / 255.0f,
+                Color.G / 255.0f,
+                Color.B / 255.0f,
+                Color.A / 255.0f,
+            }).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+            break;
+
+        default:
+            return E_BOUNDS;
+    }
+
+    return S_OK;
+}
+catch (...)
+{
+    return winrt::to_hresult();
+}
+
+HRESULT FloodEffect::GetSource(UINT, awge::IGraphicsEffectSource** source) noexcept
+{
+    if (source == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    return E_BOUNDS;
+}
+
+HRESULT FloodEffect::GetSourceCount(UINT* count) noexcept
+{
+    if (count == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    *count = 0;
+    return S_OK;
+}
+
+winrt::hstring FloodEffect::Name()
+{
+    return m_name;
+}
+
+void FloodEffect::Name(winrt::hstring name)
+{
+    m_name = name;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// BorderEffect.h
+struct BorderEffect : winrt::implements<BorderEffect, wge::IGraphicsEffect, wge::IGraphicsEffectSource, awge::IGraphicsEffectD2D1Interop>
+{
+public:
+    // IGraphicsEffectD2D1Interop
+    HRESULT STDMETHODCALLTYPE GetEffectId(GUID* id) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetPropertyCount(UINT* count) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetSourceCount(UINT* count) noexcept override;
+
+    // IGraphicsEffect
+    winrt::hstring Name();
+    void Name(winrt::hstring name);
+
+    wge::IGraphicsEffectSource Source{nullptr};
+    D2D1_BORDER_EDGE_MODE ExtendX = D2D1_BORDER_EDGE_MODE_WRAP;
+    D2D1_BORDER_EDGE_MODE ExtendY = D2D1_BORDER_EDGE_MODE_WRAP;
+private:
+    winrt::hstring m_name = L"BorderEffect";
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// BorderEffect.cpp
+HRESULT BorderEffect::GetEffectId(GUID* id) noexcept
+{
+    if (!id)
+    {
+        return E_INVALIDARG;
+    }
+
+    *id = CLSID_D2D1Border;
+    return S_OK;
+}
+
+HRESULT BorderEffect::GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept
+{
+    if (!index || !mapping)
+    {
+        return E_INVALIDARG;
+    }
+
+    const std::wstring_view nameView(name);
+    if (nameView == L"ExtendX")
+    {
+        *index = D2D1_BORDER_PROP_EDGE_MODE_X;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        return S_OK;
+    }
+
+    if (nameView == L"ExtendY")
+    {
+        *index = D2D1_BORDER_PROP_EDGE_MODE_Y;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        return S_OK;
+    }
+
+    return E_INVALIDARG;
+}
+
+HRESULT BorderEffect::GetPropertyCount(UINT* count) noexcept
+{
+    if (!count)
+    {
+        return E_INVALIDARG;
+    }
+
+    *count = 2;
+    return S_OK;
+}
+
+HRESULT BorderEffect::GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept try
+{
+    if (!value)
+    {
+        return E_INVALIDARG;
+    }
+
+    switch (index)
+    {
+        case D2D1_BORDER_PROP_EDGE_MODE_X:
+            *value = wf::PropertyValue::CreateUInt32((UINT32)ExtendX).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+            break;
+
+        case D2D1_BORDER_PROP_EDGE_MODE_Y:
+            *value = wf::PropertyValue::CreateUInt32((UINT32)ExtendY).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+            break;
+
+        default:
+            return E_BOUNDS;
+    }
+
+    return S_OK;
+}
+catch (...)
+{
+    return winrt::to_hresult();
+}
+
+HRESULT BorderEffect::GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept
+{
+    if (!source)
+    {
+        return E_INVALIDARG;
+    }
+
+    if (index == 0 && Source)
+    {
+        winrt::copy_to_abi(Source, *reinterpret_cast<void**>(source));
+        return S_OK;
+    }
+
+    return E_BOUNDS;
+}
+
+HRESULT BorderEffect::GetSourceCount(UINT* count) noexcept
+{
+    if (!count)
+    {
+        return E_INVALIDARG;
+    }
+
+    *count = 1;
+    return S_OK;
+}
+
+winrt::hstring BorderEffect::Name()
+{
+    return m_name;
+}
+
+void BorderEffect::Name(winrt::hstring name)
+{
+    m_name = name;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// GaussianBlurEffect.h
+struct GaussianBlurEffect : winrt::implements<GaussianBlurEffect, wge::IGraphicsEffect, wge::IGraphicsEffectSource, awge::IGraphicsEffectD2D1Interop>
+{
+public:
+    // IGraphicsEffectD2D1Interop
+    HRESULT STDMETHODCALLTYPE GetEffectId(GUID* id) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetPropertyCount(UINT* count) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetSourceCount(UINT* count) noexcept override;
+
+    // IGraphicsEffect
+    winrt::hstring Name();
+    void Name(winrt::hstring name);
+
+    wge::IGraphicsEffectSource Source;
+
+    float BlurAmount = 3.0f;
+    MY_D2D1_GAUSSIANBLUR_OPTIMIZATION Optimization = MY_D2D1_GAUSSIANBLUR_OPTIMIZATION_BALANCED;
+    D2D1_BORDER_MODE BorderMode = D2D1_BORDER_MODE_SOFT;
+private:
+    winrt::hstring m_name = L"GaussianBlurEffect";
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// GaussianBlurEffect.cpp
+HRESULT GaussianBlurEffect::GetEffectId(GUID* id) noexcept
+{
+    if (id == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    *id = CLSID_D2D1GaussianBlur;
+    return S_OK;
+}
+
+HRESULT GaussianBlurEffect::GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept
+{
+    if (index == nullptr || mapping == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    const std::wstring_view nameView(name);
+    if (nameView == L"BlurAmount")
+    {
+        *index = D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        return S_OK;
+    }
+    else if (nameView == L"Optimization")
+    {
+        *index = D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        return S_OK;
+    }
+    else if (nameView == L"BorderMode")
+    {
+        *index = D2D1_GAUSSIANBLUR_PROP_BORDER_MODE;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        return S_OK;
+    }
+
+    return E_INVALIDARG;
+}
+
+HRESULT GaussianBlurEffect::GetPropertyCount(UINT* count) noexcept
+{
+    if (count == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    *count = 3;
+    return S_OK;
+}
+
+HRESULT GaussianBlurEffect::GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept try
+{
+    if (value == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    switch (index)
+    {
+        case D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION:
+            *value = wf::PropertyValue::CreateSingle(BlurAmount).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+            break;
+
+        case D2D1_GAUSSIANBLUR_PROP_OPTIMIZATION:
+            *value = wf::PropertyValue::CreateUInt32((UINT32)Optimization).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+            break;
+
+        case D2D1_GAUSSIANBLUR_PROP_BORDER_MODE:
+            *value = wf::PropertyValue::CreateUInt32((UINT32)BorderMode).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+            break;
+
+        default:
+            return E_BOUNDS;
+    }
+
+    return S_OK;
+}
+catch (...)
+{
+    return winrt::to_hresult();
+}
+
+HRESULT GaussianBlurEffect::GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept
+{
+    if (source == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    if (index == 0)
+    {
+        winrt::copy_to_abi(Source, *reinterpret_cast<void**>(source));
+        return S_OK;
+    }
+    else
+    {
+        return E_BOUNDS;
+    }
+}
+
+HRESULT GaussianBlurEffect::GetSourceCount(UINT* count) noexcept
+{
+    if (count == nullptr) [[unlikely]]
+    {
+        return E_INVALIDARG;
+    }
+
+    *count = 1;
+    return S_OK;
+}
+
+winrt::hstring GaussianBlurEffect::Name()
+{
+    return m_name;
+}
+
+void GaussianBlurEffect::Name(winrt::hstring name)
+{
+    m_name = name;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// ColorMatrixEffect.h
+struct ColorMatrixEffect : winrt::implements<ColorMatrixEffect, wge::IGraphicsEffect, wge::IGraphicsEffectSource, awge::IGraphicsEffectD2D1Interop>
+{
+public:
+    // IGraphicsEffectD2D1Interop
+    HRESULT STDMETHODCALLTYPE GetEffectId(GUID* id) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetPropertyCount(UINT* count) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept override;
+    HRESULT STDMETHODCALLTYPE GetSourceCount(UINT* count) noexcept override;
+
+    // IGraphicsEffect
+    winrt::hstring Name();
+    void Name(winrt::hstring name);
+
+    wge::IGraphicsEffectSource Source{nullptr};
+
+    // D2D1_MATRIX_5X4_F: 5 rows x 4 columns (20 floats), initialized to identity.
+    float Matrix[20] = {
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+        0, 0, 0, 0,
+    };
+
+    uint32_t AlphaMode = D2D1_COLORMATRIX_ALPHA_MODE_PREMULTIPLIED;
+    bool ClampOutput = false;
+private:
+    winrt::hstring m_name = L"ColorMatrixEffect";
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// ColorMatrixEffect.cpp
+HRESULT ColorMatrixEffect::GetEffectId(GUID* id) noexcept
+{
+    if (!id)
+    {
+        return E_INVALIDARG;
+    }
+
+    *id = CLSID_D2D1ColorMatrix;
+    return S_OK;
+}
+
+HRESULT ColorMatrixEffect::GetNamedPropertyMapping(LPCWSTR name, UINT* index, awge::GRAPHICS_EFFECT_PROPERTY_MAPPING* mapping) noexcept
+{
+    if (!index || !mapping)
+    {
+        return E_INVALIDARG;
+    }
+
+    const std::wstring_view nameView(name);
+    if (nameView == L"ColorMatrix")
+    {
+        *index = D2D1_COLORMATRIX_PROP_COLOR_MATRIX;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        return S_OK;
+    }
+
+    if (nameView == L"AlphaMode")
+    {
+        *index = D2D1_COLORMATRIX_PROP_ALPHA_MODE;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        return S_OK;
+    }
+
+    if (nameView == L"ClampOutput")
+    {
+        *index = D2D1_COLORMATRIX_PROP_CLAMP_OUTPUT;
+        *mapping = awge::GRAPHICS_EFFECT_PROPERTY_MAPPING_DIRECT;
+
+        return S_OK;
+    }
+
+    return E_INVALIDARG;
+}
+
+HRESULT ColorMatrixEffect::GetPropertyCount(UINT* count) noexcept
+{
+    if (!count)
+    {
+        return E_INVALIDARG;
+    }
+
+    *count = 3;
+    return S_OK;
+}
+
+HRESULT ColorMatrixEffect::GetProperty(UINT index, winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>** value) noexcept try
+{
+    if (!value)
+    {
+        return E_INVALIDARG;
+    }
+
+    switch (index)
+    {
+        case D2D1_COLORMATRIX_PROP_COLOR_MATRIX:
+            *value = wf::PropertyValue::CreateSingleArray(
+                winrt::array_view<const float>(Matrix, Matrix + 20)
+            ).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+            break;
+
+        case D2D1_COLORMATRIX_PROP_ALPHA_MODE:
+            *value = wf::PropertyValue::CreateUInt32(AlphaMode).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+            break;
+
+        case D2D1_COLORMATRIX_PROP_CLAMP_OUTPUT:
+            *value = wf::PropertyValue::CreateBoolean(ClampOutput).as<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>().detach();
+            break;
+
+        default:
+            return E_BOUNDS;
+    }
+
+    return S_OK;
+}
+catch (...)
+{
+    return winrt::to_hresult();
+}
+
+HRESULT ColorMatrixEffect::GetSource(UINT index, awge::IGraphicsEffectSource** source) noexcept
+{
+    if (!source)
+    {
+        return E_INVALIDARG;
+    }
+
+    if (index == 0 && Source)
+    {
+        winrt::copy_to_abi(Source, *reinterpret_cast<void**>(source));
+        return S_OK;
+    }
+
+    return E_BOUNDS;
+}
+
+HRESULT ColorMatrixEffect::GetSourceCount(UINT* count) noexcept
+{
+    if (!count)
+    {
+        return E_INVALIDARG;
+    }
+
+    *count = 1;
+    return S_OK;
+}
+
+winrt::hstring ColorMatrixEffect::Name()
+{
+    return m_name;
+}
+
+void ColorMatrixEffect::Name(winrt::hstring name)
+{
+    m_name = name;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -268,24 +1043,15 @@ muc::CompositionBrush CreateWindhawkBlurBrush(muc::Compositor const& compositor,
 
 namespace {
 constexpr wchar_t kOverlayClass[] = L"00047.WindhawkCompositionOverlay";
-constexpr uint8_t kTintR = 24;
-constexpr uint8_t kTintG = 26;
-constexpr uint8_t kTintB = 32;
-constexpr uint8_t kTintA = 61; // ~24% tint opacity.
+constexpr uint8_t kTintR = 24, kTintG = 26, kTintB = 32, kTintA = 61;
 constexpr float kBlurAmount = 18.0f;
 constexpr float kTintSaturation = 1.15f;
 constexpr float kNoiseOpacity = 0.035f;
 constexpr float kNoiseDensity = 0.85f;
 
 struct NativeGlassRect {
-    float x;
-    float y;
-    float width;
-    float height;
-    float radius;
-    float opacity;
+    float x, y, width, height, radius, opacity;
 };
-
 struct OverlayState {
     HWND owner{};
     HWND overlay{};
@@ -297,7 +1063,6 @@ struct OverlayState {
     std::vector<muc::SpriteVisual> visuals;
     bool requestedVisible{true};
 };
-
 std::unique_ptr<OverlayState> g_state;
 
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) noexcept {
@@ -305,92 +1070,52 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM l
     if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
     return DefWindowProcW(hwnd, message, wparam, lparam);
 }
-
 void EnsureDispatcherQueue(OverlayState& state) {
     if (winrt::Windows::System::DispatcherQueue::GetForCurrentThread()) return;
-
-    DispatcherQueueOptions options{
-        sizeof(DispatcherQueueOptions),
-        DQTYPE_THREAD_CURRENT,
-        DQTAT_COM_STA
-    };
+    DispatcherQueueOptions options{sizeof(DispatcherQueueOptions), DQTYPE_THREAD_CURRENT, DQTAT_COM_STA};
     winrt::Windows::System::DispatcherQueueController controller{nullptr};
     namespace abi = ABI::Windows::System;
     winrt::check_hresult(CreateDispatcherQueueController(
-        options,
-        reinterpret_cast<abi::IDispatcherQueueController**>(winrt::put_abi(controller))));
+        options, reinterpret_cast<abi::IDispatcherQueueController**>(winrt::put_abi(controller))));
     state.dispatcher = controller;
 }
-
 void RegisterOverlayClass() {
     WNDCLASSW wc{};
     wc.lpfnWndProc = OverlayWndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
     wc.lpszClassName = kOverlayClass;
-    if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        winrt::throw_last_error();
-    }
+    if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) winrt::throw_last_error();
 }
-
 void PositionOverlay(OverlayState& state) {
     if (!state.owner || !IsWindow(state.owner) || !state.overlay) return;
-
     if (!state.requestedVisible || !IsWindowVisible(state.owner) || IsIconic(state.owner)) {
         ShowWindow(state.overlay, SW_HIDE);
         return;
     }
-
     RECT client{};
-    if (!GetClientRect(state.owner, &client)) {
-        ShowWindow(state.overlay, SW_HIDE);
-        return;
-    }
-
+    if (!GetClientRect(state.owner, &client)) { ShowWindow(state.overlay, SW_HIDE); return; }
     POINT origin{client.left, client.top};
-    if (!ClientToScreen(state.owner, &origin)) {
-        ShowWindow(state.overlay, SW_HIDE);
-        return;
-    }
-
-    const int width = client.right - client.left;
-    const int height = client.bottom - client.top;
-    if (width <= 0 || height <= 0) {
-        ShowWindow(state.overlay, SW_HIDE);
-        return;
-    }
-
-    // Keep the transparent composition surface immediately behind the app HWND.
+    if (!ClientToScreen(state.owner, &origin)) { ShowWindow(state.overlay, SW_HIDE); return; }
+    const int width = client.right - client.left, height = client.bottom - client.top;
+    if (width <= 0 || height <= 0) { ShowWindow(state.overlay, SW_HIDE); return; }
     if (!SetWindowPos(state.overlay, state.owner, origin.x, origin.y, width, height,
-                      SWP_NOACTIVATE | SWP_SHOWWINDOW)) {
-        winrt::throw_last_error();
-    }
+                      SWP_NOACTIVATE | SWP_SHOWWINDOW)) winrt::throw_last_error();
     state.root.RelativeSizeAdjustment({1.0f, 1.0f});
 }
-
 void EnsureOverlay(OverlayState& state, HWND owner) {
     if (state.overlay && state.owner == owner) return;
-
     if (state.overlay) {
         ShowWindow(state.overlay, SW_HIDE);
-        if (state.target) {
-            state.target.Root(nullptr);
-            state.target.Close();
-        }
+        if (state.target) { state.target.Root(nullptr); state.target.Close(); }
         DestroyWindow(state.overlay);
     }
     state = OverlayState{};
     state.owner = owner;
-
     EnsureDispatcherQueue(state);
     RegisterOverlayClass();
-
     state.overlay = CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_NOREDIRECTIONBITMAP,
-        kOverlayClass,
-        L"",
-        WS_POPUP,
-        0, 0, 1, 1,
-        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        kOverlayClass, L"", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (!state.overlay) winrt::throw_last_error();
 
     state.compositor = muc::Compositor();
@@ -399,59 +1124,46 @@ void EnsureOverlay(OverlayState& state, HWND owner) {
     winrt::check_hresult(interop->CreateDesktopWindowTarget(
         state.overlay, true,
         reinterpret_cast<abi::IDesktopWindowTarget**>(winrt::put_abi(state.target))));
-
     state.root = state.compositor.CreateContainerVisual();
     state.root.RelativeSizeAdjustment({1.0f, 1.0f});
     state.target.Root(state.root);
 
-    const winrt::Windows::UI::Color tint{ kTintA, kTintR, kTintG, kTintB };
+    const winrt::Windows::UI::Color tint{kTintA, kTintR, kTintG, kTintB};
     try {
         if (!winrt::Windows::UI::ViewManagement::UISettings().AdvancedEffectsEnabled()) {
             state.brush = state.compositor.CreateColorBrush(tint);
         } else {
             state.brush = CreateWindhawkBlurBrush(
-                state.compositor, kBlurAmount, tint,
-                std::nullopt, kTintSaturation, kNoiseOpacity, kNoiseDensity);
+                state.compositor, kBlurAmount, tint, std::nullopt,
+                kTintSaturation, kNoiseOpacity, kNoiseDensity);
         }
     } catch (...) {
-        // Preserve legibility when the OS cannot create the native effect graph.
         state.brush = state.compositor.CreateColorBrush(tint);
     }
 }
-
 void RebuildVisuals(OverlayState& state, const NativeGlassRect* rects, uint32_t count) {
     state.root.Children().RemoveAll();
     state.visuals.clear();
     if (rects && count) state.visuals.reserve(count);
-
     const UINT dpi = GetDpiForWindow(state.owner);
     const float scale = dpi ? static_cast<float>(dpi) / 96.0f : 1.0f;
     for (uint32_t i = 0; rects && i < count; ++i) {
         const auto& r = rects[i];
-        if (!std::isfinite(r.x) || !std::isfinite(r.y) ||
-            !std::isfinite(r.width) || !std::isfinite(r.height) ||
-            !std::isfinite(r.radius) || !std::isfinite(r.opacity) ||
-            r.width <= 0.5f || r.height <= 0.5f) {
-            continue;
-        }
-
-        const float x = r.x * scale;
-        const float y = r.y * scale;
-        const float width = r.width * scale;
-        const float height = r.height * scale;
+        if (!std::isfinite(r.x) || !std::isfinite(r.y) || !std::isfinite(r.width) ||
+            !std::isfinite(r.height) || !std::isfinite(r.radius) || !std::isfinite(r.opacity) ||
+            r.width <= 0.5f || r.height <= 0.5f) continue;
+        const float x = r.x * scale, y = r.y * scale;
+        const float width = r.width * scale, height = r.height * scale;
         auto visual = state.compositor.CreateSpriteVisual();
         visual.Brush(state.brush);
         visual.Offset({x, y, 0.0f});
         visual.Size({width, height});
         visual.Opacity(std::clamp(r.opacity, 0.0f, 1.0f));
-
-        const float radius = std::clamp(r.radius * scale, 0.0f,
-            std::min(width, height) * 0.5f);
+        const float radius = std::clamp(r.radius * scale, 0.0f, std::min(width, height) * 0.5f);
         auto geometry = state.compositor.CreateRoundedRectangleGeometry();
         geometry.Size({width, height});
         geometry.CornerRadius({radius, radius});
         visual.Clip(state.compositor.CreateGeometricClip(geometry));
-
         state.root.Children().InsertAtTop(visual);
         state.visuals.push_back(visual);
     }
@@ -467,43 +1179,31 @@ extern "C" int32_t windhawk_blur_update(intptr_t ownerValue, const NativeGlassRe
         EnsureOverlay(*g_state, owner);
         RebuildVisuals(*g_state, rects, count);
         return static_cast<int32_t>(S_OK);
-    } catch (winrt::hresult_error const& error) {
-        return error.code().value;
+    } catch (winrt::hresult_error const& e) {
+        return e.code().value;
     } catch (...) {
         return static_cast<int32_t>(E_FAIL);
     }
 }
-
 extern "C" void windhawk_blur_set_visible(intptr_t ownerValue, bool visible) noexcept {
     try {
         if (!g_state || g_state->owner != reinterpret_cast<HWND>(ownerValue)) return;
         g_state->requestedVisible = visible;
         PositionOverlay(*g_state);
-    } catch (...) {
-        // Ignore transient failures while the owner window changes state.
-    }
+    } catch (...) {}
 }
-
 extern "C" void windhawk_blur_reposition(intptr_t ownerValue) noexcept {
     try {
         if (!g_state || g_state->owner != reinterpret_cast<HWND>(ownerValue)) return;
         PositionOverlay(*g_state);
-    } catch (...) {
-        // Ignore transient failures while Windows changes window geometry.
-    }
+    } catch (...) {}
 }
-
 extern "C" void windhawk_blur_destroy(intptr_t ownerValue) noexcept {
     try {
         if (!g_state || (ownerValue && g_state->owner != reinterpret_cast<HWND>(ownerValue))) return;
         if (g_state->overlay) ShowWindow(g_state->overlay, SW_HIDE);
-        if (g_state->target) {
-            g_state->target.Root(nullptr);
-            g_state->target.Close();
-        }
+        if (g_state->target) { g_state->target.Root(nullptr); g_state->target.Close(); }
         if (g_state->overlay && IsWindow(g_state->overlay)) DestroyWindow(g_state->overlay);
         g_state.reset();
-    } catch (...) {
-        g_state.reset();
-    }
+    } catch (...) { g_state.reset(); }
 }
