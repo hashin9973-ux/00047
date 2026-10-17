@@ -313,13 +313,21 @@ textarea.glass.liquidglass-variant {
 }
 .btn.primary, .btn.danger,
 .pill.running, .pill.completed, .pill.failed, .pill.stopping {
-  background: rgba(255,255,255,.045) !important;
+  background: transparent !important;
   border-color: rgba(255,255,255,.10) !important;
 }
 #tabs button.on, #dock-tabs button.on,
 .mi.on, .mi:hover, .ck-item.on, .ck-item:hover,
 .tbl tr[data-act=open]:hover {
-  background: rgba(255,255,255,.045) !important;
+  background: transparent !important;
   box-shadow: none !important;
 }
 .res u { background: var(--mu) !important; }
+
+/* Hover and selected states stay transparent too; no grey tint layer. */
+.btn:hover:not(:disabled), .ib:hover:not(:disabled), .icon-btn:hover,
+.eu-bar button:hover, #tabs button:hover, #dock-tabs button:hover,
+.ck-item:hover, .ck-item.on, .mi:hover, .mi.on,
+.tbl tr[data-act=open]:hover {
+  background: transparent !important;
+}
