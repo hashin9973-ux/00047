@@ -649,6 +649,60 @@ async function reloadBlocks() {
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
+function startGlassBackdrop() {
+  if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
+
+  const layer = document.createElement('div');
+  layer.id = 'liquidglass-desktop-backdrop';
+  layer.setAttribute('aria-hidden', 'true');
+  Object.assign(layer.style, {
+    position: 'fixed',
+    zIndex: '-1',
+    pointerEvents: 'none',
+    backgroundRepeat: 'no-repeat',
+    backgroundSize: '100% 100%',
+    filter: 'blur(16px)',
+    opacity: '0',
+    willChange: 'background-image, filter',
+    transform: 'translateZ(0)'
+  });
+  document.body.prepend(layer);
+
+  let inFlight = false;
+  let hasFrame = false;
+  const capture = async () => {
+    if (inFlight || document.hidden) return;
+    inFlight = true;
+    try {
+      const frame = await invoke('capture_glass_frame');
+      if (!frame?.data_url || !frame.screen_width || !frame.screen_height) {
+        throw new Error('Desktop backdrop capture returned an empty frame.');
+      }
+      const scale = window.devicePixelRatio || 1;
+      layer.style.left = `${(frame.screen_x - frame.window_x) / scale}px`;
+      layer.style.top = `${(frame.screen_y - frame.window_y) / scale}px`;
+      layer.style.width = `${frame.screen_width / scale}px`;
+      layer.style.height = `${frame.screen_height / scale}px`;
+      layer.style.backgroundImage = `url("${frame.data_url}")`;
+      layer.style.opacity = '1';
+      hasFrame = true;
+    } catch (error) {
+      // Never substitute a grey/black fill when capture is unavailable.
+      if (!hasFrame) layer.style.opacity = '0';
+      console.debug('LiquidGlass desktop sample unavailable:', error);
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  void capture();
+  window.setInterval(capture, 250);
+  window.addEventListener('resize', capture);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) void capture();
+  });
+}
+
 function setupGlassMaterials() {
   const selector = '.glass, button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
   const apply = root => {
@@ -680,4 +734,5 @@ function setupGlassMaterials() {
   await bindEvents();
   show('overview');
   setupGlassMaterials();
+  startGlassBackdrop();
 })();
