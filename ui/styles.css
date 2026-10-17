@@ -275,7 +275,9 @@ body.liquidglass {
   background-size: var(--liquidglass-reflection-size);
   background-position: var(--liquidglass-reflection-position);
   background-repeat: no-repeat;
-  /* Blur only the sampled desktop pixels inside each glass surface. */
+  /* Keep the sampled layer translucent so a transparent-window capture
+     retains real desktop pixels instead of recursively copying an opaque layer. */
+  opacity: .72;
   filter: blur(12px);
   will-change: filter;
 }
