@@ -702,11 +702,12 @@ function startGlassBackdrop() {
         rect.left >= window.innerWidth || rect.top >= window.innerHeight
       ) continue;
 
-      surface.style.setProperty('--liquidglass-reflection-size', \`\${sampleWidth}px \${sampleHeight}px\`);
+      surface.style.setProperty('--liquidglass-reflection-size', `${sampleWidth}px ${sampleHeight}px`);
       // The CSS pseudo-element uses a small blur bleed beyond the panel edge.
+      const bleed = surface.matches('input, select, textarea') ? 0 : blurBleed;
       surface.style.setProperty(
         '--liquidglass-reflection-position',
-        \`\${originX - rect.left + blurBleed}px \${originY - rect.top + blurBleed}px\`
+        `${originX - rect.left + bleed}px ${originY - rect.top + bleed}px`
       );
     }
     geometryDirty = false;
@@ -734,8 +735,8 @@ function startGlassBackdrop() {
         updateSurfaceGeometry(frame, scale);
         lastGeometrySignature = signature;
       }
-      root.style.setProperty('--liquidglass-reflection-image', \`url("\${frame.dataUrl}")\`);
-      setStatus(\`WindhawkBlur-style desktop blur active · \${rateMode} FPS · processed locally\`);
+      root.style.setProperty('--liquidglass-reflection-image', `url("${frame.dataUrl}")`);
+      setStatus(`WindhawkBlur-style desktop blur active · ${rateMode} FPS · processed locally`);
       // A retry that succeeds after a previous capture error should restart the timer.
       if (!captureInterval) {
         captureInterval = window.setInterval(() => {
@@ -779,7 +780,7 @@ function startGlassBackdrop() {
       setStatus('Desktop blur off · no screen capture');
       return;
     }
-    setStatus(\`Starting desktop blur · \${mode} FPS\`);
+    setStatus(`Starting desktop blur · ${mode} FPS`);
     const requestGeneration = generation;
     void capture(requestGeneration);
     captureInterval = window.setInterval(() => {
