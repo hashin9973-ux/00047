@@ -661,9 +661,12 @@ function startGlassBackdrop() {
   let mode = 'dynamic';
   try {
     const saved = localStorage.getItem('00047.glassRefreshMode');
-    // Older builds only offered 5/10/20 FPS. "Off" remains Off; old numeric
-    // values migrate to Dynamic so users don't stay capped at a slow rate.
-    mode = saved === 'off' ? 'off' : (allowedModes.has(saved) ? saved : 'dynamic');
+    const legacy = localStorage.getItem('00047.glassReflectionRate');
+    // Older builds only offered 5/10/20 FPS. Preserve a legacy Off preference;
+    // migrate old numeric caps to Dynamic rather than keeping a slow rate.
+    mode = saved === 'off' || (!saved && legacy === 'off')
+      ? 'off'
+      : (allowedModes.has(saved) ? saved : 'dynamic');
   } catch { /* Use Dynamic when local storage is unavailable. */ }
   if (refreshSelect) refreshSelect.value = mode;
 

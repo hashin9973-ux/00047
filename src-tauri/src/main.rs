@@ -36,10 +36,15 @@ struct GlassCaptureFrame {
 }
 
 #[tauri::command]
-fn capture_glass_frame(window: tauri::WebviewWindow) -> Result<GlassCaptureFrame, String> {
+async fn capture_glass_frame(window: tauri::WebviewWindow) -> Result<GlassCaptureFrame, String> {
     #[cfg(target_os = "windows")]
     {
-        capture_glass_frame_windows(&window)
+        // GDI capture, pixel conversion, and JPEG encoding are CPU-bound. Keep
+        // them off the WebView/UI thread so blur compositing and interaction
+        // stay responsive while a new desktop frame is being prepared.
+        tauri::async_runtime::spawn_blocking(move || capture_glass_frame_windows(&window))
+            .await
+            .map_err(|e| format!("Desktop capture worker failed: {e}"))?
     }
     #[cfg(not(target_os = "windows"))]
     {
