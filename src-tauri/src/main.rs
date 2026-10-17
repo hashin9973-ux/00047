@@ -23,6 +23,230 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GlassCaptureFrame {
+    data_url: String,
+    screen_x: i32,
+    screen_y: i32,
+    screen_width: u32,
+    screen_height: u32,
+    window_x: i32,
+    window_y: i32,
+}
+
+#[tauri::command]
+async fn capture_glass_frame(window: tauri::WebviewWindow) -> Result<GlassCaptureFrame, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // GDI capture and JPEG encoding are blocking work; keep it off the UI thread.
+        tauri::async_runtime::spawn_blocking(move || capture_glass_frame_windows(&window))
+            .await
+            .map_err(|e| format!("Desktop blur worker failed: {e}"))?
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        Err("Desktop blur capture is available on Windows only.".to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCaptureFrame, String> {
+    use base64::Engine as _;
+    use image::codecs::jpeg::JpegEncoder;
+    use image::{ExtendedColorType, RgbImage};
+    use std::{
+        ffi::c_void,
+        mem::size_of,
+        ptr::{null, null_mut},
+        slice,
+        sync::atomic::{AtomicU8, Ordering},
+    };
+
+    // 0 = not attempted, 1 = capture exclusion active, 2 = unavailable.
+    // Fail closed: never display pixels if the application window cannot be excluded.
+    static DISPLAY_EXCLUSION_STATE: AtomicU8 = AtomicU8::new(0);
+
+    #[repr(C)]
+    struct BitmapInfoHeader {
+        size: u32,
+        width: i32,
+        height: i32,
+        planes: u16,
+        bit_count: u16,
+        compression: u32,
+        size_image: u32,
+        x_pels_per_meter: i32,
+        y_pels_per_meter: i32,
+        colors_used: u32,
+        colors_important: u32,
+    }
+    #[repr(C)]
+    struct RgbQuad { blue: u8, green: u8, red: u8, reserved: u8 }
+    #[repr(C)]
+    struct BitmapInfo { header: BitmapInfoHeader, colors: [RgbQuad; 1] }
+
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetDC(hwnd: *mut c_void) -> *mut c_void;
+        fn ReleaseDC(hwnd: *mut c_void, hdc: *mut c_void) -> i32;
+        fn SetWindowDisplayAffinity(hwnd: *mut c_void, affinity: u32) -> i32;
+    }
+    #[link(name = "gdi32")]
+    extern "system" {
+        fn CreateCompatibleDC(hdc: *mut c_void) -> *mut c_void;
+        fn CreateDIBSection(
+            hdc: *mut c_void, info: *const BitmapInfo, usage: u32,
+            pixels: *mut *mut c_void, section: *mut c_void, offset: u32
+        ) -> *mut c_void;
+        fn SelectObject(hdc: *mut c_void, object: *mut c_void) -> *mut c_void;
+        fn StretchBlt(
+            dest: *mut c_void, x: i32, y: i32, width: i32, height: i32,
+            source: *mut c_void, source_x: i32, source_y: i32,
+            source_width: i32, source_height: i32, rop: u32
+        ) -> i32;
+        fn DeleteObject(object: *mut c_void) -> i32;
+        fn DeleteDC(hdc: *mut c_void) -> i32;
+    }
+
+    let window_pos = window.inner_position()
+        .map_err(|e| format!("Window position unavailable: {e}"))?;
+    let window_size = window.inner_size()
+        .map_err(|e| format!("Window size unavailable: {e}"))?;
+
+    // Capture a modest margin around the window so Gaussian blur has source pixels
+    // outside each glass surface, reducing edge smearing.
+    const MARGIN: i32 = 64;
+    let screen_x = window_pos.x.saturating_sub(MARGIN);
+    let screen_y = window_pos.y.saturating_sub(MARGIN);
+    let screen_width = window_size.width.saturating_add((MARGIN * 2) as u32).max(1);
+    let screen_height = window_size.height.saturating_add((MARGIN * 2) as u32).max(1);
+
+    // Bound GDI, JPEG, and IPC work on large/high-DPI displays.
+    const MAX_CAPTURE_WIDTH: f64 = 1024.0;
+    const MAX_CAPTURE_HEIGHT: f64 = 640.0;
+    let scale = (MAX_CAPTURE_WIDTH / screen_width as f64)
+        .min(MAX_CAPTURE_HEIGHT / screen_height as f64)
+        .min(1.0);
+    let bitmap_width = ((screen_width as f64 * scale).round() as i32).max(1);
+    let bitmap_height = ((screen_height as f64 * scale).round() as i32).max(1);
+    let hwnd = window.hwnd()
+        .map_err(|e| format!("Native window handle unavailable: {e}"))?.0;
+
+    unsafe {
+        match DISPLAY_EXCLUSION_STATE.load(Ordering::Acquire) {
+            1 => {}
+            2 => return Err("Windows cannot exclude 00047 from desktop capture; blur capture was disabled to avoid recursive/self-captured frames.".into()),
+            _ => {
+                // WDA_EXCLUDEFROMCAPTURE (Windows 10 version 2004 and newer).
+                if SetWindowDisplayAffinity(hwnd, 0x00000011) == 0 {
+                    DISPLAY_EXCLUSION_STATE.store(2, Ordering::Release);
+                    return Err("Windows could not exclude 00047 from desktop capture; blur capture was disabled to avoid recursive/self-captured frames.".into());
+                }
+                DISPLAY_EXCLUSION_STATE.store(1, Ordering::Release);
+            }
+        }
+
+        let screen_dc = GetDC(null_mut());
+        if screen_dc.is_null() {
+            return Err("Could not open the desktop capture surface.".into());
+        }
+        let memory_dc = CreateCompatibleDC(screen_dc);
+        if memory_dc.is_null() {
+            ReleaseDC(null_mut(), screen_dc);
+            return Err("Could not create a desktop capture buffer.".into());
+        }
+
+        let bitmap_info = BitmapInfo {
+            header: BitmapInfoHeader {
+                size: size_of::<BitmapInfoHeader>() as u32,
+                width: bitmap_width,
+                height: -bitmap_height,
+                planes: 1,
+                bit_count: 32,
+                compression: 0, // BI_RGB
+                size_image: (bitmap_width as u32)
+                    .saturating_mul(bitmap_height as u32)
+                    .saturating_mul(4),
+                x_pels_per_meter: 0,
+                y_pels_per_meter: 0,
+                colors_used: 0,
+                colors_important: 0,
+            },
+            colors: [RgbQuad { blue: 0, green: 0, red: 0, reserved: 0 }],
+        };
+        let mut pixels: *mut c_void = null_mut();
+        let bitmap = CreateDIBSection(
+            screen_dc, &bitmap_info, 0, &mut pixels, null_mut(), 0
+        );
+        if bitmap.is_null() || pixels.is_null() {
+            DeleteDC(memory_dc);
+            ReleaseDC(null_mut(), screen_dc);
+            return Err("Could not allocate the desktop blur texture.".into());
+        }
+
+        let old_object = SelectObject(memory_dc, bitmap);
+        if old_object.is_null() || old_object as isize == -1 {
+            DeleteObject(bitmap);
+            DeleteDC(memory_dc);
+            ReleaseDC(null_mut(), screen_dc);
+            return Err("Could not select the desktop blur texture.".into());
+        }
+
+        // SRCCOPY | CAPTUREBLT includes layered desktop windows.
+        let copied = StretchBlt(
+            memory_dc, 0, 0, bitmap_width, bitmap_height,
+            screen_dc, screen_x, screen_y, screen_width as i32, screen_height as i32,
+            0x00CC0020 | 0x40000000
+        );
+        if copied == 0 {
+            SelectObject(memory_dc, old_object);
+            DeleteObject(bitmap);
+            DeleteDC(memory_dc);
+            ReleaseDC(null_mut(), screen_dc);
+            return Err("Windows failed to copy desktop pixels for the blur.".into());
+        }
+
+        let bgra = slice::from_raw_parts(
+            pixels.cast::<u8>(),
+            bitmap_width as usize * bitmap_height as usize * 4
+        );
+        let mut rgb = Vec::with_capacity(bitmap_width as usize * bitmap_height as usize * 3);
+        for px in bgra.chunks_exact(4) {
+            rgb.extend_from_slice(&[px[2], px[1], px[0]]);
+        }
+
+        SelectObject(memory_dc, old_object);
+        DeleteObject(bitmap);
+        DeleteDC(memory_dc);
+        ReleaseDC(null_mut(), screen_dc);
+
+        let image = RgbImage::from_raw(bitmap_width as u32, bitmap_height as u32, rgb)
+            .ok_or_else(|| "Captured desktop frame had an invalid pixel buffer.".to_string())?;
+        let mut encoded = Vec::new();
+        JpegEncoder::new_with_quality(&mut encoded, 68)
+            .encode(
+                image.as_raw(), image.width(), image.height(), ExtendedColorType::Rgb8
+            )
+            .map_err(|e| format!("Could not encode desktop blur frame: {e}"))?;
+
+        Ok(GlassCaptureFrame {
+            data_url: format!(
+                "data:image/jpeg;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(encoded)
+            ),
+            screen_x,
+            screen_y,
+            screen_width,
+            screen_height,
+            window_x: window_pos.x,
+            window_y: window_pos.y,
+        })
+    }
+}
+
 // ---------- commands ----------
 #[tauri::command]
 fn list_automations(eng: State<'_, Arc<Engine>>) -> Vec<Automation> {
@@ -286,6 +510,7 @@ fn main() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            capture_glass_frame,
             list_automations,
             save_automation,
             delete_automation,
