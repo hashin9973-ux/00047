@@ -240,7 +240,7 @@ body.liquidglass {
   color-scheme: dark;
 }
 
-/* True LiquidGlass: render a blurred sample of actual desktop pixels; do not tint it. */
+/* Main surface: show sampled desktop pixels sharply through a transparent window. */
 html,
 body.liquidglass {
   background: transparent !important;
@@ -251,6 +251,9 @@ body.liquidglass {
   isolation: isolate;
   color: var(--tx);
   color-scheme: dark;
+  filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 /* Desktop sample layer is populated only after a successful screen capture. */
@@ -263,7 +266,7 @@ body.liquidglass {
   background-color: transparent !important;
   background-repeat: no-repeat;
   background-size: 100% 100%;
-  filter: blur(16px);
+  filter: none;
   opacity: 0;
   transform: translateZ(0);
 }
