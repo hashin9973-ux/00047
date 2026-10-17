@@ -299,3 +299,81 @@ textarea.glass.liquidglass-variant {
 .res u { background: var(--mu) !important; }
 .settings-choice { display: grid !important; align-items: stretch !important; gap: 6px !important; }
 #pop-settings > button { width: 100%; text-align: left; }
+
+
+/*
+ * WindhawkBlur-inspired material pipeline:
+ * live desktop pixels -> Gaussian blur -> saturation -> translucent tint + fine noise.
+ * Windhawk's original brush is a WinUI/XAML CompositionBrush; this is the WebView
+ * equivalent, with the captured image kept local to the app.
+ * Reference: https://github.com/ramensoftware/windhawk-mods
+ */
+.glass.liquidglass-variant {
+  --windhawk-blur-amount: 18px;
+  --windhawk-tint-opacity: 0.24;
+  --windhawk-tint-color: 24, 26, 32;
+  --windhawk-tint-saturation: 115%;
+  --windhawk-noise-opacity: 0.06;
+  --windhawk-noise-density: 0.85;
+  overflow: hidden;
+  background-color: rgba(var(--windhawk-tint-color), var(--windhawk-tint-opacity)) !important;
+}
+
+.glass.liquidglass-variant::before {
+  content: "" !important;
+  display: block !important;
+  position: absolute;
+  inset: -24px;
+  z-index: -2;
+  border-radius: inherit;
+  background-image: var(--liquidglass-reflection-image, none);
+  background-size: var(--liquidglass-reflection-size, 100% 100%);
+  background-position: var(--liquidglass-reflection-position, 0 0);
+  background-repeat: no-repeat;
+  filter: blur(var(--windhawk-blur-amount)) saturate(var(--windhawk-tint-saturation));
+  opacity: 1;
+  pointer-events: none;
+}
+
+.glass.liquidglass-variant::after {
+  content: "" !important;
+  display: block !important;
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background-color: rgba(var(--windhawk-tint-color), var(--windhawk-tint-opacity));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.06'/%3E%3C/svg%3E");
+  background-size: 128px 128px;
+  background-repeat: repeat;
+  pointer-events: none;
+}
+
+/* Inputs are replaced/native controls in WebView2 and don't reliably paint pseudo-elements. */
+input.glass.liquidglass-variant,
+select.glass.liquidglass-variant,
+textarea.glass.liquidglass-variant {
+  background-image: var(--liquidglass-reflection-image, none) !important;
+  background-size: var(--liquidglass-reflection-size, 100% 100%) !important;
+  background-position: var(--liquidglass-reflection-position, 0 0) !important;
+  background-repeat: no-repeat !important;
+  background-color: rgba(var(--windhawk-tint-color), 0.30) !important;
+  color: var(--tx) !important;
+}
+
+/* Keep keyboard focus visible even though blur surfaces clip their effect layers. */
+.glass.liquidglass-variant:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.78) !important;
+  outline-offset: -3px;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass.liquidglass-variant {
+    background-color: rgba(var(--windhawk-tint-color), 0.94) !important;
+  }
+  .glass.liquidglass-variant::before,
+  .glass.liquidglass-variant::after {
+    content: none !important;
+    display: none !important;
+  }
+}
