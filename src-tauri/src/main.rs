@@ -35,56 +35,6 @@ struct GlassCaptureFrame {
     window_y: i32,
 }
 
-#[cfg(target_os = "windows")]
-fn apply_liquidglass_backdrop(window: &tauri::WebviewWindow) {
-    use std::{ffi::c_void, mem::{size_of, transmute}};
-
-    #[repr(C)]
-    struct AccentPolicy {
-        accent_state: i32,
-        accent_flags: u32,
-        gradient_color: u32,
-        animation_id: u32,
-    }
-    #[repr(C)]
-    struct CompositionAttributeData {
-        attribute: i32,
-        data: *mut c_void,
-        size: usize,
-    }
-    type SetCompositionAttribute =
-        unsafe extern "system" fn(*mut c_void, *mut CompositionAttributeData) -> i32;
-
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetModuleHandleW(name: *const u16) -> *mut c_void;
-        fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
-    }
-
-    let Ok(hwnd) = window.hwnd() else { return; };
-    let user32: Vec<u16> = "user32.dll\0".encode_utf16().collect();
-    let procedure = unsafe {
-        let module = GetModuleHandleW(user32.as_ptr());
-        if module.is_null() { return; }
-        GetProcAddress(module, b"SetWindowCompositionAttribute\0".as_ptr())
-    };
-    if procedure.is_null() { return; }
-
-    // Native blur only; do not apply the Windows Acrylic tint.
-    let set_attribute: SetCompositionAttribute = unsafe { transmute(procedure) };
-    let mut accent = AccentPolicy {
-        accent_state: 3, // ACCENT_ENABLE_BLURBEHIND
-        accent_flags: 0,
-        gradient_color: 0,
-        animation_id: 0,
-    };
-    let mut data = CompositionAttributeData {
-        attribute: 19, // WCA_ACCENT_POLICY
-        data: (&mut accent as *mut AccentPolicy).cast(),
-        size: size_of::<AccentPolicy>(),
-    };
-    unsafe { let _ = set_attribute(hwnd.0, &mut data); }
-}
 
 #[tauri::command]
 fn capture_glass_frame(window: tauri::WebviewWindow) -> Result<GlassCaptureFrame, String> {
@@ -504,9 +454,6 @@ fn show_main(app: &AppHandle) {
         let _ = w.show();
         #[cfg(target_os = "windows")]
         {
-            // Reapply after showing/restoring because the compositor can rebuild
-            // the window surface during visibility transitions.
-            apply_liquidglass_backdrop(&w);
             let _ = w.with_webview(|webview| unsafe {
                 let _ = webview.controller().SetIsVisible(true);
             });
@@ -579,10 +526,6 @@ fn main() {
             restart_app
         ])
         .setup(|app| {
-            #[cfg(target_os = "windows")]
-            if let Some(window) = app.get_webview_window("main") {
-                apply_liquidglass_backdrop(&window);
-            }
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             custom::init(dir.join("blocks"));
