@@ -83,12 +83,12 @@ fn destroy_native_blur(window: &tauri::WebviewWindow) {
 // ---------- commands ----------
 
 #[tauri::command]
-fn update_windhawk_blur(
-    window: tauri::WebviewWindow,
-    surfaces: Vec<GlassSurface>,
-) -> Result<(), String> {
+fn update_windhawk_blur(app: AppHandle, surfaces: Vec<GlassSurface>) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "Main WebView is unavailable.".to_string())?;
         if surfaces.len() > 512 {
             return Err("Too many native blur surfaces in a single update.".into());
         }
@@ -127,7 +127,7 @@ fn update_windhawk_blur(
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (window, surfaces);
+        let _ = (app, surfaces);
         Err("Native Windhawk Composition blur is available only on Windows.".into())
     }
 }
