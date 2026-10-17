@@ -17,7 +17,7 @@ const I = {
 export const CATS = {
   cond: { label: 'Condition', color: '#f5b14a' },
   act: { label: 'Action', color: '#8b9cff' },
-  tgt: { label: 'Target', color: '#3ddbd9' },
+  tgt: { label: 'Input', color: '#3ddbd9' },
 };
 
 const num = v => (typeof v === 'number' && isFinite(v) ? +v.toFixed(2) : '?');
@@ -48,7 +48,7 @@ export const BLOCKS = {
   },
   'cond.ram': {
     cat: 'cond', title: 'RAM Usage', icon: I.chip,
-    desc: 'Compares RAM (MB) of a wired Active process, or of the whole system, to a threshold.',
+    desc: 'Compares RAM (MB) of a wired Process Input, or of the whole system, to a threshold.',
     defaults: { op: 'above', thresholdMb: 800, mode: 'check', pollSec: 1, timeoutSec: 0, onFail: 'stop' },
     fields: [
       { key: 'op', label: 'Satisfied when RAM is', type: 'select', options: [['above', 'Above'], ['below', 'Below']] },
@@ -59,7 +59,7 @@ export const BLOCKS = {
       ONFAIL,
     ],
     summary: c => `${c.op === 'below' ? 'Below' : 'Above'} ${num(c.thresholdMb)} MB · ${c.mode === 'wait' ? 'waits' + (c.timeoutSec > 0 ? ` ≤ ${dur(c.timeoutSec)}` : '') : 'checks once'}`,
-    help: 'Wire an Active process target in to measure that process (working set). With no target it measures used system RAM.',
+    help: 'Connect a Process Input to measure that process working set. With no input, this condition measures used system RAM.',
   },
   'cond.proc_running': {
     cat: 'cond', title: 'Process Running', icon: I.proc,
@@ -73,20 +73,20 @@ export const BLOCKS = {
       ONFAIL,
     ],
     summary: c => !c.name ? 'No process set' : c.mode === 'wait_start' ? `Wait for ${c.name} to start` : c.mode === 'wait_stop' ? `Wait for ${c.name} to stop` : `Is ${c.name} running?`,
-    help: 'Include the .exe extension. Needs no target block.',
+    help: 'Include the .exe extension. Needs no input block.',
   },
   'act.stop_proc': {
     cat: 'act', title: 'Stop Process', icon: I.stop,
-    desc: 'Closes a process by exe name, or the wired Active process target.',
+    desc: 'Closes a process by exe name, or the wired Process Input.',
     defaults: { mode: 'name', name: '', force: false, timeoutSec: 10, onFail: 'stop' },
     fields: [
-      { key: 'mode', label: 'Pick process', type: 'select', options: [['name', 'By exe name'], ['target', 'From wired Active process target']] },
+      { key: 'mode', label: 'Pick process', type: 'select', options: [['name', 'By exe name'], ['target', 'From wired Process Input']] },
       { key: 'name', label: 'Process name', type: 'text', placeholder: 'notepad.exe', required: true, show: c => c.mode === 'name' },
       { key: 'force', label: 'Force-kill immediately', type: 'bool' },
       TIMEOUT,
       ONFAIL,
     ],
-    summary: c => `Stop ${c.mode === 'name' ? (c.name || 'no name set') : 'target'}${c.force ? ' (force)' : ''}`,
+    summary: c => `Stop ${c.mode === 'name' ? (c.name || 'no name set') : 'Process Input'}${c.force ? ' (force)' : ''}`,
     help: 'Without force it sends a close request to the process windows, waits 5 s, then force-kills. By name only the first match is stopped. Protected processes need 00047 run as administrator. It refuses to stop 00047 itself.',
   },
   'act.notify': {
@@ -102,7 +102,7 @@ export const BLOCKS = {
   },
   'act.trim': {
     cat: 'act', title: 'Working-Set Trim', icon: I.trim,
-    desc: 'Releases part of a process\'s working set (needs an Active process target).',
+    desc: 'Releases part of a process\'s working set (needs a Process Input).',
     requires: 'tgt.process',
     defaults: { percent: 50, timeoutSec: 15, onFail: 'stop' },
     fields: [
@@ -130,7 +130,7 @@ export const BLOCKS = {
   },
   'act.launch': {
     cat: 'act', title: 'Launch File', icon: I.file,
-    desc: 'Launches the program, document, or shortcut selected by a File target.',
+    desc: 'Launches the program, document, or shortcut selected by a File Input.',
     requires: 'tgt.file',
     defaults: { args: '', timeoutSec: 15, onFail: 'stop' },
     fields: [
@@ -139,7 +139,7 @@ export const BLOCKS = {
       ONFAIL,
     ],
     summary: c => `Launch file${c.args ? ' · with arguments' : ''}`,
-    help: 'Connect a File target to the teal input/output binding for this action, then wire the flow through Launch File normally.',
+    help: 'Connect a File Input to the teal input/output binding for this action, then wire the flow through Launch File normally.',
   },
   'act.loop': {
     cat: 'act', title: 'Loop', icon: I.repeat,
@@ -160,8 +160,8 @@ export const BLOCKS = {
     summary: c => c.message || 'No message',
   },
   'tgt.process': {
-    cat: 'tgt', title: 'Active process', icon: I.window,
-    desc: 'The foreground window\'s process, or a process by name.',
+    cat: 'tgt', title: 'Process Input', icon: I.window,
+    desc: 'Provides the foreground window\'s process, or a process chosen by name.',
     defaults: { mode: 'foreground', name: '', ignoreSelf: true },
     fields: [
       { key: 'mode', label: 'Pick', type: 'select', options: [['foreground', 'Foreground window'], ['name', 'By exe name']] },
@@ -169,15 +169,15 @@ export const BLOCKS = {
       { key: 'ignoreSelf', label: 'Fail if the foreground is 00047 itself', type: 'bool', show: c => c.mode !== 'name' },
     ],
     summary: c => (c.mode === 'name' ? (c.name || 'No name set') : 'Foreground window process'),
-    help: 'Connect a Condition or Action flow output into the left input to place this target in the workflow. The teal output connects to the next Condition or Action, binds this target, and continues execution.',
+    help: 'Connect a Condition or Action flow output into the left input to place this Process Input in the workflow. The teal output connects to the next Condition or Action, binds this process, and continues execution.',
   },
   'tgt.file': {
-    cat: 'tgt', title: 'File', icon: I.file,
-    desc: 'A file or program path.',
+    cat: 'tgt', title: 'File Input', icon: I.file,
+    desc: 'Provides a file or program path.',
     defaults: { path: '' },
     fields: [{ key: 'path', label: 'Full path', type: 'file', placeholder: 'C:\\Tools\\app.exe', required: true }],
     summary: c => c.path || 'No path set',
-    help: 'Connect Start or another Condition/Action flow output into the left input to place this File target in the workflow. The teal output connects to the next Condition or Action, binds this file target, and continues execution.',
+    help: 'Connect Start or another Condition/Action flow output into the left input to place this File Input in the workflow. The teal output connects to the next Condition or Action, binds this file, and continues execution.',
   },
 };
 
@@ -243,7 +243,7 @@ export function compileSpec(sp) {
   };
   return {
     cat, title: sp.title, icon: I[sp.icon] || I.note, desc: sp.description || '',
-    defaults, fields, summary: c => tpl(sp.summary || sp.title, labelled(c)), help: sp.help, origin: sp.origin,
+    defaults, fields, summary: c => tpl(sp.summary || sp.title, labelled(c)), help: sp.help, requires: sp.requires, origin: sp.origin,
   };
 }
 

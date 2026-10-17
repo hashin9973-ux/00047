@@ -434,7 +434,7 @@ fn target_source_ids(a: &Automation, id: &str) -> Vec<String> {
     let mut found = Vec::new();
     let mut found_set = std::collections::HashSet::new();
 
-    // Walk backward through workflow wires. A teal target wire binds the target
+    // Walk backward through workflow wires. A teal input wire binds the input
     // to its consumer; consumers farther down the same chain inherit that binding.
     while let Some(current) = pending.pop() {
         if !visited.insert(current.clone()) {
@@ -453,7 +453,7 @@ fn target_source_ids(a: &Automation, id: &str) -> Vec<String> {
         }
     }
 
-    // Preserve the direct downstream-target form supported by the editor.
+    // Preserve the direct downstream-input form supported by the editor.
     if found.is_empty() {
         for edge in a.edges.iter().filter(|edge| edge.from == id && edge.kind != "target") {
             if let Some(dst) = a.nodes.iter().find(|node| node.id == edge.to) {
@@ -490,15 +490,15 @@ fn resolve_targets(a: &Automation, id: &str) -> Result<Vec<Target>, String> {
         ids.sort();
         ids.dedup();
         return ids.into_iter().map(|target_id| {
-            let node = a.nodes.iter().find(|node| node.id == target_id).ok_or("a wired File target is missing")?;
-            let block = reg.get(node.kind.as_str()).ok_or("unknown target block type")?;
+            let node = a.nodes.iter().find(|node| node.id == target_id).ok_or("a wired File Input is missing")?;
+            let block = reg.get(node.kind.as_str()).ok_or("unknown input block type")?;
             block.resolve(&node.cfg)
         }).collect();
     }
 
     target_source_ids(a, id).into_iter().map(|target_id| {
-        let node = a.nodes.iter().find(|node| node.id == target_id).ok_or("a wired target block is missing")?;
-        let block = reg.get(node.kind.as_str()).ok_or("unknown target block type")?;
+        let node = a.nodes.iter().find(|node| node.id == target_id).ok_or("a wired input block is missing")?;
+        let block = reg.get(node.kind.as_str()).ok_or("unknown input block type")?;
         block.resolve(&node.cfg)
     }).collect()
 }
@@ -575,7 +575,7 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
         if let Some(req) = b.requires_target() {
             let ok = target_source_ids(a, &n.id).iter().any(|id| find(id).map(|source| source.kind == req).unwrap_or(false));
             if !ok {
-                errs.push(format!("{} {} needs a connected {} block in its flow", b.title(), short(n), if req == "tgt.file" { "File" } else { "Active process" }));
+                errs.push(format!("{} {} needs a connected {} Input in its flow", b.title(), short(n), if req == "tgt.file" { "File" } else { "Process" }));
             }
         }
     }
@@ -600,7 +600,7 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
         let tc = reg.get(t.kind.as_str()).map(|b| b.category());
         if e.kind == "target" {
             if fc != Some(Cat::Target) || tc == Some(Cat::Target) || t.kind == "act.start" || t.kind == "act.loop" {
-                errs.push(format!("invalid target wire {} -> {}; targets cannot bind to Start or Loop", short(f), short(t)));
+                errs.push(format!("invalid target wire {} -> {}; inputs cannot connect to Start or Loop", short(f), short(t)));
             }
         } else if fc == Some(Cat::Target) {
             errs.push(format!("IF/ELSE/AFTER wire cannot start at Target block {} (use its teal output)", short(f)));
