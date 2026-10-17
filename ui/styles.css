@@ -231,70 +231,49 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .bp pre{white-space:pre-wrap;word-break:break-word;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;color:var(--tx);font:12px Consolas,monospace;user-select:text}
 .er{color:var(--er)}
 
-/* Exactly two neutral glass materials. The editor canvas and workflow nodes retain their own styling. */
-/* Shared transparent base; visible material comes from the sampled, GPU-blurred desktop image. */
-.glass {
-  background: transparent !important;
-  background-color: transparent !important;
-  background-image: none !important;
-  border: 1px solid rgba(255,255,255,.12) !important;
-  box-shadow: 0 8px 22px rgba(0,0,0,.20) !important;
-  isolation: isolate;
-  position: relative;
-}
-.glass::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  background-image: var(--glass-backdrop-frame, none);
-  background-size: var(--glass-frame-size, 100% 100%);
-  background-position: var(--glass-frame-x, 0px) var(--glass-frame-y, 0px);
-  background-repeat: no-repeat;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .12s ease;
-}
-.glass::after { content: none !important; display: none !important; }
-html.glass-backdrop-ready .glass::before { opacity: 1; }
-
-/* LiquidGlass Variant: all other surfaces; only a small increase in blur and shadow. */
-.glass.liquidglass-variant {
-  border-color: rgba(255,255,255,.14) !important;
-  box-shadow: 0 9px 24px rgba(0,0,0,.23) !important;
-}
-
-/* Form controls do not consistently support ::before; use the same cropped blur image as their background. */
-input.glass.liquidglass-variant,
-select.glass.liquidglass-variant,
-textarea.glass.liquidglass-variant {
-  background-color: transparent !important;
-  background-image: var(--glass-backdrop-frame, none) !important;
-  background-size: var(--glass-frame-size, 100% 100%) !important;
-  background-position: var(--glass-frame-x, 0px) var(--glass-frame-y, 0px) !important;
-  background-repeat: no-repeat !important;
-  color: var(--tx);
-}
-
-
-/* Keep the non-canvas interface achromatic; the workflow canvas retains its category colors. */
-.save.busy, .save.err, .note,
-.pill.running, .pill.completed, .pill.failed, .pill.stopping,
-.recent .er, .recent .wa,
-.lr.info .lv, .lr.warn .lv, .lr.error .lv, .lr.error .ms,
-.er, .window-control.close:hover {
-  color: var(--tx) !important;
-}
-.res u { background: var(--mu) !important; }
-.mi.on, .mi:hover, .ck-item.on, .ck-item:hover,
-.tbl tr[data-act=open]:hover {
-  background: rgba(255,255,255,.06) !important;
-}
-
-
-/* App background material: keep WebView pixels transparent so Windows' native Acrylic backdrop is visible. */
+/* LiquidGlass: let the native Windows backdrop remain visible through the WebView. */
 body.liquidglass {
   background: transparent !important;
   background-color: transparent !important;
+  color: var(--tx) !important;
+  color-scheme: dark;
 }
+
+/* Shared glass material. No captured desktop texture or decorative shine. */
+.glass {
+  background: rgba(255,255,255,.035) !important;
+  background-color: rgba(255,255,255,.035) !important;
+  background-image: none !important;
+  color: var(--tx);
+  border: 1px solid rgba(255,255,255,.12) !important;
+  box-shadow: 0 8px 22px rgba(0,0,0,.16) !important;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  isolation: isolate;
+  position: relative;
+}
+.glass::before,
+.glass::after {
+  content: none !important;
+  display: none !important;
+}
+
+/* LiquidGlass Variant: surfaces and controls. */
+.glass.liquidglass-variant {
+  background: rgba(255,255,255,.055) !important;
+  background-color: rgba(255,255,255,.055) !important;
+  border-color: rgba(255,255,255,.16) !important;
+  box-shadow: 0 8px 22px rgba(0,0,0,.18) !important;
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
+}
+
+input.glass.liquidglass-variant,
+select.glass.liquidglass-variant,
+textarea.glass.liquidglass-variant {
+  background: rgba(255,255,255,.055) !important;
+  background-image: none !important;
+  color: var(--tx) !important;
+}
+
+/* The editor canvas and workflow nodes keep their own styling. */
