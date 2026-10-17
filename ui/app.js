@@ -637,7 +637,7 @@ async function installPack() {
       [['cancel', 'Cancel'], ['go', 'Install', 'primary']]);
     if (c !== 'go') return;
     await invoke('block_pack_install', { path: pv.path });
-    toast('Installed. Choose "Reload" in Custom blocks to load it.');
+    toast('Plugin installed. Choose "Reload" in Custom blocks to load it.');
   } catch (e) { toast('Install failed: ' + e, 'err'); }
 }
 
