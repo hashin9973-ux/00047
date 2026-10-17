@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{Read, Write},
-    path::{Component, Path, PathBuf},
+    io::Read,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{Mutex, OnceLock},
 };
@@ -492,7 +492,8 @@ fn load_plugin_dir(m: &mut HashMap<&'static str, Box<dyn Block>>, dir: &Path) {
     if let Err(e) = validate_manifest_header(&manifest) {
         push_err(format!("{name}: {e}")); return;
     }
-    for block in manifest["blocks"].as_array().unwrap_or(&Vec::new()) {
+    let blocks = manifest["blocks"].as_array().cloned().unwrap_or_default();
+    for block in &blocks {
         match normalize_plugin_block(block, dir, true) {
             Ok(s) => register_spec(m, &name, s, Some(dir.to_path_buf())),
             Err(e) => push_err(format!("{name}: {e}")),
@@ -578,7 +579,8 @@ fn preview_plugin(path: &Path) -> Result<PackPreview, String> {
     let mut blocks = Vec::new();
     let mut errors = Vec::new();
     let preview_dir = PathBuf::from("__00047_plugin_preview__");
-    for block in manifest["blocks"].as_array().unwrap_or(&Vec::new()) {
+    let manifest_blocks = manifest["blocks"].as_array().cloned().unwrap_or_default();
+    for block in &manifest_blocks {
         let kind = block["kind"].as_str().unwrap_or("unknown");
         let entrypoint = block.get("entrypoint").and_then(Value::as_str).unwrap_or("");
         if !valid_relative_path(entrypoint) || !archive.files.contains(entrypoint) {
@@ -667,11 +669,21 @@ fn install_plugin(path: &Path, file_name: &str) -> Result<String, String> {
     let backup = packages.join(format!(".backup-{}", std::process::id()));
     if stage.exists() { fs::remove_dir_all(&stage).map_err(|e| e.to_string())?; }
     if backup.exists() { fs::remove_dir_all(&backup).map_err(|e| e.to_string())?; }
-    extract_plugin(path, &stage)?;
+    if let Err(e) = extract_plugin(path, &stage) {
+        let _ = fs::remove_dir_all(&stage);
+        return Err(e);
+    }
     // Validate the actual extracted tree before replacing an installed version.
-    for block in archive.manifest["blocks"].as_array().unwrap_or(&Vec::new()) {
-        let spec = normalize_plugin_block(block, &stage, true)?;
-        check_spec(&spec)?;
+    let manifest_blocks = archive.manifest["blocks"].as_array().cloned().unwrap_or_default();
+    for block in &manifest_blocks {
+        let spec = match normalize_plugin_block(block, &stage, true).and_then(|spec| {
+            check_spec(&spec)?;
+            Ok(spec)
+        }) {
+            Ok(spec) => spec,
+            Err(e) => { let _ = fs::remove_dir_all(&stage); return Err(e); }
+        };
+        let _ = spec;
     }
     if target.exists() {
         fs::rename(&target, &backup).map_err(|e| format!("could not stage previous plugin version: {e}"))?;
