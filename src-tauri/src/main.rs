@@ -39,35 +39,6 @@ struct GlassCaptureFrame {
 fn apply_liquidglass_backdrop(window: &tauri::WebviewWindow) {
     use std::{ffi::c_void, mem::{size_of, transmute}};
 
-    let Ok(hwnd) = window.hwnd() else { return; };
-
-    // Windows 11 22H2+ has a documented system backdrop API. TRANSIENTWINDOW
-    // maps to Desktop Acrylic and draws the backdrop behind the whole window.
-    #[link(name = "dwmapi")]
-    extern "system" {
-        fn DwmSetWindowAttribute(
-            hwnd: *mut c_void,
-            attribute: u32,
-            value: *const c_void,
-            size: u32,
-        ) -> i32;
-    }
-
-    let backdrop_type: i32 = 3; // DWMSBT_TRANSIENTWINDOW (Desktop Acrylic)
-    let status = unsafe {
-        DwmSetWindowAttribute(
-            hwnd.0,
-            38, // DWMWA_SYSTEMBACKDROP_TYPE
-            (&backdrop_type as *const i32).cast(),
-            size_of::<i32>() as u32,
-        )
-    };
-    if status >= 0 {
-        return;
-    }
-
-    // Windows 10 / older systems: fall back to legacy Acrylic instead of the
-    // previous blur-behind state, which does not request a frosted material.
     #[repr(C)]
     struct AccentPolicy {
         accent_state: i32,
@@ -90,19 +61,22 @@ fn apply_liquidglass_backdrop(window: &tauri::WebviewWindow) {
         fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
     }
 
-    let user32: Vec<u16> = "user32.dll\0".encode_utf16().collect();
+    let Ok(hwnd) = window.hwnd() else { return; };
+    let user32: Vec<u16> = "user32.dll\\0".encode_utf16().collect();
     let procedure = unsafe {
         let module = GetModuleHandleW(user32.as_ptr());
         if module.is_null() { return; }
-        GetProcAddress(module, b"SetWindowCompositionAttribute\0".as_ptr())
+        GetProcAddress(module, b"SetWindowCompositionAttribute\\0".as_ptr())
     };
     if procedure.is_null() { return; }
 
+    // Use Windows' blur-behind composition only. State 3 is
+    // ACCENT_ENABLE_BLURBEHIND; unlike Acrylic, it adds no material tint.
     let set_attribute: SetCompositionAttribute = unsafe { transmute(procedure) };
     let mut accent = AccentPolicy {
-        accent_state: 4, // ACCENT_ENABLE_ACRYLICBLURBEHIND
+        accent_state: 3,
         accent_flags: 0,
-        gradient_color: 0, // do not force an app tint
+        gradient_color: 0,
         animation_id: 0,
     };
     let mut data = CompositionAttributeData {
