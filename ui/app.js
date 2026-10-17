@@ -661,9 +661,9 @@ function startGlassBackdrop() {
     pointerEvents: 'none',
     backgroundRepeat: 'no-repeat',
     backgroundSize: '100% 100%',
-    filter: 'blur(16px)',
+    filter: 'none',
     opacity: '0',
-    willChange: 'background-image, filter',
+    willChange: 'background-image',
     transform: 'translateZ(0)'
   });
   document.body.prepend(layer);
@@ -696,7 +696,8 @@ function startGlassBackdrop() {
   };
 
   void capture();
-  window.setInterval(capture, 250);
+  // Target up to 30 updates per second. The in-flight guard prevents queued captures.
+  window.setInterval(capture, 1000 / 30);
   window.addEventListener('resize', capture);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) void capture();
