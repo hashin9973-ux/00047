@@ -695,9 +695,15 @@ function startGlassBackdrop() {
     }
   };
 
+  // requestAnimationFrame follows the WebView compositor's native vsync cadence
+  // (for example 60/120/144 Hz). Captures never queue: if one is still running,
+  // the next display tick is skipped and the next available tick starts a fresh sample.
+  const tick = () => {
+    if (!document.hidden) void capture();
+    window.requestAnimationFrame(tick);
+  };
   void capture();
-  // Target up to 30 updates per second. The in-flight guard prevents queued captures.
-  window.setInterval(capture, 1000 / 30);
+  window.requestAnimationFrame(tick);
   window.addEventListener('resize', capture);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) void capture();
