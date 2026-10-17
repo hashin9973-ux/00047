@@ -21,9 +21,123 @@ use tauri::{
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::HWND;
+
+#[derive(serde::Deserialize)]
+struct GlassSurface {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+    opacity: f32,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct NativeGlassRect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+    opacity: f32,
+}
+
+#[cfg(target_os = "windows")]
+extern "C" {
+    fn windhawk_blur_update(owner: isize, rects: *const NativeGlassRect, count: u32) -> i32;
+    fn windhawk_blur_set_visible(owner: isize, visible: bool);
+    fn windhawk_blur_reposition(owner: isize);
+    fn windhawk_blur_destroy(owner: isize);
+}
+
+#[cfg(target_os = "windows")]
+fn set_native_blur_visible(window: &tauri::WebviewWindow, visible: bool) {
+    let _ = window.with_webview(move |webview| unsafe {
+        let mut hwnd = HWND::default();
+        if webview.controller().ParentWindow(&mut hwnd).is_ok() {
+            windhawk_blur_set_visible(hwnd.0 as isize, visible);
+        }
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn reposition_native_blur(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(move |webview| unsafe {
+        let mut hwnd = HWND::default();
+        if webview.controller().ParentWindow(&mut hwnd).is_ok() {
+            windhawk_blur_reposition(hwnd.0 as isize);
+        }
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn destroy_native_blur(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(move |webview| unsafe {
+        let mut hwnd = HWND::default();
+        if webview.controller().ParentWindow(&mut hwnd).is_ok() {
+            windhawk_blur_destroy(hwnd.0 as isize);
+        }
+    });
+}
+
 
 
 // ---------- commands ----------
+
+#[tauri::command]
+fn update_windhawk_blur(app: AppHandle, surfaces: Vec<GlassSurface>) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let window = app
+            .get_webview_window("main")
+            .ok_or_else(|| "Main WebView is unavailable.".to_string())?;
+        if surfaces.len() > 512 {
+            return Err("Too many native blur surfaces in a single update.".into());
+        }
+        let native: Vec<NativeGlassRect> = surfaces
+            .into_iter()
+            .filter(|r| r.width > 0.0 && r.height > 0.0)
+            .map(|r| NativeGlassRect {
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+                radius: r.radius,
+                opacity: r.opacity,
+            })
+            .collect();
+        let count = u32::try_from(native.len()).map_err(|e| e.to_string())?;
+        let code = Arc::new(Mutex::new(None));
+        let code_for_ui = code.clone();
+        window
+            .with_webview(move |webview| unsafe {
+                let mut hwnd = HWND::default();
+                let result = match webview.controller().ParentWindow(&mut hwnd) {
+                    Ok(()) => windhawk_blur_update(hwnd.0 as isize, native.as_ptr(), count),
+                    Err(error) => error.code().0,
+                };
+                *code_for_ui.lock().unwrap() = Some(result);
+            })
+            .map_err(|e| e.to_string())?;
+        let result = code
+            .lock()
+            .map_err(|e| e.to_string())?
+            .unwrap_or(-2147467259);
+        if result < 0 {
+            return Err(format!("Native Windhawk Composition blur failed (HRESULT 0x{:08X}).", result as u32));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, surfaces);
+        Err("Native Windhawk Composition blur is available only on Windows.".into())
+    }
+}
+
 #[tauri::command]
 fn list_automations(eng: State<'_, Arc<Engine>>) -> Vec<Automation> {
     eng.store.all()
@@ -102,7 +216,8 @@ fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
 fn hide_to_tray(app: AppHandle, eng: State<'_, Arc<Engine>>) {
     save_window(&app);
     if let Some(w) = app.get_webview_window("main") {
-        // Hide the native window and its WebView2 controller together to avoid a stale compositor surface.
+        #[cfg(target_os = "windows")]
+        set_native_blur_visible(&w, false);
         let _ = w.hide();
         #[cfg(target_os = "windows")]
         let _ = w.with_webview(|webview| unsafe {
@@ -246,6 +361,8 @@ fn show_main(app: &AppHandle) {
         let _ = w.with_webview(|webview| unsafe {
             let _ = webview.controller().SetIsVisible(true);
         });
+        #[cfg(target_os = "windows")]
+        set_native_blur_visible(&w, true);
         let _ = w.set_focus();
     }
     if let Some(e) = app.try_state::<Arc<Engine>>() {
@@ -282,10 +399,21 @@ fn main() {
                     let vis = window.is_visible().unwrap_or(false);
                     e.set_ui(vis && !min);
                 }
+                #[cfg(target_os = "windows")]
+                if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                    reposition_native_blur(&w);
+                }
+            }
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Focused(true) => {
+                #[cfg(target_os = "windows")]
+                if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                    reposition_native_blur(&w);
+                }
             }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            update_windhawk_blur,
             list_automations,
             save_automation,
             delete_automation,
@@ -357,6 +485,10 @@ fn main() {
 
     app.run(|handle, event| {
         if let tauri::RunEvent::Exit = event {
+            #[cfg(target_os = "windows")]
+            if let Some(w) = handle.get_webview_window("main") {
+                destroy_native_blur(&w);
+            }
             if let Some(e) = handle.try_state::<Arc<Engine>>() {
                 let e = e.inner().clone();
                 tauri::async_runtime::block_on(e.shutdown());

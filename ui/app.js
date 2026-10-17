@@ -661,17 +661,116 @@ async function reloadBlocks() {
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
-function startGlassBackdrop() {
-  const refreshStatus = $('#glass-refresh-status');
+function startWindhawkGlassBridge() {
+  const status = $('#glass-refresh-status');
   if (!/Win/i.test(navigator.userAgent)) {
-    if (refreshStatus) refreshStatus.textContent = 'Live panel blur is available on Windows.';
+    if (status) status.textContent = 'Native Windhawk Composition blur is available on Windows.';
     return;
   }
-  // Keep the native window transparent. Applying native Acrylic here blurs the
-  // entire window, which is intentionally avoided; individual panels use the
-  // WebView compositor's live backdrop-filter instead.
-  if (refreshStatus) refreshStatus.textContent =
-    'Scoped live panel blur · Windows Transparency effects must be enabled in system settings.';
+
+  const selector = '.glass.liquidglass-variant';
+  const observed = new WeakSet();
+  let frame = 0;
+  let lastPayload = '';
+  let requestGeneration = 0;
+  let resizeObserver;
+
+  const clippedRect = element => {
+    const raw = element.getBoundingClientRect();
+    let left = Math.max(0, raw.left);
+    let top = Math.max(0, raw.top);
+    let right = Math.min(window.innerWidth, raw.right);
+    let bottom = Math.min(window.innerHeight, raw.bottom);
+
+    for (let parent = element.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) {
+        const p = parent.getBoundingClientRect();
+        left = Math.max(left, p.left);
+        right = Math.min(right, p.right);
+      }
+      if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+        const p = parent.getBoundingClientRect();
+        top = Math.max(top, p.top);
+        bottom = Math.min(bottom, p.bottom);
+      }
+    }
+    if (right <= left || bottom <= top) return null;
+    return { left, top, width: right - left, height: bottom - top };
+  };
+
+  const readSurfaces = () => {
+    const surfaces = [];
+    for (const element of document.querySelectorAll(selector)) {
+      // One native material per nested glass tree avoids double-compositing tint.
+      if (element.parentElement?.closest(selector)) continue;
+      if (element.hidden) continue;
+      const style = getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' ||
+          Number.parseFloat(style.opacity || '1') < 0.02) continue;
+      const rect = clippedRect(element);
+      if (!rect || rect.width < 2 || rect.height < 2) continue;
+      if (!observed.has(element)) {
+        observed.add(element);
+        try { resizeObserver.observe(element); } catch { /* detached during mutation */ }
+      }
+      const radius = Number.parseFloat(style.borderTopLeftRadius) || 0;
+      surfaces.push({
+        x: Math.round(rect.left * 100) / 100,
+        y: Math.round(rect.top * 100) / 100,
+        width: Math.round(rect.width * 100) / 100,
+        height: Math.round(rect.height * 100) / 100,
+        radius: Math.max(0, Math.min(radius, rect.width / 2, rect.height / 2)),
+        opacity: Math.min(1, Math.max(0, Number.parseFloat(style.opacity || '1')))
+      });
+      if (surfaces.length >= 512) break;
+    }
+    return surfaces;
+  };
+
+  const flush = async () => {
+    frame = 0;
+    const surfaces = readSurfaces();
+    const payload = JSON.stringify(surfaces);
+    if (payload === lastPayload) return;
+    lastPayload = payload;
+    const generation = ++requestGeneration;
+    try {
+      await invoke('update_windhawk_blur', { surfaces });
+      if (generation === requestGeneration && status) {
+        status.textContent = surfaces.length
+          ? 'Windhawk native Composition blur active.'
+          : 'Native blur ready; no visible glass panels.';
+      }
+    } catch (error) {
+      if (generation === requestGeneration) {
+        lastPayload = '';
+        if (status) status.textContent = 'Native Composition blur unavailable; translucent fallback remains active.';
+      }
+      console.warn('Windhawk Composition blur update failed:', error);
+    }
+  };
+  const schedule = () => {
+    if (!frame) frame = requestAnimationFrame(flush);
+  };
+
+  resizeObserver = new ResizeObserver(schedule);
+  try { resizeObserver.observe(document.documentElement); } catch {}
+  try { resizeObserver.observe(document.body); } catch {}
+  new MutationObserver(records => {
+    if (records.some(record => record.type === 'childList' || record.type === 'attributes')) schedule();
+  }).observe(document.body, {
+    childList: true, subtree: true, attributes: true,
+    attributeFilter: ['class', 'style', 'hidden']
+  });
+  window.addEventListener('resize', schedule, { passive: true });
+  window.addEventListener('scroll', schedule, { passive: true, capture: true });
+  document.addEventListener('transitionend', schedule, true);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) schedule();
+  });
+  if (status) status.textContent = 'Starting native Windhawk Composition blur…';
+  schedule();
 }
 
 function setupGlassMaterials() {
@@ -713,5 +812,5 @@ function setupGlassMaterials() {
   await bindEvents();
   show('overview');
   setupGlassMaterials();
-  startGlassBackdrop();
+  startWindhawkGlassBridge();
 })();
