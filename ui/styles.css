@@ -275,6 +275,11 @@ body.liquidglass {
   background-size: var(--liquidglass-reflection-size);
   background-position: var(--liquidglass-reflection-position);
   background-repeat: no-repeat;
+  /* Blur the sampled desktop pixels within each glass surface. The app body itself is untouched. */
+  filter: blur(12px) saturate(1.08);
+  transform: scale(1.035) translateZ(0);
+  transform-origin: center;
+  will-change: filter;
 }
 
 /* The two material styles share transparent fills. Variant blur applies only inside each control. */
