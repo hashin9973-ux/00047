@@ -658,27 +658,10 @@ function startGlassReflection() {
   const reflectedSurfaceSelector = '.glass.liquidglass-variant:not(input[type="checkbox"]):not(input[type="radio"])';
   const directBackgroundSelector = 'input.glass.liquidglass-variant:not([type="checkbox"]):not([type="radio"]), select.glass.liquidglass-variant, textarea.glass.liquidglass-variant';
 
-  // Keep the large data URL in one CSS rule instead of duplicating it on every control.
-  // Per-surface inline styles contain only their small crop geometry values.
-  const reflectionStyle = document.createElement('style');
-  reflectionStyle.id = 'liquidglass-reflection-frame';
-  reflectionStyle.textContent = `
-    .glass.liquidglass-variant::before { background-image: none; }
-    ${directBackgroundSelector} {
-      background-image: none !important;
-      background-size: var(--liquidglass-reflection-size) !important;
-      background-position: var(--liquidglass-reflection-position) !important;
-      background-repeat: no-repeat !important;
-    }
-  `;
-  document.head.appendChild(reflectionStyle);
-  const reflectionRule = reflectionStyle.sheet?.cssRules?.[0]?.style;
-  const directReflectionRule = reflectionStyle.sheet?.cssRules?.[1]?.style;
-  if (!reflectionRule || !directReflectionRule) {
-    reflectionStyle.remove();
-    console.debug('LiquidGlass shared reflection stylesheet could not be initialized.');
-    return;
-  }
+  // Store the captured frame once; each variant surface paints only its own crop.
+  // This is an image source, not a full-window background layer.
+  const reflectionRoot = document.documentElement;
+  reflectionRoot.style.setProperty('--liquidglass-reflection-image', 'none');
 
   const capture = async () => {
     if (inFlight || document.hidden) return;
@@ -697,8 +680,7 @@ function startGlassReflection() {
       const originX = (frame.screenX - frame.windowX) / scale;
       const originY = (frame.screenY - frame.windowY) / scale;
       const image = `url("${frame.dataUrl}")`;
-      reflectionRule.setProperty('background-image', image);
-      directReflectionRule.setProperty('background-image', image, 'important');
+      reflectionRoot.style.setProperty('--liquidglass-reflection-image', image);
 
       for (const surface of document.querySelectorAll(reflectedSurfaceSelector)) {
         const rect = surface.getBoundingClientRect();
@@ -715,7 +697,7 @@ function startGlassReflection() {
       }
     } catch (error) {
       // Leave the native transparent app background untouched on capture failures.
-      console.debug('LiquidGlass surface reflection unavailable:', error);
+      console.warn('LiquidGlass surface reflection unavailable:', error);
     } finally {
       inFlight = false;
     }
