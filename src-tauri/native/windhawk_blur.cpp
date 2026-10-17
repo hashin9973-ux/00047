@@ -923,7 +923,11 @@ void ColorMatrixEffect::Name(winrt::hstring name)
 
 muc::CompositionBrush CreateWindhawkBlurBrush(muc::Compositor const& compositor, float blurAmount, winrt::Windows::UI::Color tint, std::optional<float> tintLuminosityOpacity, std::optional<float> tintSaturation, std::optional<float> noiseOpacity, std::optional<float> noiseDensity)
 {
-    auto backdropBrush = compositor.CreateBackdropBrush();
+    // This graph is hosted in a separate Win32 desktop-composition window, not
+    // in the XAML visual tree used by Windhawk. Sample the host window's
+    // backdrop (pixels behind the transparent app) rather than this otherwise
+    // empty composition tree.
+    auto backdropBrush = compositor.CreateHostBackdropBrush();
 
     // Rec. 709 luma coefficients, used for saturation and luminosity.
     constexpr float kLumaR = 0.2126f;
