@@ -21,6 +21,8 @@ use tauri::{
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::HWND;
 
 #[derive(serde::Deserialize)]
 struct GlassSurface {
@@ -54,7 +56,8 @@ extern "C" {
 #[cfg(target_os = "windows")]
 fn set_native_blur_visible(window: &tauri::WebviewWindow, visible: bool) {
     let _ = window.with_webview(move |webview| unsafe {
-        if let Ok(hwnd) = webview.controller().ParentWindow() {
+        let mut hwnd = HWND::default();
+        if webview.controller().ParentWindow(&mut hwnd).is_ok() {
             windhawk_blur_set_visible(hwnd.0 as isize, visible);
         }
     });
@@ -63,7 +66,8 @@ fn set_native_blur_visible(window: &tauri::WebviewWindow, visible: bool) {
 #[cfg(target_os = "windows")]
 fn reposition_native_blur(window: &tauri::WebviewWindow) {
     let _ = window.with_webview(move |webview| unsafe {
-        if let Ok(hwnd) = webview.controller().ParentWindow() {
+        let mut hwnd = HWND::default();
+        if webview.controller().ParentWindow(&mut hwnd).is_ok() {
             windhawk_blur_reposition(hwnd.0 as isize);
         }
     });
@@ -72,7 +76,8 @@ fn reposition_native_blur(window: &tauri::WebviewWindow) {
 #[cfg(target_os = "windows")]
 fn destroy_native_blur(window: &tauri::WebviewWindow) {
     let _ = window.with_webview(move |webview| unsafe {
-        if let Ok(hwnd) = webview.controller().ParentWindow() {
+        let mut hwnd = HWND::default();
+        if webview.controller().ParentWindow(&mut hwnd).is_ok() {
             windhawk_blur_destroy(hwnd.0 as isize);
         }
     });
@@ -109,8 +114,9 @@ fn update_windhawk_blur(app: AppHandle, surfaces: Vec<GlassSurface>) -> Result<(
         let code_for_ui = code.clone();
         window
             .with_webview(move |webview| unsafe {
-                let result = match webview.controller().ParentWindow() {
-                    Ok(hwnd) => windhawk_blur_update(hwnd.0 as isize, native.as_ptr(), count),
+                let mut hwnd = HWND::default();
+                let result = match webview.controller().ParentWindow(&mut hwnd) {
+                    Ok(()) => windhawk_blur_update(hwnd.0 as isize, native.as_ptr(), count),
                     Err(error) => error.code().0,
                 };
                 *code_for_ui.lock().unwrap() = Some(result);
