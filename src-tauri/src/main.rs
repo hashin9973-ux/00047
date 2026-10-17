@@ -418,7 +418,7 @@ fn list_block_specs() -> serde_json::Value {
 #[tauri::command]
 async fn block_pack_preview(app: AppHandle) -> Result<Option<custom::PackPreview>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog().file().add_filter("00047 block pack", &["json"]).pick_file(move |p| {
+    app.dialog().file().add_filter("00047 script plugin pack", &["zip"]).pick_file(move |p| {
         let _ = tx.send(p);
     });
     let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
