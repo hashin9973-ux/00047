@@ -35,11 +35,17 @@ struct GlassCaptureFrame {
     window_y: i32,
 }
 
+
 #[tauri::command]
-fn capture_glass_frame(window: tauri::WebviewWindow) -> Result<GlassCaptureFrame, String> {
+async fn capture_glass_frame(window: tauri::WebviewWindow) -> Result<GlassCaptureFrame, String> {
     #[cfg(target_os = "windows")]
     {
-        capture_glass_frame_windows(&window)
+        // GDI screen capture and JPEG encoding are CPU/blocking work. Keep them
+        // off Tauri's command/UI thread so desktop sampling cannot stall WebView
+        // input, layout, or compositor submissions.
+        tauri::async_runtime::spawn_blocking(move || capture_glass_frame_windows(&window))
+            .await
+            .map_err(|e| format!("Desktop capture worker failed: {e}"))?
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -52,8 +58,11 @@ fn capture_glass_frame(window: tauri::WebviewWindow) -> Result<GlassCaptureFrame
 fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCaptureFrame, String> {
     use base64::Engine as _;
     use image::codecs::jpeg::JpegEncoder;
-    use image::{imageops::FilterType, ExtendedColorType, RgbImage};
-    use std::{ffi::c_void, mem::size_of, ptr::{null, null_mut}, slice};
+    use image::{ExtendedColorType, RgbImage};
+    use std::{ffi::c_void, mem::size_of, ptr::{null, null_mut}, slice, sync::atomic::{AtomicBool, Ordering}};
+
+    // Display affinity is process/window setup, not per-frame work.
+    static DISPLAY_AFFINITY_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
     // GDI is used only to acquire the real desktop pixels. The captured pixels
     // are downsampled and JPEG encoded before they cross the Tauri IPC bridge.
@@ -109,18 +118,23 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
 
     // Keep IPC and capture costs bounded even when the window is maximized on
     // a high-DPI 4K display. CSS scales this sample back to desktop coordinates.
-    let scale = (1500.0f64 / screen_width as f64)
-        .min(1000.0f64 / screen_height as f64)
+    // A slightly smaller sample has materially less GDI, JPEG and IPC work;
+    // the 12px glass blur hides most source-detail loss while improving cadence.
+    const MAX_CAPTURE_WIDTH: f64 = 1024.0;
+    const MAX_CAPTURE_HEIGHT: f64 = 640.0;
+    let scale = (MAX_CAPTURE_WIDTH / screen_width as f64)
+        .min(MAX_CAPTURE_HEIGHT / screen_height as f64)
         .min(1.0);
     let bitmap_width = ((screen_width as f64 * scale).round() as i32).max(1);
     let bitmap_height = ((screen_height as f64 * scale).round() as i32).max(1);
 
     let hwnd = window.hwnd().map_err(|e| format!("Native window handle unavailable: {e}"))?.0;
     unsafe {
-        // Windows deliberately omits this app's window from desktop captures;
-        // otherwise each reflection frame would recursively capture itself.
-        if SetWindowDisplayAffinity(hwnd, 0x00000011) == 0 {
-            return Err("Windows could not exclude 00047 from desktop capture.".to_string());
+        // Best-effort once: some transparent/layered windows reject display affinity.
+        // Never spend a native API call on every animation frame or abort capture
+        // if exclusion is unavailable.
+        if !DISPLAY_AFFINITY_ATTEMPTED.swap(true, Ordering::Relaxed) {
+            let _capture_exclusion_enabled = SetWindowDisplayAffinity(hwnd, 0x00000011) != 0;
         }
 
         let screen_dc = GetDC(null_mut());
@@ -198,25 +212,8 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
         let image = RgbImage::from_raw(bitmap_width as u32, bitmap_height as u32, rgb)
             .ok_or_else(|| "Captured desktop frame had an invalid pixel buffer.".to_string())?;
         let mut small = Vec::new();
-        let sampled = if bitmap_width > 1500 || bitmap_height > 1000 {
-            image::imageops::resize(&image, 1500, 1000, FilterType::Triangle)
-        } else {
-            image
-        };
-        // Keep the original aspect ratio when only one dimension exceeds a limit.
-        let sampled = if sampled.width() > 1500 || sampled.height() > 1000 {
-            let ratio = (1500.0 / sampled.width() as f64).min(1000.0 / sampled.height() as f64);
-            image::imageops::resize(
-                &sampled,
-                (sampled.width() as f64 * ratio).round().max(1.0) as u32,
-                (sampled.height() as f64 * ratio).round().max(1.0) as u32,
-                FilterType::Triangle
-            )
-        } else {
-            sampled
-        };
-        JpegEncoder::new_with_quality(&mut small, 68)
-            .encode(sampled.as_raw(), sampled.width(), sampled.height(), ExtendedColorType::Rgb8)
+        JpegEncoder::new_with_quality(&mut small, 50)
+            .encode(image.as_raw(), image.width(), image.height(), ExtendedColorType::Rgb8)
             .map_err(|e| format!("Could not encode desktop reflection frame: {e}"))?;
 
         Ok(GlassCaptureFrame {
@@ -432,6 +429,27 @@ fn block_pack_install(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn plugin_pack_preview(app: AppHandle) -> Result<Option<custom::PluginPreview>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().add_filter("00047 plugin package", &["json"]).pick_file(move |p| {
+        let _ = tx.send(p);
+    });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    custom::plugin_preview(&path).map(Some)
+}
+
+#[tauri::command]
+fn plugin_pack_install(path: String) -> Result<String, String> {
+    custom::install_plugin(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+fn uninstall_plugin(id: String) -> Result<String, String> {
+    custom::uninstall_plugin(&id)
+}
+
+#[tauri::command]
 fn open_blocks_folder() -> Result<(), String> {
     let d = custom::blocks_dir().ok_or_else(|| "blocks folder is not initialised".to_string())?;
     let _ = std::fs::create_dir_all(d);
@@ -452,9 +470,11 @@ fn show_main(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.show();
         #[cfg(target_os = "windows")]
-        let _ = w.with_webview(|webview| unsafe {
-            let _ = webview.controller().SetIsVisible(true);
-        });
+        {
+            let _ = w.with_webview(|webview| unsafe {
+                let _ = webview.controller().SetIsVisible(true);
+            });
+        }
         let _ = w.set_focus();
     }
     if let Some(e) = app.try_state::<Arc<Engine>>() {
@@ -519,6 +539,9 @@ fn main() {
             list_block_specs,
             block_pack_preview,
             block_pack_install,
+            plugin_pack_preview,
+            plugin_pack_install,
+            uninstall_plugin,
             open_blocks_folder,
             restart_app
         ])

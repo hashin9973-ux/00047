@@ -4,9 +4,10 @@ A block is a Condition (IF/ELSE) or an Action. Pick the route that fits.
 
 ## 1. Users: a block pack (JSON, no coding)
 
-Put a `.json` file in the blocks folder (Settings → Custom blocks → Open folder), then choose **Reload**
-(00047 restarts). Or use **Install pack…**, which shows exactly what each block will run before copying it.
-An example is in `docs/examples/blocks/sample-pack.json`.
+Use **Settings → Import actions / conditions…** to pick a block-pack `.json` file. The app previews
+the commands/scripts before copying it. You can also open **Manage custom blocks…** to inspect installed blocks,
+open the blocks folder, and choose **Reload** (00047 restarts) to activate imports.
+An example pack is in `docs/examples/blocks/sample-pack.json`.
 
 ```json
 {
@@ -26,6 +27,40 @@ An example is in `docs/examples/blocks/sample-pack.json`.
 ```
 
 A file may hold one block, an array of blocks, or `{ "blocks": [ ... ] }`.
+
+## Plugin packages
+
+Use **Settings → Import plugin…** to pick a plugin-package `.json` file. A plugin package groups actions and conditions under a name, version, author, and ID. The app previews every command/script and asks for confirmation before installing. Installed plugin packs are stored separately in the app's `plugins` folder; choose **Reload** to activate or remove their blocks.
+
+A plugin package has this shape:
+
+```json
+{
+  "plugin": {
+    "id": "sample.utilities",
+    "name": "Sample Utilities",
+    "version": "1.0.0",
+    "author": "Your name",
+    "description": "Example action and condition blocks"
+  },
+  "blocks": [
+    {
+      "kind": "user.sample_utilities.weekday",
+      "category": "condition",
+      "title": "Weekday",
+      "icon": "clock",
+      "description": "Satisfied Monday through Friday.",
+      "fields": [],
+      "run": {
+        "type": "powershell",
+        "script": "$day = (Get-Date).DayOfWeek.ToString(); if ($day -in @('Saturday','Sunday')) { exit 1 } else { exit 0 }"
+      }
+    }
+  ]
+}
+```
+
+The `plugin.id` must start with a lowercase letter and contain only lowercase letters, digits, dots, underscores, or hyphens. Each block still uses the same `user.*` kind, field, and run definitions as a normal block pack. A package must contain 1–200 valid blocks. Updating an installed plugin means importing a package with the same ID again, then restarting.
 
 **Run types**
 - `command`: `{ "type":"command", "program":"C:\\Tools\\x.exe", "args":["--in","{file}"], "cwd":"{folder}", "skipEmptyArgs":true, "wait":true, "okExitCodes":[0], "capture":true }`

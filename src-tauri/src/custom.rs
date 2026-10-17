@@ -292,8 +292,15 @@ fn parse_pack(path: &Path) -> Result<Vec<Value>, String> {
 /// Called once while the block registry is built.
 pub fn load_into(m: &mut HashMap<&'static str, Box<dyn Block>>) {
     let Some(dir) = DIR.get() else { return };
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let mut files: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().map(|x| x == "json").unwrap_or(false)).collect();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for folder in std::iter::once(dir.clone()).chain(plugins_dir()) {
+        let Ok(rd) = std::fs::read_dir(folder) else { continue };
+        files.extend(
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false)),
+        );
+    }
     files.sort();
     for p in files {
         let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -333,9 +340,154 @@ pub fn all_specs() -> Value {
     specs.sort_by(|a, b| a["title"].as_str().cmp(&b["title"].as_str()));
     json!({
         "specs": specs,
+        "plugins": list_plugins(),
         "errors": load_errors(),
         "dir": blocks_dir().map(|d| d.to_string_lossy().to_string()).unwrap_or_default(),
+        "pluginsDir": plugins_dir().map(|d| d.to_string_lossy().to_string()).unwrap_or_default(),
     })
+}
+
+// ---------- plugin packs ----------
+#[derive(Clone, Serialize)]
+pub struct PluginInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub description: String,
+    pub block_count: usize,
+}
+
+#[derive(Serialize)]
+pub struct PluginPreview {
+    pub file: String,
+    pub path: String,
+    pub plugin: PluginInfo,
+    pub blocks: Vec<BlockPreview>,
+}
+
+fn plugins_dir() -> Option<PathBuf> {
+    DIR.get().and_then(|d| d.parent().map(|p| p.join("plugins")))
+}
+
+fn valid_plugin_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id.as_bytes()[0].is_ascii_lowercase()
+        && id.as_bytes()[id.len() - 1].is_ascii_alphanumeric()
+        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+fn parse_plugin(path: &Path) -> Result<(PluginInfo, Vec<Value>), String> {
+    if path.extension().map(|x| x != "json").unwrap_or(true) {
+        return Err("a plugin package must be a .json file".into());
+    }
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if meta.len() > 2_000_000 {
+        return Err("the plugin package is larger than 2 MB".into());
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let root: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|e| format!("invalid JSON: {e}"))?;
+    let plug = root.get("plugin").and_then(Value::as_object)
+        .ok_or("missing plugin metadata object")?;
+    let id = plug.get("id").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if !valid_plugin_id(&id) {
+        return Err("plugin.id must start with a lowercase letter and contain only lowercase letters, digits, '.', '_' or '-' (max 64 characters)".into());
+    }
+    let name = plug.get("name").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err("plugin.name is required (max 80 characters)".into());
+    }
+    let version = plug.get("version").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    if version.is_empty() || version.chars().count() > 32 || version.chars().any(char::is_control) {
+        return Err("plugin.version is required (max 32 characters)".into());
+    }
+    let author = plug.get("author").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let description = plug.get("description").and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let blocks = root.get("blocks").and_then(Value::as_array)
+        .ok_or("plugin package must contain a blocks array")?.clone();
+    if blocks.is_empty() || blocks.len() > 200 {
+        return Err("plugin must contain between 1 and 200 action/condition blocks".into());
+    }
+
+    let mut previews = Vec::with_capacity(blocks.len());
+    let mut seen = std::collections::HashSet::new();
+    for block in &blocks {
+        let kind = check_spec(block)?;
+        if !seen.insert(kind.clone()) {
+            return Err(format!("plugin contains duplicate block kind '{kind}'"));
+        }
+        previews.push(BlockPreview {
+            kind,
+            title: block["title"].as_str().unwrap_or("").to_string(),
+            category: block["category"].as_str().unwrap_or("").to_string(),
+            command: describe(block),
+        });
+    }
+    let info = PluginInfo {
+        id,
+        name,
+        version,
+        author,
+        description,
+        block_count: previews.len(),
+    };
+    Ok((info, blocks))
+}
+
+pub fn plugin_preview(path: &Path) -> Result<PluginPreview, String> {
+    let (plugin, _) = parse_plugin(path)?;
+    let file = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    Ok(PluginPreview {
+        file,
+        path: path.to_string_lossy().to_string(),
+        plugin,
+        blocks: {
+            let (_, specs) = parse_plugin(path)?;
+            specs.iter().map(|s| BlockPreview {
+                kind: s["kind"].as_str().unwrap_or("").to_string(),
+                title: s["title"].as_str().unwrap_or("").to_string(),
+                category: s["category"].as_str().unwrap_or("").to_string(),
+                command: describe(s),
+            }).collect()
+        },
+    })
+}
+
+pub fn install_plugin(path: &Path) -> Result<String, String> {
+    let (plugin, _) = parse_plugin(path)?;
+    let dir = plugins_dir().ok_or("plugin folder is not initialised")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dest = dir.join(format!("{}.json", plugin.id));
+    if dest.exists() && std::fs::canonicalize(&dest).ok() == std::fs::canonicalize(path).ok() {
+        return Ok(plugin.name);
+    }
+    std::fs::copy(path, &dest).map_err(|e| format!("copy plugin: {e}"))?;
+    Ok(plugin.name)
+}
+
+pub fn list_plugins() -> Vec<PluginInfo> {
+    let Some(dir) = plugins_dir() else { return vec![] };
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+    let mut files: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path())
+        .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false)).collect();
+    files.sort();
+    files.into_iter().filter_map(|p| parse_plugin(&p).ok().map(|(info, _)| info)).collect()
+}
+
+pub fn uninstall_plugin(id: &str) -> Result<String, String> {
+    if !valid_plugin_id(id) {
+        return Err("invalid plugin id".into());
+    }
+    let dir = plugins_dir().ok_or("plugin folder is not initialised")?;
+    let path = dir.join(format!("{id}.json"));
+    if !path.is_file() {
+        return Err(format!("plugin '{id}' is not installed"));
+    }
+    let name = parse_plugin(&path).map(|(p, _)| p.name).unwrap_or_else(|_| id.to_string());
+    std::fs::remove_file(path).map_err(|e| format!("remove plugin: {e}"))?;
+    Ok(name)
 }
 
 // ---------- install flow ----------

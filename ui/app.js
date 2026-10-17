@@ -60,7 +60,7 @@ if (appWindow && windowTitlebar) {
 // ---------- toast / modal ----------
 function toast(msg, kind = '') {
   const t = document.createElement('div');
-  t.className = 'toast ' + kind; t.textContent = msg;
+  t.className = 'toast glass ' + kind; t.textContent = msg;
   $('#toasts').appendChild(t);
   setTimeout(() => t.remove(), kind === 'err' ? 8000 : 4500);
 }
@@ -616,14 +616,34 @@ async function openBlocksManager() {
   const custom = info.specs.filter(s => s.origin === 'custom');
   const list = custom.length
     ? `<ul class="bp">${custom.map(s => `<li><b>${esc(s.title)}</b> <small>${esc(s.category)} · ${esc(s.kind)}</small></li>`).join('')}</ul>`
-    : '<p>No custom blocks installed yet.</p>';
+    : '<p>No custom action/condition blocks installed yet.</p>';
+  const plugins = Array.isArray(info.plugins) ? info.plugins : [];
+  const pluginList = plugins.length
+    ? `<ul class="bp">${plugins.map(p => `<li><b>${esc(p.name)}</b> <small>v${esc(p.version)} · ${p.block_count} blocks · ${esc(p.id)}</small>${p.author ? `<div>By ${esc(p.author)}</div>` : ''}${p.description ? `<div>${esc(p.description)}</div>` : ''}<button class="btn" data-v="uninstall-plugin:${esc(p.id)}">Uninstall plugin</button></li>`).join('')}</ul>`
+    : '<p>No plugins imported yet.</p>';
   const errs = info.errors.length ? `<p class="er">${info.errors.map(esc).join('<br>')}</p>` : '';
-  const c = await htmlModal('Custom blocks',
-    `<p>Folder: <code>${esc(info.dir)}</code></p>${list}${errs}<p>Custom blocks can run programs and scripts with your permissions. Only install packs you trust. See docs/ADDING_BLOCKS.md.</p>`,
-    [['close', 'Close'], ['folder', 'Open folder'], ['install', 'Install pack…', 'primary'], ['reload', 'Reload (restarts 00047)']]);
+  const c = await htmlModal('Actions, conditions & plugins',
+    `<h4>Imported actions and conditions</h4><p>These blocks are available in the editor after reloading.</p>${list}<h4>Plugins</h4><p>Plugin packages can bundle related actions and conditions. Plugin folder: <code>${esc(info.pluginsDir || '')}</code></p>${pluginList}${errs}<p><b>Security:</b> imported packs may run commands and PowerShell scripts with your Windows user permissions. Import only packages you trust; review the preview before installation.</p><p>See docs/ADDING_BLOCKS.md for the file format.</p>`,
+    [['close', 'Close'], ['folder', 'Open blocks folder'], ['install-blocks', 'Import actions/conditions…', 'primary'], ['install-plugin', 'Import plugin…', 'primary'], ['reload', 'Reload (restarts 00047)']]);
   if (c === 'folder') invoke('open_blocks_folder').catch(e => toast(String(e), 'err'));
-  else if (c === 'install') installPack();
+  else if (c === 'install-blocks') installPack();
+  else if (c === 'install-plugin') installPlugin();
   else if (c === 'reload') reloadBlocks();
+  else if (c?.startsWith('uninstall-plugin:')) {
+    const id = c.slice('uninstall-plugin:'.length);
+    const p = plugins.find(x => x.id === id);
+    const confirm = await modal({
+      title: 'Uninstall plugin?',
+      body: `"${p?.name || id}" will be removed. Restart 00047 to remove its blocks from the editor. Existing automations that use them may no longer run correctly.`,
+      buttons: [['cancel', 'Cancel'], ['go', 'Uninstall', 'danger']],
+    });
+    if (confirm !== 'go') return;
+    try {
+      await invoke('uninstall_plugin', { id });
+      toast('Plugin uninstalled. Choose "Reload" to apply the change.');
+      openBlocksManager();
+    } catch (e) { toast('Uninstall failed: ' + e, 'err'); }
+  }
 }
 
 async function installPack() {
@@ -632,13 +652,30 @@ async function installPack() {
     if (!pv) return;
     const rows = pv.blocks.map(b => `<li><b>${esc(b.title)}</b> <small>${esc(b.category)} · ${esc(b.kind)}</small><pre>${esc(b.command)}</pre></li>`).join('');
     const errs = pv.errors.length ? `<p class="er">Skipped: ${pv.errors.map(esc).join('<br>')}</p>` : '';
-    const c = await htmlModal(`Install "${pv.file}"?`,
-      `<p>These blocks will be able to run the following on this PC:</p><ul class="bp">${rows}</ul>${errs}`,
-      [['cancel', 'Cancel'], ['go', 'Install', 'primary']]);
+    const c = await htmlModal(`Import "${pv.file}"?`,
+      `<p>These action/condition blocks will be added to the editor:</p><ul class="bp">${rows}</ul>${errs}<p>They run with your Windows user permissions. Only import packs you trust.</p>`,
+      [['cancel', 'Cancel'], ['go', 'Import blocks', 'primary']]);
     if (c !== 'go') return;
     await invoke('block_pack_install', { path: pv.path });
-    toast('Installed. Choose "Reload" in Custom blocks to load it.');
-  } catch (e) { toast('Install failed: ' + e, 'err'); }
+    toast('Imported actions/conditions. Review the list and choose Reload to activate them.');
+    await openBlocksManager();
+  } catch (e) { toast('Block import failed: ' + e, 'err'); }
+}
+
+async function installPlugin() {
+  try {
+    const pv = await invoke('plugin_pack_preview');
+    if (!pv) return;
+    const plugin = pv.plugin;
+    const rows = pv.blocks.map(b => `<li><b>${esc(b.title)}</b> <small>${esc(b.category)} · ${esc(b.kind)}</small><pre>${esc(b.command)}</pre></li>`).join('');
+    const c = await htmlModal(`Import plugin "${plugin.name}"?`,
+      `<p><b>Version:</b> ${esc(plugin.version)} · <b>ID:</b> <code>${esc(plugin.id)}</code></p>${plugin.author ? `<p><b>Author:</b> ${esc(plugin.author)}</p>` : ''}${plugin.description ? `<p>${esc(plugin.description)}</p>` : ''}<p>This plugin contains ${pv.blocks.length} action/condition blocks:</p><ul class="bp">${rows}</ul><p><b>Security:</b> plugin blocks can launch programs or PowerShell with your Windows user permissions. Review every command above and install only plugins you trust. Importing does not run the blocks immediately.</p>`,
+      [['cancel', 'Cancel'], ['go', 'Import plugin', 'primary']]);
+    if (c !== 'go') return;
+    await invoke('plugin_pack_install', { path: pv.path });
+    toast(`Imported plugin "${plugin.name}". Review the list and choose Reload to activate its blocks.`);
+    await openBlocksManager();
+  } catch (e) { toast('Plugin import failed: ' + e, 'err'); }
 }
 
 async function reloadBlocks() {
@@ -648,136 +685,59 @@ async function reloadBlocks() {
   try { await invoke('restart_app'); } catch (e) { toast('Restart failed: ' + e, 'err'); }
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
+$('#btn-import-blocks').addEventListener('click', e => {
+  e.stopPropagation();
+  $('#pop-settings').hidden = true;
+  void installPack();
+});
+$('#btn-import-plugin').addEventListener('click', e => {
+  e.stopPropagation();
+  $('#pop-settings').hidden = true;
+  void installPlugin();
+});
 
-function createGlassGpuProcessor() {
-  const canvas = document.createElement('canvas');
-  const gl = canvas.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
-  if (!gl) return null;
-  const vertexSource = 'attribute vec2 a_position; varying vec2 v_uv; void main(){ v_uv = a_position * 0.5 + 0.5; gl_Position = vec4(a_position, 0.0, 1.0); }';
-  const fragmentSource = [
-    'precision mediump float;',
-    'uniform sampler2D u_frame;',
-    'uniform vec2 u_size;',
-    'uniform int u_count;',
-    'uniform vec4 u_regions[32];',
-    'uniform float u_blurs[32];',
-    'varying vec2 v_uv;',
-    'vec3 sampleBackdrop(vec2 uv, float radius) {',
-    '  vec2 d = vec2(radius / u_size.x, radius / u_size.y) * 0.72;',
-    '  vec3 c = texture2D(u_frame, clamp(uv, vec2(0.001), vec2(0.999))).rgb * 0.20;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x, 0.0), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x, 0.0), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(0.0,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(0.0, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.12;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x,  d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2( d.x, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  c += texture2D(u_frame, clamp(uv + vec2(-d.x, -d.y), vec2(0.001), vec2(0.999))).rgb * 0.08;',
-    '  return c;',
-    '}',
-    'void main(){',
-    '  vec2 uv = vec2(v_uv.x, 1.0 - v_uv.y);',
-    '  vec2 p = uv * u_size;',
-    '  vec3 sampled = texture2D(u_frame, clamp(uv, vec2(0.001), vec2(0.999))).rgb;',
-    '  for (int i = 0; i < 32; i++) {',
-    '    if (i >= u_count) break;',
-    '    vec4 r = u_regions[i];',
-    '    if (p.x >= r.x && p.y >= r.y && p.x <= r.x + r.z && p.y <= r.y + r.w) {',
-    '      sampled = sampleBackdrop(uv, u_blurs[i]);',
-    '      break;',
-    '    }',
-    '  }',
-    '  gl_FragColor = vec4(sampled, 1.0);',
-    '}'
-  ].join('\n');
-  const compile = (type, source) => {
-    const shader = gl.createShader(type);
-    if (!shader) throw new Error('WebGL could not allocate a shader');
-    gl.shaderSource(shader, source); gl.compileShader(shader);
-    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) { const message = gl.getShaderInfoLog(shader) || 'shader compilation failed'; gl.deleteShader(shader); throw new Error(message); }
-    return shader;
-  };
-  let program, texture, buffer;
-  try {
-    const vs = compile(gl.VERTEX_SHADER, vertexSource);
-    const fs = compile(gl.FRAGMENT_SHADER, fragmentSource);
-    program = gl.createProgram();
-    if (!program) throw new Error('WebGL could not allocate a program');
-    gl.attachShader(program, vs); gl.attachShader(program, fs); gl.linkProgram(program);
-    gl.deleteShader(vs); gl.deleteShader(fs);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || 'shader link failed');
-    texture = gl.createTexture(); buffer = gl.createBuffer();
-    if (!texture || !buffer) throw new Error('WebGL could not allocate backdrop resources');
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
-    gl.useProgram(program);
-    const position = gl.getAttribLocation(program, 'a_position');
-    gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
-    gl.uniform1i(gl.getUniformLocation(program, 'u_frame'), 0);
-    gl.uniform2f(gl.getUniformLocation(program, 'u_size'), 1, 1);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  } catch (error) {
-    console.warn('GPU backdrop blur unavailable:', error);
-    return null;
-  }
-
-  return (image, frame) => {
-    canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    gl.useProgram(program);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, image);
-    gl.uniform2f(gl.getUniformLocation(program, 'u_size'), canvas.width, canvas.height);
-    const dpr = window.devicePixelRatio || 1;
-    const ratioX = canvas.width / frame.screenWidth;
-    const ratioY = canvas.height / frame.screenHeight;
-    const regions = new Float32Array(32 * 4);
-    const blurs = new Float32Array(32);
-    let count = 0;
-    const elementSelector = '.card.glass, .acard.glass, .ctx.glass, .pop.glass, .mbox.glass, .ck-box.glass';
-    for (const el of document.querySelectorAll('.glass')) {
-      const r = el.getBoundingClientRect();
-      if (r.width < 2 || r.height < 2 || count >= 32) continue;
-      const x = (frame.windowX - frame.screenX + r.left * dpr) * ratioX;
-      const y = (frame.windowY - frame.screenY + r.top * dpr) * ratioY;
-      regions.set([x, y, r.width * dpr * ratioX, r.height * dpr * ratioY], count * 4);
-      const logicalBlur = el.matches(elementSelector) ? 20 : 15;
-      blurs[count] = logicalBlur * dpr * ratioX;
-      count++;
-    }
-    gl.uniform1i(gl.getUniformLocation(program, 'u_count'), count);
-    gl.uniform4fv(gl.getUniformLocation(program, 'u_regions[0]'), regions);
-    gl.uniform1fv(gl.getUniformLocation(program, 'u_blurs[0]'), blurs);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    return canvas.toDataURL('image/jpeg', 0.86);
-  };
-}
-
-function startGlassBackdrop() {
+function startGlassReflection() {
   if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
-  const root = document.documentElement;
-  let inFlight = false;
-  let loggedFailure = false;
-  let gpuProcess;
-  try { gpuProcess = createGlassGpuProcessor(); } catch (error) { console.warn('Could not start glass backdrop blur:', error); }
-  // Never present the raw desktop capture as a glass layer if GPU blur failed;
-  // that unblurred image is precisely the wash this effect is intended to avoid.
-  if (!gpuProcess) return;
 
-  const updateBackdropPositions = frame => {
-    const dpr = window.devicePixelRatio || 1;
-    const cropOriginX = (frame.screenX - frame.windowX) / dpr;
-    const cropOriginY = (frame.screenY - frame.windowY) / dpr;
-    root.style.setProperty('--glass-frame-size', (frame.screenWidth / dpr) + 'px ' + (frame.screenHeight / dpr) + 'px');
-    document.querySelectorAll('.glass').forEach(el => {
-      const rect = el.getBoundingClientRect();
-      el.style.setProperty('--glass-frame-x', (cropOriginX - rect.left) + 'px');
-      el.style.setProperty('--glass-frame-y', (cropOriginY - rect.top) + 'px');
-    });
+  // Main app background is intentionally not represented by a screenshot layer.
+  // Desktop pixels are applied only to the small set of LiquidGlass variant surfaces.
+  let inFlight = false;
+  let geometryDirty = true;
+  let lastGeometrySignature = '';
+  const reflectedSurfaceSelector = '.glass.liquidglass-variant:not(input[type="checkbox"]):not(input[type="radio"])';
+
+  // Update the shared image every captured frame, but compute each surface's
+  // crop only when layout/viewport geometry changes. Measuring every glass card
+  // after every screenshot forced repeated synchronous layout work at frame rate.
+  const reflectionRoot = document.documentElement;
+  reflectionRoot.style.setProperty('--liquidglass-reflection-image', 'none');
+  const markGeometryDirty = () => { geometryDirty = true; };
+  const geometryObserver = new MutationObserver(markGeometryDirty);
+  geometryObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'hidden'],
+  });
+
+  const updateSurfaceGeometry = (frame, scale) => {
+    const sampleWidth = frame.screenWidth / scale;
+    const sampleHeight = frame.screenHeight / scale;
+    const originX = (frame.screenX - frame.windowX) / scale;
+    const originY = (frame.screenY - frame.windowY) / scale;
+
+    for (const surface of document.querySelectorAll(reflectedSurfaceSelector)) {
+      const rect = surface.getBoundingClientRect();
+      if (
+        rect.width <= 0 || rect.height <= 0 ||
+        rect.right <= 0 || rect.bottom <= 0 ||
+        rect.left >= window.innerWidth || rect.top >= window.innerHeight
+      ) continue;
+
+      surface.style.setProperty('--liquidglass-reflection-size', `${sampleWidth}px ${sampleHeight}px`);
+      surface.style.setProperty('--liquidglass-reflection-position', `${originX - rect.left}px ${originY - rect.top}px`);
+    }
+    geometryDirty = false;
   };
 
   const capture = async () => {
@@ -785,29 +745,83 @@ function startGlassBackdrop() {
     inFlight = true;
     try {
       const frame = await invoke('capture_glass_frame');
-      if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) return;
-      let backdropFrame = frame.dataUrl;
-      if (gpuProcess) {
-        const image = new Image();
-        image.src = frame.dataUrl;
-        await image.decode();
-        backdropFrame = gpuProcess(image, frame);
+      if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) {
+        throw new Error('Desktop reflection capture returned an empty frame.');
       }
-      root.style.setProperty('--glass-backdrop-frame', 'url("' + backdropFrame + '")');
-      updateBackdropPositions(frame);
-      root.classList.add('glass-backdrop-ready');
-      loggedFailure = false;
+
+      const scale = window.devicePixelRatio || 1;
+      const signature = `${frame.screenWidth}x${frame.screenHeight}@${scale}`;
+      if (geometryDirty || signature !== lastGeometrySignature) {
+        updateSurfaceGeometry(frame, scale);
+        lastGeometrySignature = signature;
+      }
+
+      // Only this one shared value changes on each frame; the main app surface
+      // remains transparent and is never painted with the screenshot.
+      reflectionRoot.style.setProperty('--liquidglass-reflection-image', `url("${frame.dataUrl}")`);
     } catch (error) {
-      root.classList.remove('glass-backdrop-ready');
-      if (!loggedFailure) { console.warn('Glass backdrop capture unavailable:', error); loggedFailure = true; }
-    } finally { inFlight = false; }
+      console.warn('LiquidGlass surface reflection unavailable:', error);
+    } finally {
+      inFlight = false;
+    }
   };
 
-  // Match the source theme: 15px backdrop blur for the shell, 20px for elements,
-  // with the source's separate low-opacity tint and gradient border treatment.
-  capture();
-  window.setInterval(capture, 120);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) capture(); });
+  // Capturing and encoding every display refresh reduced responsiveness even
+  // though native capture ran off-thread. Rate-limit reflected pixels independently
+  // from the UI compositor; the app UI itself continues to render at display rate.
+  const refreshSelect = $('#set-glass-refresh');
+  const rateModes = new Set(['off', '5', '10', '20']);
+  try {
+    const saved = localStorage.getItem('00047.glassReflectionRate');
+    if (rateModes.has(saved) && refreshSelect) refreshSelect.value = saved;
+  } catch { /* Storage can be unavailable in restricted WebView profiles. */ }
+
+  let captureTimer = 0;
+  const applyCaptureRate = () => {
+    if (captureTimer) clearInterval(captureTimer);
+    captureTimer = 0;
+
+    const mode = rateModes.has(refreshSelect?.value) ? refreshSelect.value : '10';
+    try { localStorage.setItem('00047.glassReflectionRate', mode); } catch { /* Optional preference persistence. */ }
+    const fps = Number(mode);
+    if (!(fps > 0)) return; // Off means no recurring GDI capture work.
+    void capture();
+    captureTimer = window.setInterval(() => {
+      if (!document.hidden) void capture();
+    }, Math.round(1000 / fps));
+  };
+
+  refreshSelect?.addEventListener('change', applyCaptureRate);
+  window.addEventListener('resize', markGeometryDirty, { passive: true });
+  window.addEventListener('scroll', markGeometryDirty, { passive: true, capture: true });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      markGeometryDirty();
+      if (refreshSelect?.value !== 'off') void capture();
+    }
+  });
+  applyCaptureRate();
+}
+
+function setupGlassMaterials() {
+  const selector = '.glass, button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
+  const apply = root => {
+    if (root.nodeType !== 1) return;
+    if (root.matches(selector)) {
+      root.classList.add('glass', 'liquidglass-variant');
+      root.classList.remove('liquidglass');
+    }
+    root.querySelectorAll?.(selector).forEach(el => {
+      el.classList.add('glass', 'liquidglass-variant');
+      el.classList.remove('liquidglass');
+    });
+  };
+  apply(document.documentElement);
+  new MutationObserver(records => {
+    for (const record of records) {
+      for (const node of record.addedNodes) apply(node);
+    }
+  }).observe(document.body, { childList: true, subtree: true });
 }
 
 // ---------- init ----------
@@ -819,5 +833,6 @@ function startGlassBackdrop() {
   } catch (e) { toast('Could not load data: ' + e, 'err'); }
   await bindEvents();
   show('overview');
-  startGlassBackdrop();
+  setupGlassMaterials();
+  startGlassReflection();
 })();
