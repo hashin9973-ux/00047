@@ -345,6 +345,7 @@ textarea.glass.liquidglass-variant {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
   background-size: 128px 128px;
   background-repeat: repeat;
+  opacity: var(--windhawk-noise-opacity);
   pointer-events: none;
 }
 
@@ -374,6 +375,5 @@ textarea.glass.liquidglass-variant {
   .glass.liquidglass-variant::after {
     content: none !important;
     display: none !important;
-  }  opacity: var(--windhawk-noise-opacity);
-
+  }
 }
