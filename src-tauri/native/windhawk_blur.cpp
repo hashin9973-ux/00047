@@ -10,6 +10,7 @@
 #include <d2d1effects.h>
 #include <DispatcherQueue.h>
 #include <windows.ui.composition.interop.h>
+#undef GetCurrentTime
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Numerics.h>
@@ -35,6 +36,10 @@ namespace wge = winrt::Windows::Graphics::Effects;
 namespace muc = winrt::Windows::UI::Composition;
 namespace Media = winrt::Windows::UI::Xaml::Media;
 namespace awge = ABI::Windows::Graphics::Effects;
+
+template <> inline constexpr winrt::guid winrt::impl::guid_v<winrt::impl::abi_t<winrt::Windows::Foundation::IPropertyValue>>{
+    winrt::impl::guid_v<winrt::Windows::Foundation::IPropertyValue>
+};
 
 typedef enum MY_D2D1_GAUSSIANBLUR_OPTIMIZATION
 {
