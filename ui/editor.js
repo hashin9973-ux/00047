@@ -294,14 +294,40 @@ export class Editor {
   select(ids) { this.setSel(new Set(ids)); }
   toggle(id) { const s = new Set(this.sel); s.has(id) ? s.delete(id) : s.add(id); this.setSel(s); }
   selectEdge(id) { this.setSel(new Set()); this.selEdge = id; this.scheduleWires(); }
-  cutWire(id) {
+  cutWire(id, clientX, clientY) {
     const wire = this.wires.get(id), edge = this.auto.edges.find(e => e.id === id);
-    if (!wire || !edge) return;
+    if (!wire || !edge || wire.cutting) return;
+    const sim = wire.physics;
+    const particles = sim?.particles;
+    if (particles?.length > 2) {
+      const target = Number.isFinite(clientX) && Number.isFinite(clientY)
+        ? this.toWorld(clientX, clientY)
+        : wire.mid;
+      let cutIndex = 1, best = Infinity;
+      for (let i = 1; i < particles.length - 1; i++) {
+        const d = Math.hypot(particles[i].x - target.x, particles[i].y - target.y);
+        if (d < best) { best = d; cutIndex = i; }
+      }
+      const cut = { ...particles[cutIndex], px: particles[cutIndex].x, py: particles[cutIndex].y };
+      const makeTail = points => {
+        if (points.length < 2) return;
+        const copied = points.map(p => ({ ...p }));
+        copied[copied.length - 1].px = copied[copied.length - 1].x;
+        copied[copied.length - 1].py = copied[copied.length - 1].y;
+        this.wireDebris.push({ particles: copied, rest: sim.rest, born: performance.now(), path: svg('path', { class: 'wire wire-debris k-' + edge.kind }) });
+        this.wl.appendChild(this.wireDebris[this.wireDebris.length - 1].path);
+      };
+      makeTail(particles.slice(0, cutIndex + 1).map(p => ({ ...p })).concat([{ ...cut }]));
+      makeTail([{ ...cut }, ...particles.slice(cutIndex + 1).map(p => ({ ...p }))]);
+    }
     const blade = svg('text', { class: 'wire-scissor', 'text-anchor': 'middle', 'dominant-baseline': 'central' });
     blade.textContent = '✂';
-    const mid = wire.mid || {x:0,y:0};
-    blade.setAttribute('x', mid.x); blade.setAttribute('y', mid.y);
+    const cutPoint = particles?.length
+      ? particles.reduce((best, p) => !best || Math.hypot(p.x - this.toWorld(clientX, clientY).x, p.y - this.toWorld(clientX, clientY).y) < Math.hypot(best.x - this.toWorld(clientX, clientY).x, best.y - this.toWorld(clientX, clientY).y) ? p : best, null)
+      : wire.mid || {x:0,y:0};
+    blade.setAttribute('x', cutPoint.x); blade.setAttribute('y', cutPoint.y);
     this.wl.appendChild(blade);
+    wire.cutting = true;
     wire.vis.classList.add('cutting'); wire.hit.style.pointerEvents = 'none';
     requestAnimationFrame(() => { wire.vis.classList.add('cut-animate'); blade.classList.add('snip'); });
     setTimeout(() => {
@@ -495,8 +521,8 @@ if (A.kind === 'act.loop') {
   initWirePhysics(e, a, b) {
     const distance = Math.hypot(b.x - a.x, b.y - a.y);
     const segments = clamp(Math.ceil(distance / 24), 8, 32);
-    const slack = Math.max(distance * 1.16, distance + 24);
-    const rest = slack / segments;
+    const slack = clamp(distance * 0.10, 6, 36);
+    const rest = (distance + slack) / segments;
     const particles = [];
     for (let i = 0; i <= segments; i++) {
       const t = i / segments;
@@ -508,8 +534,10 @@ if (A.kind === 'act.loop') {
     return { particles, rest, segments, a: { ...a }, b: { ...b } };
   }
 
-  collideWireParticle(p, rects) {
+  collideWireParticle(p, rects, anchors = []) {
     const radius = 4;
+    // Keep a small clear lead-in at each connector, but let the cable collide with the rest of both connected blocks.
+    if (anchors.some(a => Math.hypot(p.x - a.x, p.y - a.y) < 25)) return;
     for (const r of rects) {
       if (p.x < r[0] - radius || p.x > r[2] + radius || p.y < r[1] - radius || p.y > r[3] + radius) continue;
       const left = Math.abs(p.x - (r[0] - radius));
@@ -537,22 +565,25 @@ if (A.kind === 'act.loop') {
       const u = i / (ps.length - 1);
       ps[i].x += da.x * (1 - u) + db.x * u;
       ps[i].y += da.y * (1 - u) + db.y * u;
-      const vx = (ps[i].x - ps[i].px) * 0.985;
-      const vy = (ps[i].y - ps[i].py) * 0.985;
+      // Heavier cable: stronger gravity, more damping, and less jitter from endpoint motion.
+      const vx = (ps[i].x - ps[i].px) * 0.91;
+      const vy = (ps[i].y - ps[i].py) * 0.91;
       ps[i].px = ps[i].x;
       ps[i].py = ps[i].y;
       const scale = clamp(dt / 16.667, 0.5, 2);
       ps[i].x += vx;
-      ps[i].y += vy + 0.22 * scale * scale;
+      ps[i].y += vy + 0.62 * scale * scale;
     }
     const last = ps.length - 1;
     ps[0].x = a.x; ps[0].y = a.y; ps[0].px = a.x; ps[0].py = a.y;
     ps[last].x = b.x; ps[last].y = b.y; ps[last].px = b.x; ps[last].py = b.y;
 
-    const rects = this.calcRects()
-      .filter(o => o.id !== f.id && o.id !== t.id)
-      .map(o => o.r);
-    for (let iteration = 0; iteration < 7; iteration++) {
+    // Include connected blocks too, so the cable cannot pass through their bodies.
+    const rects = this.calcRects().map(o => o.r);
+    const anchors = [a, b];
+    const distance = Math.hypot(b.x - a.x, b.y - a.y);
+    sim.rest = (distance + clamp(distance * 0.10, 6, 36)) / last;
+    for (let iteration = 0; iteration < 9; iteration++) {
       // Fixed-length segments constrain the cable while gravity creates a natural sag.
       for (let i = 0; i < last; i++) {
         const p = ps[i], q = ps[i + 1];
@@ -566,7 +597,7 @@ if (A.kind === 'act.loop') {
       }
       ps[0].x = a.x; ps[0].y = a.y;
       ps[last].x = b.x; ps[last].y = b.y;
-      for (let i = 1; i < last; i++) this.collideWireParticle(ps[i], rects);
+      for (let i = 1; i < last; i++) this.collideWireParticle(ps[i], rects, anchors);
     }
     sim.a = { ...a }; sim.b = { ...b };
     let d = `M${ps[0].x},${ps[0].y}`;
@@ -647,6 +678,8 @@ if (A.kind === 'act.loop') {
 
   drawWires() {
     const now = performance.now();
+    if (!this.wireDebris) this.wireDebris = [];
+    this.updateWireDebris(now);
     const dt = this.lastPhysicsTime ? Math.min(32, now - this.lastPhysicsTime) : 16.667;
     this.lastPhysicsTime = now;
     this.rcache = this.calcRects();
@@ -662,7 +695,7 @@ if (A.kind === 'act.loop') {
         w.hit.addEventListener('pointerdown', ev => { ev.stopPropagation(); ev.preventDefault(); this.selectEdge(id); });
         w.hit.addEventListener('pointerenter', () => { if (this.wires.get(id)) this.wires.get(id).vis.classList.add('hover'); });
         w.hit.addEventListener('pointerleave', () => { if (this.wires.get(id)) this.wires.get(id).vis.classList.remove('hover'); });
-        w.hit.addEventListener('contextmenu', ev => { ev.preventDefault(); ev.stopPropagation(); this.cutWire(id); });
+        w.hit.addEventListener('contextmenu', ev => { ev.preventDefault(); ev.stopPropagation(); this.cutWire(id, ev.clientX, ev.clientY); });
         this.wl.appendChild(w.hit); this.wl.appendChild(w.vis);
         this.wires.set(e.id, w);
       }
@@ -675,8 +708,46 @@ if (A.kind === 'act.loop') {
     for (const [id, w] of this.wires) if (!seen.has(id)) { w.hit.remove(); w.vis.remove(); this.wires.delete(id); }
     this.placeEdgeUI();
     // Keep the rope simulation alive only while the editor is visible.
-    if (this.active && this.auto.edges.length && !this.raf) {
+    if (this.active && (this.auto.edges.length || this.wireDebris.length) && !this.raf) {
       this.raf = requestAnimationFrame(() => { this.raf = 0; this.drawWires(); });
+    }
+  }
+
+  updateWireDebris(now) {
+    if (!this.wireDebris) this.wireDebris = [];
+    const gravity = 0.62;
+    for (let i = this.wireDebris.length - 1; i >= 0; i--) {
+      const tail = this.wireDebris[i], ps = tail.particles, last = ps.length - 1;
+      const age = now - tail.born;
+      if (age > 2200 || ps.length < 2) {
+        tail.path.remove();
+        this.wireDebris.splice(i, 1);
+        continue;
+      }
+      for (let j = 0; j <= last; j++) {
+        const p = ps[j];
+        const vx = (p.x - p.px) * 0.94, vy = (p.y - p.py) * 0.94;
+        p.px = p.x; p.py = p.y;
+        p.x += vx; p.y += vy + gravity;
+      }
+      for (let iteration = 0; iteration < 4; iteration++) {
+        for (let j = 0; j < last; j++) {
+          const p = ps[j], q = ps[j + 1];
+          const dx = q.x - p.x, dy = q.y - p.y;
+          const d = Math.hypot(dx, dy) || 0.001;
+          const correction = (d - tail.rest) / d;
+          p.x += dx * correction * 0.5; p.y += dy * correction * 0.5;
+          q.x -= dx * correction * 0.5; q.y -= dy * correction * 0.5;
+        }
+      }
+      let d = `M${ps[0].x},${ps[0].y}`;
+      for (let j = 1; j < last; j++) {
+        const p = ps[j], q = ps[j + 1];
+        d += ` Q${p.x},${p.y} ${(p.x + q.x) / 2},${(p.y + q.y) / 2}`;
+      }
+      d += ` L${ps[last].x},${ps[last].y}`;
+      tail.path.setAttribute('d', d);
+      tail.path.style.opacity = String(Math.max(0, 1 - age / 2200));
     }
   }
 
