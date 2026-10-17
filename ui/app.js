@@ -650,197 +650,31 @@ async function reloadBlocks() {
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
 function startGlassBackdrop() {
-  if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
-
-  const reflectionRoot = document.documentElement;
-  reflectionRoot.style.setProperty('--liquidglass-reflection-image', 'none');
-
-  const refreshSelect = $('#set-glass-refresh');
   const refreshStatus = $('#glass-refresh-status');
-  const allowedModes = new Set(['dynamic', '60', '120', 'off']);
-  let mode = 'dynamic';
-  try {
-    const saved = localStorage.getItem('00047.glassRefreshMode');
-    const legacy = localStorage.getItem('00047.glassReflectionRate');
-    // Older builds only offered 5/10/20 FPS. Preserve a legacy Off preference;
-    // migrate old numeric caps to Dynamic rather than keeping a slow rate.
-    mode = saved === 'off' || (!saved && legacy === 'off')
-      ? 'off'
-      : (allowedModes.has(saved) ? saved : 'dynamic');
-  } catch { /* Use Dynamic when local storage is unavailable. */ }
-  if (refreshSelect) refreshSelect.value = mode;
-
-  let inFlight = false;
-  let loggedFailure = false;
-  let geometryDirty = true;
-  let lastGeometrySignature = '';
-  let frameRequest = 0;
-  let lastScheduledAt = -Infinity;
-  let metricStart = 0;
-  let completedFrames = 0;
-  const reflectedSurfaceSelector = '.glass.liquidglass-variant:not(input[type="checkbox"]):not(input[type="radio"])';
-
-  const markGeometryDirty = () => { geometryDirty = true; };
-  const withoutReflectionOffsets = style => String(style || '')
-    .replace(/--liquidglass-reflection-size\s*:[^;]*;?/g, '')
-    .replace(/--liquidglass-reflection-position\s*:[^;]*;?/g, '')
-    .trim();
-  const geometryObserver = new MutationObserver(records => {
-    const geometryChanged = records.some(record => {
-      if (
-        record.type === 'attributes' &&
-        record.attributeName === 'style' &&
-        record.target.matches?.(reflectedSurfaceSelector)
-      ) {
-        return withoutReflectionOffsets(record.oldValue) !==
-          withoutReflectionOffsets(record.target.getAttribute('style'));
-      }
-      return true;
-    });
-    if (geometryChanged) markGeometryDirty();
-  });
-  geometryObserver.observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeOldValue: true,
-    attributeFilter: ['class', 'hidden', 'style'],
-  });
-
-  const updateSurfaceGeometry = frame => {
-    const scale = window.devicePixelRatio || 1;
-    const sampleWidth = frame.screenWidth / scale;
-    const sampleHeight = frame.screenHeight / scale;
-    const originX = (frame.screenX - frame.windowX) / scale;
-    const originY = (frame.screenY - frame.windowY) / scale;
-
-    for (const surface of document.querySelectorAll(reflectedSurfaceSelector)) {
-      const rect = surface.getBoundingClientRect();
-      if (
-        rect.width <= 0 || rect.height <= 0 ||
-        rect.right <= 0 || rect.bottom <= 0 ||
-        rect.left >= window.innerWidth || rect.top >= window.innerHeight
-      ) continue;
-
-      surface.style.setProperty('--liquidglass-reflection-size', sampleWidth + 'px ' + sampleHeight + 'px');
-      surface.style.setProperty('--liquidglass-reflection-position', (originX - rect.left) + 'px ' + (originY - rect.top) + 'px');
-    }
-    geometryDirty = false;
-  };
-
-  const showRefreshStatus = (now, gotFrame) => {
-    if (!refreshStatus) return;
-    if (mode === 'off') {
-      refreshStatus.textContent = 'Paused · holding the last captured backdrop.';
-      return;
-    }
-    if (gotFrame) completedFrames++;
-    if (!metricStart) metricStart = now;
-    const elapsed = now - metricStart;
-    if (elapsed >= 1000) {
-      const measured = Math.round(completedFrames * 1000 / elapsed);
-      const target = mode === 'dynamic' ? 'Dynamic target' : mode + ' FPS target';
-      refreshStatus.textContent = 'Measured ' + measured + ' FPS · ' + target;
-      metricStart = now;
-      completedFrames = 0;
-    } else if (!refreshStatus.textContent || refreshStatus.textContent.startsWith('Paused')) {
-      refreshStatus.textContent = 'Measuring capture throughput…';
-    }
-  };
-
-  const capture = async () => {
-    if (inFlight || document.hidden || mode === 'off') return;
-    inFlight = true;
-    try {
-      const frame = await invoke('capture_glass_frame');
-      if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) {
-        throw new Error('Desktop capture returned an empty frame.');
-      }
-
-      const scale = window.devicePixelRatio || 1;
-      const signature = frame.screenWidth + 'x' + frame.screenHeight + '@' + scale;
-      if (geometryDirty || signature !== lastGeometrySignature) {
-        updateSurfaceGeometry(frame);
-        lastGeometrySignature = signature;
-      }
-
-      reflectionRoot.style.setProperty('--liquidglass-reflection-image', 'url("' + frame.dataUrl + '")');
-      loggedFailure = false;
-      showRefreshStatus(performance.now(), true);
-    } catch (error) {
-      if (!loggedFailure) {
-        console.warn('LiquidGlass desktop capture unavailable:', error);
-        loggedFailure = true;
-      }
-      showRefreshStatus(performance.now(), false);
-    } finally {
-      inFlight = false;
-    }
-  };
-
-  const stopFrames = () => {
-    if (frameRequest) window.cancelAnimationFrame(frameRequest);
-    frameRequest = 0;
-  };
-  const tick = timestamp => {
-    frameRequest = 0;
-    if (document.hidden || mode === 'off') return;
-
-    const targetInterval = mode === 'dynamic' ? 0 : 1000 / Number(mode);
-    if (!inFlight && timestamp - lastScheduledAt >= targetInterval) {
-      lastScheduledAt = timestamp;
-      void capture();
-    }
-    frameRequest = window.requestAnimationFrame(tick);
-  };
-  const startFrames = () => {
-    if (!document.hidden && mode !== 'off' && !frameRequest) {
-      frameRequest = window.requestAnimationFrame(tick);
-    }
-  };
-
-  const applyRefreshMode = () => {
-    mode = allowedModes.has(refreshSelect?.value) ? refreshSelect.value : 'dynamic';
-    try { localStorage.setItem('00047.glassRefreshMode', mode); } catch { /* Preference is optional. */ }
-    metricStart = 0;
-    completedFrames = 0;
-    if (mode === 'off') {
-      stopFrames();
-      showRefreshStatus(performance.now(), false);
-      return;
-    }
-    if (refreshStatus) refreshStatus.textContent = 'Measuring capture throughput…';
-    lastScheduledAt = -Infinity;
-    void capture();
-    startFrames();
-  };
-
-  refreshSelect?.addEventListener('change', applyRefreshMode);
-  window.addEventListener('resize', markGeometryDirty, { passive: true });
-  window.addEventListener('scroll', markGeometryDirty, { passive: true, capture: true });
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      stopFrames();
-    } else {
-      markGeometryDirty();
-      if (mode !== 'off') {
-        void capture();
-        startFrames();
-      }
-    }
-  });
-
-  if (mode === 'off') {
-    mode = 'dynamic';
-    void capture().finally(() => {
-      mode = 'off';
-      showRefreshStatus(performance.now(), false);
-    });
-  } else {
-    if (refreshStatus) refreshStatus.textContent = 'Measuring capture throughput…';
-    void capture();
-    startFrames();
+  if (!appWindow) {
+    if (refreshStatus) refreshStatus.textContent = 'Native window effects are unavailable in this runtime.';
+    return;
   }
+  if (!/Win/i.test(navigator.userAgent)) {
+    if (refreshStatus) refreshStatus.textContent = 'Native Windows Acrylic is available on Windows only.';
+    return;
+  }
+  if (typeof appWindow.setEffects !== 'function') {
+    if (refreshStatus) refreshStatus.textContent = 'This Tauri runtime does not expose native window effects.';
+    return;
+  }
+
+  // Use the Windows compositor's live Acrylic material. No desktop screenshots,
+  // image conversion, CSS image blur, or per-frame refresh loop is involved.
+  if (refreshStatus) refreshStatus.textContent = 'Applying native Windows Acrylic…';
+  appWindow.setEffects({ effects: ['acrylic'] })
+    .then(() => {
+      if (refreshStatus) refreshStatus.textContent = 'Native Windows Acrylic · compositor-driven live blur · window-wide';
+    })
+    .catch(error => {
+      console.error('Native Windows Acrylic could not be applied:', error);
+      if (refreshStatus) refreshStatus.textContent = 'Native blur failed: ' + String(error?.message || error);
+    });
 }
 
 function setupGlassMaterials() {
