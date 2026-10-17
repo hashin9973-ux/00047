@@ -666,8 +666,8 @@ function startGlassBackdrop() {
 
   const markGeometryDirty = () => { geometryDirty = true; };
   const withoutReflectionOffsets = style => String(style || '')
-    .replace(/--liquidglass-reflection-size\\s*:[^;]*;?/g, '')
-    .replace(/--liquidglass-reflection-position\\s*:[^;]*;?/g, '')
+    .replace(/--liquidglass-reflection-size\s*:[^;]*;?/g, '')
+    .replace(/--liquidglass-reflection-position\s*:[^;]*;?/g, '')
     .trim();
   const geometryObserver = new MutationObserver(records => {
     // Updating our two inline image-position variables must not mark geometry
