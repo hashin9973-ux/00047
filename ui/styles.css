@@ -347,3 +347,19 @@ textarea.glass.liquidglass-variant {
 .tbl tr[data-act=open]:hover {
   background: transparent !important;
 }
+
+
+/* Settings panel: compact controls for reflection performance and imported extensions. */
+.settings-choice {
+  display: grid !important;
+  align-items: stretch !important;
+  gap: 6px !important;
+}
+#pop-settings #set-glass-refresh {
+  width: 100%;
+  min-width: 0;
+}
+#pop-settings > button {
+  width: 100%;
+  text-align: left;
+}
