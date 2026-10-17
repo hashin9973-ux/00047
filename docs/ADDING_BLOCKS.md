@@ -30,7 +30,7 @@ A file may hold one block, an array of blocks, or `{ "blocks": [ ... ] }`.
 
 ## Plugin packages
 
-Use **Settings → Import plugin…** to pick a plugin-package `.json` file. A plugin package groups actions and conditions under a name, version, author, and ID. The app previews every command/script and asks for confirmation before installing. Installed plugin packs are stored separately in the app's `plugins` folder; choose **Reload** to activate or remove their blocks.
+Use **Settings → Import plugin…** to pick a plugin-package `.json` file. A plugin package groups actions and conditions under a name, version, author, and ID. The app previews every command/script and asks for confirmation before installing. Installed plugin packs are stored separately in the app's `plugins` folder; choose **Reload** to activate or remove their blocks. A ready-to-import example is `docs/examples/plugins/sample-plugin.json`; it contains one weekday condition and one log-note action, and does not change files or system settings.
 
 A plugin package has this shape:
 
