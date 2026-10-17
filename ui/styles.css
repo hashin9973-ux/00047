@@ -299,3 +299,25 @@ textarea.glass.liquidglass-variant {
 .res u { background: var(--mu) !important; }
 .settings-choice { display: grid !important; align-items: stretch !important; gap: 6px !important; }
 #pop-settings > button { width: 100%; text-align: left; }
+
+
+/* The native Windhawk Composition overlay draws the backdrop material. Keep the WebView layer clear so text and controls stay sharp. */
+.glass.liquidglass-variant {
+  background: transparent !important;
+  background-color: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+.glass.liquidglass-variant::before,
+.glass.liquidglass-variant::after {
+  content: none !important;
+  display: none !important;
+}
+input.glass.liquidglass-variant,
+select.glass.liquidglass-variant,
+textarea.glass.liquidglass-variant {
+  background: transparent !important;
+  background-color: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
