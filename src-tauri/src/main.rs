@@ -398,7 +398,7 @@ fn main() {
                     reposition_native_blur(&w);
                 }
             }
-            tauri::WindowEvent::Moved(_) => {
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Focused(true) => {
                 #[cfg(target_os = "windows")]
                 if let Some(w) = window.app_handle().get_webview_window(window.label()) {
                     reposition_native_blur(&w);
