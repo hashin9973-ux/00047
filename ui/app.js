@@ -684,6 +684,16 @@ async function reloadBlocks() {
   try { await invoke('restart_app'); } catch (e) { toast('Restart failed: ' + e, 'err'); }
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
+$('#btn-import-blocks').addEventListener('click', e => {
+  e.stopPropagation();
+  $('#pop-settings').hidden = true;
+  void installPack();
+});
+$('#btn-import-plugin').addEventListener('click', e => {
+  e.stopPropagation();
+  $('#pop-settings').hidden = true;
+  void installPlugin();
+});
 
 function startGlassReflection() {
   if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
@@ -755,24 +765,41 @@ function startGlassReflection() {
     }
   };
 
-  // Native GDI capture/JPEG encoding runs on a blocking worker thread, not
-  // the UI thread. Schedule at the WebView's refresh cadence and skip overlap;
-  // the actual rate is limited only by capture throughput, not an extra timer.
-  const tick = () => {
-    if (!document.hidden) void capture();
-    window.requestAnimationFrame(tick);
+  // Capturing and encoding every display refresh reduced responsiveness even
+  // though native capture ran off-thread. Rate-limit reflected pixels independently
+  // from the UI compositor; the app UI itself continues to render at display rate.
+  const refreshSelect = $('#set-glass-refresh');
+  const rateModes = new Set(['off', '5', '10', '20']);
+  try {
+    const saved = localStorage.getItem('00047.glassReflectionRate');
+    if (rateModes.has(saved) && refreshSelect) refreshSelect.value = saved;
+  } catch { /* Storage can be unavailable in restricted WebView profiles. */ }
+
+  let captureTimer = 0;
+  const applyCaptureRate = () => {
+    if (captureTimer) clearInterval(captureTimer);
+    captureTimer = 0;
+
+    const mode = rateModes.has(refreshSelect?.value) ? refreshSelect.value : '10';
+    try { localStorage.setItem('00047.glassReflectionRate', mode); } catch { /* Optional preference persistence. */ }
+    const fps = Number(mode);
+    if (!(fps > 0)) return; // Off means no recurring GDI capture work.
+    void capture();
+    captureTimer = window.setInterval(() => {
+      if (!document.hidden) void capture();
+    }, Math.round(1000 / fps));
   };
 
+  refreshSelect?.addEventListener('change', applyCaptureRate);
   window.addEventListener('resize', markGeometryDirty, { passive: true });
   window.addEventListener('scroll', markGeometryDirty, { passive: true, capture: true });
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       markGeometryDirty();
-      void capture();
+      if (refreshSelect?.value !== 'off') void capture();
     }
   });
-  void capture();
-  window.requestAnimationFrame(tick);
+  applyCaptureRate();
 }
 
 function setupGlassMaterials() {
