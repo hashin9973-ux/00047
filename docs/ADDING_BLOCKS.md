@@ -4,9 +4,10 @@ A block is a Condition (IF/ELSE) or an Action. Pick the route that fits.
 
 ## 1. Users: a block pack (JSON, no coding)
 
-Put a `.json` file in the blocks folder (Settings → Custom blocks → Open folder), then choose **Reload**
-(00047 restarts). Or use **Install pack…**, which shows exactly what each block will run before copying it.
-An example is in `docs/examples/blocks/sample-pack.json`.
+Use **Settings → Import actions / conditions…** to pick a block-pack `.json` file. The app previews
+the commands/scripts before copying it. You can also open **Manage custom blocks…** to inspect installed blocks,
+open the blocks folder, and choose **Reload** (00047 restarts) to activate imports.
+An example pack is in `docs/examples/blocks/sample-pack.json`.
 
 ```json
 {
@@ -29,7 +30,7 @@ A file may hold one block, an array of blocks, or `{ "blocks": [ ... ] }`.
 
 ## Plugin packages
 
-Use **Settings → Custom blocks → Import plugin…** to import a plugin package JSON. A plugin package groups actions and conditions under a name, version, author, and ID. The app previews every command/script and asks for confirmation before installing. Installed plugin packs are stored separately in the app's `plugins` folder; choose **Reload** to activate or remove their blocks.
+Use **Settings → Import plugin…** to pick a plugin-package `.json` file. A plugin package groups actions and conditions under a name, version, author, and ID. The app previews every command/script and asks for confirmation before installing. Installed plugin packs are stored separately in the app's `plugins` folder; choose **Reload** to activate or remove their blocks.
 
 A plugin package has this shape:
 
