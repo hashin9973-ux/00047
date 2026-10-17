@@ -63,8 +63,9 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
     use std::{
         ffi::c_void,
         mem::size_of,
-        ptr::{null, null_mut},
+        ptr::null_mut,
         slice,
+        sync::atomic::Ordering,
     };
 
     #[repr(C)]
