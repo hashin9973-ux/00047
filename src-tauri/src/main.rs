@@ -22,6 +22,9 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
+#[cfg(target_os = "windows")]
+static DISPLAY_EXCLUSION_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 
 
 #[derive(serde::Serialize)]
@@ -62,12 +65,7 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
         mem::size_of,
         ptr::{null, null_mut},
         slice,
-        sync::atomic::{AtomicU8, Ordering},
     };
-
-    // 0 = not attempted, 1 = capture exclusion active, 2 = unavailable.
-    // Fail closed: never display pixels if the application window cannot be excluded.
-    static DISPLAY_EXCLUSION_STATE: AtomicU8 = AtomicU8::new(0);
 
     #[repr(C)]
     struct BitmapInfoHeader {
@@ -244,6 +242,50 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
             window_x: window_pos.x,
             window_y: window_pos.y,
         })
+    }
+}
+
+
+#[tauri::command]
+fn set_glass_capture_enabled(
+    window: tauri::WebviewWindow,
+    enabled: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::{ffi::c_void, sync::atomic::Ordering};
+
+        #[link(name = "user32")]
+        extern "system" {
+            fn SetWindowDisplayAffinity(hwnd: *mut c_void, affinity: u32) -> i32;
+        }
+
+        let hwnd = window.hwnd()
+            .map_err(|e| format!("Native window handle unavailable: {e}"))?.0;
+        let affinity = if enabled { 0x00000011 } else { 0 };
+        unsafe {
+            if SetWindowDisplayAffinity(hwnd, affinity) == 0 {
+                if enabled {
+                    DISPLAY_EXCLUSION_STATE.store(2, Ordering::Release);
+                }
+                return Err(if enabled {
+                    "Windows could not exclude 00047 from screenshots; desktop blur is unavailable.".into()
+                } else {
+                    "Windows could not restore normal screen capture for 00047.".into()
+                });
+            }
+        }
+        DISPLAY_EXCLUSION_STATE.store(if enabled { 1 } else { 0 }, Ordering::Release);
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = window;
+        if enabled {
+            Err("Desktop blur capture is available on Windows only.".into())
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -511,6 +553,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             capture_glass_frame,
+            set_glass_capture_enabled,
             list_automations,
             save_automation,
             delete_automation,
