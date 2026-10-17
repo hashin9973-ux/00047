@@ -1,0 +1,32 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.file-tools",
+  "name": "Example file tools",
+  "version": "1.0.0",
+  "description": "A Python condition demonstrating the 00047 script-plugin interface.",
+  "blocks": [
+    {
+      "kind": "user.file_exists",
+      "category": "condition",
+      "title": "File exists",
+      "icon": "file",
+      "description": "True if the selected path exists.",
+      "entrypoint": "scripts/file_exists.py",
+      "runtime": {
+        "command": "python",
+        "args": ["{entrypoint}"]
+      },
+      "fields": [
+        {
+          "key": "path",
+          "label": "Path",
+          "type": "text",
+          "required": true,
+          "maxLen": 1000
+        },
+        { "preset": "onFail" }
+      ],
+      "summary": "Exists: {path}"
+    }
+  ]
+}
