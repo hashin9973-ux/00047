@@ -616,14 +616,34 @@ async function openBlocksManager() {
   const custom = info.specs.filter(s => s.origin === 'custom');
   const list = custom.length
     ? `<ul class="bp">${custom.map(s => `<li><b>${esc(s.title)}</b> <small>${esc(s.category)} · ${esc(s.kind)}</small></li>`).join('')}</ul>`
-    : '<p>No custom blocks installed yet.</p>';
+    : '<p>No custom action/condition blocks installed yet.</p>';
+  const plugins = Array.isArray(info.plugins) ? info.plugins : [];
+  const pluginList = plugins.length
+    ? `<ul class="bp">${plugins.map(p => `<li><b>${esc(p.name)}</b> <small>v${esc(p.version)} · ${p.block_count} blocks · ${esc(p.id)}</small>${p.author ? `<div>By ${esc(p.author)}</div>` : ''}${p.description ? `<div>${esc(p.description)}</div>` : ''}<button class="btn" data-v="uninstall-plugin:${esc(p.id)}">Uninstall plugin</button></li>`).join('')}</ul>`
+    : '<p>No plugins imported yet.</p>';
   const errs = info.errors.length ? `<p class="er">${info.errors.map(esc).join('<br>')}</p>` : '';
-  const c = await htmlModal('Custom blocks',
-    `<p>Folder: <code>${esc(info.dir)}</code></p>${list}${errs}<p>Custom blocks can run programs and scripts with your permissions. Only install packs you trust. See docs/ADDING_BLOCKS.md.</p>`,
-    [['close', 'Close'], ['folder', 'Open folder'], ['install', 'Install pack…', 'primary'], ['reload', 'Reload (restarts 00047)']]);
+  const c = await htmlModal('Actions, conditions & plugins',
+    `<h4>Imported actions and conditions</h4><p>These blocks are available in the editor after reloading.</p>${list}<h4>Plugins</h4><p>Plugin packages can bundle related actions and conditions. Plugin folder: <code>${esc(info.pluginsDir || '')}</code></p>${pluginList}${errs}<p><b>Security:</b> imported packs may run commands and PowerShell scripts with your Windows user permissions. Import only packages you trust; review the preview before installation.</p><p>See docs/ADDING_BLOCKS.md for the file format.</p>`,
+    [['close', 'Close'], ['folder', 'Open blocks folder'], ['install-blocks', 'Import actions/conditions…', 'primary'], ['install-plugin', 'Import plugin…', 'primary'], ['reload', 'Reload (restarts 00047)']]);
   if (c === 'folder') invoke('open_blocks_folder').catch(e => toast(String(e), 'err'));
-  else if (c === 'install') installPack();
+  else if (c === 'install-blocks') installPack();
+  else if (c === 'install-plugin') installPlugin();
   else if (c === 'reload') reloadBlocks();
+  else if (c?.startsWith('uninstall-plugin:')) {
+    const id = c.slice('uninstall-plugin:'.length);
+    const p = plugins.find(x => x.id === id);
+    const confirm = await modal({
+      title: 'Uninstall plugin?',
+      body: `"${p?.name || id}" will be removed. Restart 00047 to remove its blocks from the editor. Existing automations that use them may no longer run correctly.`,
+      buttons: [['cancel', 'Cancel'], ['go', 'Uninstall', 'danger']],
+    });
+    if (confirm !== 'go') return;
+    try {
+      await invoke('uninstall_plugin', { id });
+      toast('Plugin uninstalled. Choose "Reload" to apply the change.');
+      openBlocksManager();
+    } catch (e) { toast('Uninstall failed: ' + e, 'err'); }
+  }
 }
 
 async function installPack() {
@@ -632,13 +652,29 @@ async function installPack() {
     if (!pv) return;
     const rows = pv.blocks.map(b => `<li><b>${esc(b.title)}</b> <small>${esc(b.category)} · ${esc(b.kind)}</small><pre>${esc(b.command)}</pre></li>`).join('');
     const errs = pv.errors.length ? `<p class="er">Skipped: ${pv.errors.map(esc).join('<br>')}</p>` : '';
-    const c = await htmlModal(`Install "${pv.file}"?`,
-      `<p>These blocks will be able to run the following on this PC:</p><ul class="bp">${rows}</ul>${errs}`,
-      [['cancel', 'Cancel'], ['go', 'Install', 'primary']]);
+    const c = await htmlModal(`Import "${pv.file}"?`,
+      `<p>These action/condition blocks will be added to the editor:</p><ul class="bp">${rows}</ul>${errs}<p>They run with your Windows user permissions. Only import packs you trust.</p>`,
+      [['cancel', 'Cancel'], ['go', 'Import blocks', 'primary']]);
     if (c !== 'go') return;
     await invoke('block_pack_install', { path: pv.path });
-    toast('Installed. Choose "Reload" in Custom blocks to load it.');
-  } catch (e) { toast('Install failed: ' + e, 'err'); }
+    toast('Imported actions/conditions. Choose "Reload" in Custom blocks to load them.');
+  } catch (e) { toast('Block import failed: ' + e, 'err'); }
+}
+
+async function installPlugin() {
+  try {
+    const pv = await invoke('plugin_pack_preview');
+    if (!pv) return;
+    const plugin = pv.plugin;
+    const rows = pv.blocks.map(b => `<li><b>${esc(b.title)}</b> <small>${esc(b.category)} · ${esc(b.kind)}</small><pre>${esc(b.command)}</pre></li>`).join('');
+    const c = await htmlModal(`Import plugin "${plugin.name}"?`,
+      `<p><b>Version:</b> ${esc(plugin.version)} · <b>ID:</b> <code>${esc(plugin.id)}</code></p>${plugin.author ? `<p><b>Author:</b> ${esc(plugin.author)}</p>` : ''}${plugin.description ? `<p>${esc(plugin.description)}</p>` : ''}<p>This plugin contains ${pv.blocks.length} action/condition blocks:</p><ul class="bp">${rows}</ul><p><b>Security:</b> plugin blocks can launch programs or PowerShell with your Windows user permissions. Review every command above and install only plugins you trust. Importing does not run the blocks immediately.</p>`,
+      [['cancel', 'Cancel'], ['go', 'Import plugin', 'primary']]);
+    if (c !== 'go') return;
+    await invoke('plugin_pack_install', { path: pv.path });
+    toast(`Imported plugin "${plugin.name}". Choose "Reload" to activate its blocks.`);
+    openBlocksManager();
+  } catch (e) { toast('Plugin import failed: ' + e, 'err'); }
 }
 
 async function reloadBlocks() {
