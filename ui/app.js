@@ -837,16 +837,17 @@ function startGlassBackdrop() {
 
 function setupGlassMaterials() {
   const selector = '.glass, button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
+  const applyMaterial = el => {
+    // Keep workflow blocks and their embedded fields on the editor's original
+    // canvas material. Floating canvas overlays remain LiquidGlass surfaces.
+    if (el.closest('.canvas') && !el.closest('.ctx, .eu-bar, .eu-handle')) return;
+    el.classList.add('glass', 'liquidglass-variant');
+    el.classList.remove('liquidglass');
+  };
   const apply = root => {
     if (root.nodeType !== 1) return;
-    if (root.matches(selector)) {
-      root.classList.add('glass', 'liquidglass-variant');
-      root.classList.remove('liquidglass');
-    }
-    root.querySelectorAll?.(selector).forEach(el => {
-      el.classList.add('glass', 'liquidglass-variant');
-      el.classList.remove('liquidglass');
-    });
+    if (root.matches(selector)) applyMaterial(root);
+    root.querySelectorAll?.(selector).forEach(applyMaterial);
   };
   apply(document.documentElement);
   new MutationObserver(records => {
@@ -855,7 +856,6 @@ function setupGlassMaterials() {
     }
   }).observe(document.body, { childList: true, subtree: true });
 }
-
 // ---------- init ----------
 (async function init() {
   await loadBlockSpecs();
