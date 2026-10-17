@@ -651,17 +651,155 @@ $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = t
 
 function startGlassBackdrop() {
   const refreshStatus = $('#glass-refresh-status');
+  const refreshSelect = $('#glass-refresh-rate');
+  const root = document.documentElement;
+  const surfaceSelector = '.glass.liquidglass-variant';
+  const blurBleed = 24;
+  const validRates = new Set(['off', '5', '10', '20']);
+  let captureInterval = 0;
+  let retryTimeout = 0;
+  let inFlight = false;
+  let generation = 0;
+  let geometryDirty = true;
+  let lastGeometrySignature = '';
+  let lastStatus = '';
+  const markGeometryDirty = () => { geometryDirty = true; };
+  const setStatus = message => {
+    if (refreshStatus && lastStatus !== message) {
+      refreshStatus.textContent = message;
+      lastStatus = message;
+    }
+  };
+
   if (!/Win/i.test(navigator.userAgent)) {
-    if (refreshStatus) refreshStatus.textContent = 'Live panel blur is available on Windows.';
+    if (refreshSelect) refreshSelect.disabled = true;
+    setStatus('Live desktop blur is available on Windows only.');
     return;
   }
-  // Keep the native window transparent. Applying native Acrylic here blurs the
-  // entire window, which is intentionally avoided; individual panels use the
-  // WebView compositor's live backdrop-filter instead.
-  if (refreshStatus) refreshStatus.textContent =
-    'Scoped live panel blur · Windows Transparency effects must be enabled in system settings.';
-}
 
+  root.style.setProperty('--liquidglass-reflection-image', 'none');
+  const geometryObserver = new MutationObserver(markGeometryDirty);
+  geometryObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'hidden'],
+  });
+  window.addEventListener('resize', markGeometryDirty, { passive: true });
+  window.addEventListener('scroll', markGeometryDirty, { passive: true, capture: true });
+
+  const updateSurfaceGeometry = (frame, scale) => {
+    const sampleWidth = frame.screenWidth / scale;
+    const sampleHeight = frame.screenHeight / scale;
+    const originX = (frame.screenX - frame.windowX) / scale;
+    const originY = (frame.screenY - frame.windowY) / scale;
+
+    for (const surface of document.querySelectorAll(surfaceSelector)) {
+      const rect = surface.getBoundingClientRect();
+      if (
+        rect.width <= 0 || rect.height <= 0 ||
+        rect.right <= 0 || rect.bottom <= 0 ||
+        rect.left >= window.innerWidth || rect.top >= window.innerHeight
+      ) continue;
+
+      surface.style.setProperty('--liquidglass-reflection-size', \`\${sampleWidth}px \${sampleHeight}px\`);
+      // The CSS pseudo-element uses a small blur bleed beyond the panel edge.
+      surface.style.setProperty(
+        '--liquidglass-reflection-position',
+        \`\${originX - rect.left + blurBleed}px \${originY - rect.top + blurBleed}px\`
+      );
+    }
+    geometryDirty = false;
+  };
+
+  const capture = async (requestGeneration = generation) => {
+    if (inFlight || document.hidden || requestGeneration !== generation) return;
+    const rateMode = validRates.has(refreshSelect?.value) ? refreshSelect.value : '10';
+    if (rateMode === 'off') return;
+    inFlight = true;
+    try {
+      const frame = await invoke('capture_glass_frame');
+      if (requestGeneration !== generation || refreshSelect?.value === 'off') return;
+      if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) {
+        throw new Error('Desktop blur capture returned an empty frame.');
+      }
+
+      const scale = window.devicePixelRatio || 1;
+      // Include native window position so dragging the app invalidates surface crops.
+      const signature = [
+        frame.screenX, frame.screenY, frame.screenWidth, frame.screenHeight,
+        frame.windowX, frame.windowY, window.innerWidth, window.innerHeight, scale,
+      ].join(':');
+      if (geometryDirty || signature !== lastGeometrySignature) {
+        updateSurfaceGeometry(frame, scale);
+        lastGeometrySignature = signature;
+      }
+      root.style.setProperty('--liquidglass-reflection-image', \`url("\${frame.dataUrl}")\`);
+      setStatus(\`WindhawkBlur-style desktop blur active · \${rateMode} FPS · processed locally\`);
+      // A retry that succeeds after a previous capture error should restart the timer.
+      if (!captureInterval) {
+        captureInterval = window.setInterval(() => {
+          if (!document.hidden) void capture();
+        }, Math.round(1000 / Number(rateMode)));
+      }
+    } catch (error) {
+      if (requestGeneration !== generation) return;
+      if (captureInterval) window.clearInterval(captureInterval);
+      captureInterval = 0;
+      root.style.setProperty('--liquidglass-reflection-image', 'none');
+      setStatus('Desktop blur capture unavailable; translucent fallback is active.');
+      console.warn('WindhawkBlur-style desktop capture unavailable:', error);
+      // Avoid hot-looping if Windows refuses to exclude this window from capture.
+      if (!retryTimeout && refreshSelect?.value !== 'off') {
+        retryTimeout = window.setTimeout(() => {
+          retryTimeout = 0;
+          void capture(generation);
+        }, 2000);
+      }
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  const applyCaptureRate = () => {
+    generation++;
+    if (captureInterval) window.clearInterval(captureInterval);
+    if (retryTimeout) window.clearTimeout(retryTimeout);
+    captureInterval = 0;
+    retryTimeout = 0;
+    lastGeometrySignature = '';
+    geometryDirty = true;
+
+    const mode = validRates.has(refreshSelect?.value) ? refreshSelect.value : '10';
+    if (refreshSelect && refreshSelect.value !== mode) refreshSelect.value = mode;
+    try { localStorage.setItem('00047.glassBlurRate', mode); } catch { /* Optional preference persistence. */ }
+
+    if (mode === 'off') {
+      root.style.setProperty('--liquidglass-reflection-image', 'none');
+      setStatus('Desktop blur off · no screen capture');
+      return;
+    }
+    setStatus(\`Starting desktop blur · \${mode} FPS\`);
+    const requestGeneration = generation;
+    void capture(requestGeneration);
+    captureInterval = window.setInterval(() => {
+      if (!document.hidden) void capture(requestGeneration);
+    }, Math.round(1000 / Number(mode)));
+  };
+
+  try {
+    const saved = localStorage.getItem('00047.glassBlurRate');
+    if (validRates.has(saved) && refreshSelect) refreshSelect.value = saved;
+  } catch { /* Storage can be unavailable in restricted WebView profiles. */ }
+  refreshSelect?.addEventListener('change', applyCaptureRate);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && refreshSelect?.value !== 'off') {
+      markGeometryDirty();
+      void capture(generation);
+    }
+  });
+  applyCaptureRate();
+}
 function setupGlassMaterials() {
   const selector = '.glass, button, input:not([type="checkbox"]):not([type="radio"]), select, textarea, .pill, .eu-handle, .eu-bar';
   const applyMaterial = el => {
