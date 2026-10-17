@@ -43,13 +43,6 @@ fn apply_liquidglass_backdrop(window: &tauri::WebviewWindow) {
 
     // Windows 11 22H2+ has a documented system backdrop API. TRANSIENTWINDOW
     // maps to Desktop Acrylic and draws the backdrop behind the whole window.
-    #[repr(C)]
-    struct Margins {
-        left: i32,
-        right: i32,
-        top: i32,
-        bottom: i32,
-    }
     #[link(name = "dwmapi")]
     extern "system" {
         fn DwmSetWindowAttribute(
@@ -58,7 +51,6 @@ fn apply_liquidglass_backdrop(window: &tauri::WebviewWindow) {
             value: *const c_void,
             size: u32,
         ) -> i32;
-        fn DwmExtendFrameIntoClientArea(hwnd: *mut c_void, margins: *const Margins) -> i32;
     }
 
     let backdrop_type: i32 = 3; // DWMSBT_TRANSIENTWINDOW (Desktop Acrylic)
@@ -70,10 +62,6 @@ fn apply_liquidglass_backdrop(window: &tauri::WebviewWindow) {
             size_of::<i32>() as u32,
         )
     };
-    // Extend the DWM glass frame across the client area; without this, some
-    // borderless windows only show the material around the non-client frame.
-    let margins = Margins { left: -1, right: -1, top: -1, bottom: -1 };
-    unsafe { let _ = DwmExtendFrameIntoClientArea(hwnd.0, &margins); }
     if status >= 0 {
         return;
     }
