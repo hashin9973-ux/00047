@@ -658,6 +658,28 @@ function startGlassReflection() {
   const reflectedSurfaceSelector = '.glass.liquidglass-variant:not(input[type="checkbox"]):not(input[type="radio"])';
   const directBackgroundSelector = 'input.glass.liquidglass-variant:not([type="checkbox"]):not([type="radio"]), select.glass.liquidglass-variant, textarea.glass.liquidglass-variant';
 
+  // Keep the large data URL in one CSS rule instead of duplicating it on every control.
+  // Per-surface inline styles contain only their small crop geometry values.
+  const reflectionStyle = document.createElement('style');
+  reflectionStyle.id = 'liquidglass-reflection-frame';
+  reflectionStyle.textContent = `
+    .glass.liquidglass-variant::before { background-image: none; }
+    ${directBackgroundSelector} {
+      background-image: none !important;
+      background-size: var(--liquidglass-reflection-size) !important;
+      background-position: var(--liquidglass-reflection-position) !important;
+      background-repeat: no-repeat !important;
+    }
+  `;
+  document.head.appendChild(reflectionStyle);
+  const reflectionRule = reflectionStyle.sheet?.cssRules?.[0]?.style;
+  const directReflectionRule = reflectionStyle.sheet?.cssRules?.[1]?.style;
+  if (!reflectionRule || !directReflectionRule) {
+    reflectionStyle.remove();
+    console.debug('LiquidGlass shared reflection stylesheet could not be initialized.');
+    return;
+  }
+
   const capture = async () => {
     if (inFlight || document.hidden) return;
     inFlight = true;
@@ -675,7 +697,8 @@ function startGlassReflection() {
       const originX = (frame.screenX - frame.windowX) / scale;
       const originY = (frame.screenY - frame.windowY) / scale;
       const image = `url("${frame.dataUrl}")`;
-      const directBackgrounds = new Set(document.querySelectorAll(directBackgroundSelector));
+      reflectionRule.setProperty('background-image', image);
+      directReflectionRule.setProperty('background-image', image, 'important');
 
       for (const surface of document.querySelectorAll(reflectedSurfaceSelector)) {
         const rect = surface.getBoundingClientRect();
@@ -687,18 +710,8 @@ function startGlassReflection() {
 
         const x = `${originX - rect.left}px`;
         const y = `${originY - rect.top}px`;
-        surface.style.setProperty('--liquidglass-reflection-image', image);
         surface.style.setProperty('--liquidglass-reflection-size', `${sampleWidth}px ${sampleHeight}px`);
         surface.style.setProperty('--liquidglass-reflection-position', `${x} ${y}`);
-
-        // Generated pseudo-elements do not render consistently on form controls,
-        // so use the element's own background for inputs, selects, and textareas.
-        if (directBackgrounds.has(surface)) {
-          surface.style.setProperty('background-image', image, 'important');
-          surface.style.setProperty('background-size', `${sampleWidth}px ${sampleHeight}px`, 'important');
-          surface.style.setProperty('background-position', `${x} ${y}`, 'important');
-          surface.style.setProperty('background-repeat', 'no-repeat', 'important');
-        }
       }
     } catch (error) {
       // Leave the native transparent app background untouched on capture failures.
