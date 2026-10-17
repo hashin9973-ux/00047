@@ -1,0 +1,47 @@
+{
+  "plugin": {
+    "id": "sample.utilities",
+    "name": "Sample Utilities",
+    "version": "1.0.0",
+    "author": "00047 example",
+    "description": "Example plugin package with one condition and one action."
+  },
+  "blocks": [
+    {
+      "kind": "user.sample_utilities.weekday",
+      "category": "condition",
+      "title": "Weekday",
+      "icon": "clock",
+      "description": "Satisfied Monday through Friday.",
+      "fields": [],
+      "run": {
+        "type": "powershell",
+        "script": "$day = (Get-Date).DayOfWeek.ToString(); if ($day -in @('Saturday','Sunday')) { exit 1 } else { exit 0 }"
+      }
+    },
+    {
+      "kind": "user.sample_utilities.wait",
+      "category": "action",
+      "title": "Plugin Wait",
+      "icon": "hourglass",
+      "description": "Waits for a configurable number of seconds.",
+      "fields": [
+        {
+          "key": "seconds",
+          "label": "Seconds",
+          "type": "number",
+          "min": 1,
+          "max": 60,
+          "default": 3,
+          "required": true,
+          "unit": "s"
+        }
+      ],
+      "summary": "Wait {seconds} seconds",
+      "run": {
+        "type": "powershell",
+        "script": "Start-Sleep -Seconds ([int]$env:FIELD_SECONDS)"
+      }
+    }
+  ]
+}
