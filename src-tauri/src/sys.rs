@@ -81,6 +81,9 @@ extern "system" {
 extern "system" {
     fn GetForegroundWindow() -> HANDLE;
     fn GetWindowThreadProcessId(h: HANDLE, pid: *mut u32) -> u32;
+    fn EnumWindows(callback: Option<unsafe extern "system" fn(HANDLE, isize) -> i32>, lparam: isize) -> i32;
+    fn IsWindowVisible(h: HANDLE) -> i32;
+    fn IsIconic(h: HANDLE) -> i32;
 }
 #[link(name = "shell32")]
 extern "system" {
@@ -201,6 +204,117 @@ pub fn foreground_pid() -> Result<u32, String> {
             Ok(pid)
         }
     }
+}
+
+struct VisibleWindowCounter { process_id: u32, count: usize }
+
+unsafe extern "system" fn count_visible_window(hwnd: HANDLE, context: isize) -> i32 {
+    let counter = &mut *(context as *mut VisibleWindowCounter);
+    // Count visible, non-minimized top-level windows for the selected process.
+    if IsWindowVisible(hwnd) != 0 && IsIconic(hwnd) == 0 {
+        let mut process_id = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut process_id);
+        if process_id == counter.process_id { counter.count += 1; }
+    }
+    1
+}
+
+pub fn visible_window_count(pid: u32) -> Result<usize, String> {
+    if pid == 0 { return Err("process ID must be nonzero".into()); }
+    let mut counter = VisibleWindowCounter { process_id: pid, count: 0 };
+    let ok = unsafe {
+        EnumWindows(Some(count_visible_window), &mut counter as *mut VisibleWindowCounter as isize)
+    };
+    if ok == 0 { Err(err("EnumWindows")) } else { Ok(counter.count) }
+}
+
+#[cfg(windows)]
+pub fn process_outputting_audio(pid: u32) -> Result<bool, String> {
+    std::thread::Builder::new()
+        .name("00047-audio-session-check".into())
+        .spawn(move || process_outputting_audio_inner(pid))
+        .map_err(|e| format!("could not start audio-session check: {e}"))?
+        .join()
+        .map_err(|_| "audio-session check thread panicked".to_string())?
+}
+
+#[cfg(not(windows))]
+pub fn process_outputting_audio(_pid: u32) -> Result<bool, String> {
+    Err("process audio-session detection is available on Windows only".into())
+}
+
+#[cfg(windows)]
+fn process_outputting_audio_inner(pid: u32) -> Result<bool, String> {
+    use windows::Win32::Media::Audio::{
+        AudioSessionStateActive, eRender, DEVICE_STATE_ACTIVE, IAudioSessionControl2,
+        IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
+    use windows::core::Interface;
+
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+        .ok()
+        .map_err(|e| format!("CoInitializeEx for audio detection: {e}"))?;
+
+    let result = (|| -> Result<bool, String> {
+        let mut inspect_errors = Vec::new();
+        unsafe {
+            let enumerator: IMMDeviceEnumerator =
+                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                    .map_err(|e| format!("could not create Windows audio device enumerator: {e}"))?;
+            let devices = enumerator
+                .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+                .map_err(|e| format!("could not enumerate active audio output devices: {e}"))?;
+            let device_count = devices
+                .GetCount()
+                .map_err(|e| format!("could not count active audio output devices: {e}"))?;
+            for index in 0..device_count {
+                let device = match devices.Item(index) {
+                    Ok(device) => device,
+                    Err(e) => { inspect_errors.push(format!("output device {index}: {e}")); continue; }
+                };
+                let manager: IAudioSessionManager2 = match device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) {
+                    Ok(manager) => manager,
+                    Err(e) => { inspect_errors.push(format!("output device {index} session manager: {e}")); continue; }
+                };
+                let sessions = match manager.GetSessionEnumerator() {
+                    Ok(sessions) => sessions,
+                    Err(e) => { inspect_errors.push(format!("output device {index} sessions: {e}")); continue; }
+                };
+                let session_count = match sessions.GetCount() {
+                    Ok(count) => count,
+                    Err(e) => { inspect_errors.push(format!("output device {index} session count: {e}")); continue; }
+                };
+                for session_index in 0..session_count {
+                    let control = match sessions.GetSession(session_index) {
+                        Ok(control) => control,
+                        Err(e) => { inspect_errors.push(format!("output device {index}, session {session_index}: {e}")); continue; }
+                    };
+                    let control: IAudioSessionControl2 = match control.cast() {
+                        Ok(control) => control,
+                        Err(e) => { inspect_errors.push(format!("output device {index}, session {session_index} control: {e}")); continue; }
+                    };
+                    let session_pid = match control.GetProcessId() {
+                        Ok(session_pid) => session_pid,
+                        Err(e) => { inspect_errors.push(format!("output device {index}, session {session_index} process: {e}")); continue; }
+                    };
+                    if session_pid == pid {
+                        match control.GetState() {
+                            Ok(state) if state == AudioSessionStateActive => return Ok(true),
+                            Ok(_) => {}
+                            Err(e) => inspect_errors.push(format!("output device {index}, matching session state: {e}")),
+                        }
+                    }
+                }
+            }
+        }
+        if inspect_errors.is_empty() { Ok(false) }
+        else { Err(format!("could not fully inspect Windows audio output sessions: {}", inspect_errors.join("; "))) }
+    })();
+    unsafe { CoUninitialize() };
+    result
 }
 
 pub fn working_set_bytes(pid: u32) -> Result<usize, String> {
