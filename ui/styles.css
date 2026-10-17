@@ -313,7 +313,6 @@ textarea.glass.liquidglass-variant {
   --windhawk-tint-opacity: 0.24;
   --windhawk-tint-color: 24, 26, 32;
   --windhawk-tint-saturation: 115%;
-  --windhawk-noise-opacity: 0.06;
   overflow: hidden;
   background-color: rgba(var(--windhawk-tint-color), var(--windhawk-tint-opacity)) !important;
 }
@@ -341,11 +340,10 @@ textarea.glass.liquidglass-variant {
   inset: 0;
   z-index: -1;
   border-radius: inherit;
-  background-color: transparent;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  background-color: rgba(var(--windhawk-tint-color), var(--windhawk-tint-opacity));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.06'/%3E%3C/svg%3E");
   background-size: 128px 128px;
   background-repeat: repeat;
-  opacity: var(--windhawk-noise-opacity);
   pointer-events: none;
 }
 
@@ -353,10 +351,7 @@ textarea.glass.liquidglass-variant {
 input.glass.liquidglass-variant,
 select.glass.liquidglass-variant,
 textarea.glass.liquidglass-variant {
-  background-image: var(--liquidglass-reflection-image, none) !important;
-  background-size: var(--liquidglass-reflection-size, 100% 100%) !important;
-  background-position: var(--liquidglass-reflection-position, 0 0) !important;
-  background-repeat: no-repeat !important;
+  background-image: none !important;
   background-color: rgba(var(--windhawk-tint-color), 0.30) !important;
   color: var(--tx) !important;
 }
