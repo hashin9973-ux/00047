@@ -244,7 +244,7 @@ body.liquidglass {
   backdrop-filter: none !important;
 }
 
-/* Clear glass: transparent surface with a plain outline. No reflection gradients. */
+/* Clear glass: transparent surface with a plain outline. No reflection overlays. */
 .glass {
   background: transparent !important;
   background-color: transparent !important;
@@ -256,7 +256,9 @@ body.liquidglass {
   backdrop-filter: none !important;
 }
 
-/* Blurred glass: live compositor blur with a plain border. No simulated reflections. */
+/* Selected panels use the browser compositor's live backdrop filter.
+   This samples the currently rendered content behind the element; it does
+   not use screenshots, a second window, or a reflection texture. */
 .glass.liquidglass-variant {
   background: rgba(24,26,32,.24) !important;
   background-color: rgba(24,26,32,.24) !important;
@@ -265,6 +267,8 @@ body.liquidglass {
   backdrop-filter: blur(18px) saturate(115%) !important;
   box-shadow: none !important;
 }
+
+/* Explicitly prevent legacy reflection/backdrop pseudo-elements. */
 .glass::before,
 .glass::after {
   content: none !important;
