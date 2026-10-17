@@ -665,11 +665,33 @@ function startGlassBackdrop() {
   const reflectedSurfaceSelector = '.glass.liquidglass-variant:not(input[type="checkbox"]):not(input[type="radio"])';
 
   const markGeometryDirty = () => { geometryDirty = true; };
-  const geometryObserver = new MutationObserver(markGeometryDirty);
+  const withoutReflectionOffsets = style => String(style || '')
+    .replace(/--liquidglass-reflection-size\\s*:[^;]*;?/g, '')
+    .replace(/--liquidglass-reflection-position\\s*:[^;]*;?/g, '')
+    .trim();
+  const geometryObserver = new MutationObserver(records => {
+    // Updating our two inline image-position variables must not mark geometry
+    // dirty again on every frame. Other inline style changes still reposition
+    // surfaces, e.g. the editor's floating edge controls.
+    const geometryChanged = records.some(record => {
+      if (
+        record.type === 'attributes' &&
+        record.attributeName === 'style' &&
+        record.target.matches?.(reflectedSurfaceSelector)
+      ) {
+        const oldStyle = withoutReflectionOffsets(record.oldValue);
+        const newStyle = withoutReflectionOffsets(record.target.getAttribute('style'));
+        return oldStyle !== newStyle;
+      }
+      return true;
+    });
+    if (geometryChanged) markGeometryDirty();
+  });
   geometryObserver.observe(document.body, {
     childList: true,
     subtree: true,
     attributes: true,
+    attributeOldValue: true,
     attributeFilter: ['class', 'hidden', 'style'],
   });
 
