@@ -1122,7 +1122,7 @@ void EnsureOverlay(OverlayState& state, HWND owner) {
     namespace abi = ABI::Windows::UI::Composition::Desktop;
     auto interop = state.compositor.as<abi::ICompositorDesktopInterop>();
     winrt::check_hresult(interop->CreateDesktopWindowTarget(
-        state.overlay, true,
+        state.overlay, false,
         reinterpret_cast<abi::IDesktopWindowTarget**>(winrt::put_abi(state.target))));
     state.root = state.compositor.CreateContainerVisual();
     state.root.RelativeSizeAdjustment({1.0f, 1.0f});
