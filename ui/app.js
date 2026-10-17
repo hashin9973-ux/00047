@@ -765,9 +765,13 @@ function startGlassBackdrop() {
   let loggedFailure = false;
   let gpuProcess;
   try { gpuProcess = createGlassGpuProcessor(); } catch (error) { console.warn('Could not start glass backdrop blur:', error); }
-  // Never present the raw desktop capture as a glass layer if GPU blur failed;
-  // that unblurred image is precisely the wash this effect is intended to avoid.
-  if (!gpuProcess) return;
+  // GPU processing is an optimization, not a prerequisite. The captured desktop
+  // frame is painted only through the variant surface's CSS blur layer, so the
+  // same real backdrop still renders when WebGL is unavailable.
+  let loggedGpuFallback = false;
+  if (!gpuProcess) {
+    console.warn('GPU backdrop blur unavailable; using the CSS-blurred desktop capture.');
+  }
 
   const updateBackdropPositions = frame => {
     const dpr = window.devicePixelRatio || 1;
@@ -797,10 +801,20 @@ function startGlassBackdrop() {
       if (!frame?.dataUrl || !frame.screenWidth || !frame.screenHeight) return;
       let backdropFrame = frame.dataUrl;
       if (gpuProcess) {
-        const image = new Image();
-        image.src = frame.dataUrl;
-        await image.decode();
-        backdropFrame = gpuProcess(image, frame);
+        try {
+          const image = new Image();
+          image.src = frame.dataUrl;
+          await image.decode();
+          backdropFrame = gpuProcess(image, frame);
+        } catch (error) {
+          // A GPU context can fail after startup too. Keep displaying a real,
+          // CSS-blurred capture instead of silently falling back to tinted glass.
+          gpuProcess = null;
+          if (!loggedGpuFallback) {
+            console.warn('GPU backdrop processing failed; using the CSS-blurred desktop capture:', error);
+            loggedGpuFallback = true;
+          }
+        }
       }
       root.style.setProperty('--liquidglass-reflection-image', 'url("' + backdropFrame + '")');
       updateBackdropPositions(frame);
