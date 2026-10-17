@@ -653,7 +653,7 @@ function startGlassBackdrop() {
   const refreshStatus = $('#glass-refresh-status');
   const refreshSelect = $('#glass-refresh-rate');
   const root = document.documentElement;
-  const surfaceSelector = '.glass.liquidglass-variant';
+  const surfaceSelector = '.glass.liquidglass-variant:not(input):not(select):not(textarea)';
   const blurBleed = 24;
   const validRates = new Set(['off', '5', '10', '20']);
   let captureInterval = 0;
