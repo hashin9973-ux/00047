@@ -721,3 +721,59 @@ pub fn install(path: &Path) -> Result<String, String> {
     fs::copy(path, &dest).map_err(|e| format!("copy: {e}"))?;
     Ok(pv.file)
 }
+
+#[cfg(test)]
+mod script_plugin_tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::FileOptions;
+
+    #[test]
+    fn package_identifiers_and_entrypoints_reject_path_traversal() {
+        assert!(valid_plugin_id("com.example.file-tools"));
+        assert!(!valid_plugin_id("../escape"));
+        assert!(!valid_plugin_id("UPPERCASE"));
+        assert!(valid_relative_path("scripts/main.py"));
+        assert!(!valid_relative_path("../main.py"));
+        assert!(!valid_relative_path("scripts\\\\main.py"));
+        assert!(!valid_relative_path("/absolute/main.py"));
+    }
+
+    #[test]
+    fn manifest_block_normalizes_to_a_generic_runtime() {
+        let plugin_dir = PathBuf::from("example-plugin");
+        let block = json!({
+            "kind": "user.example",
+            "category": "action",
+            "title": "Example",
+            "entrypoint": "scripts/main.py",
+            "runtime": { "command": "python", "args": ["{entrypoint}"] },
+            "fields": []
+        });
+        let normalized = normalize_plugin_block(&block, &plugin_dir, false).unwrap();
+        assert_eq!(check_spec(&normalized).unwrap(), "user.example");
+        assert_eq!(normalized["run"]["type"], "plugin");
+        assert_eq!(normalized["run"]["program"], "python");
+        assert_eq!(normalized["run"]["args"][0], "{entrypoint}");
+    }
+
+    #[test]
+    fn zip_reader_requires_and_parses_root_manifest() {
+        let path = std::env::temp_dir().join(format!("00047-plugin-test-{}.zip", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let file = File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let manifest = r#"{"manifestVersion":1,"id":"com.example.test","name":"Test","version":"1.0.0","blocks":[{"kind":"user.test","category":"action","title":"Test","entrypoint":"scripts/main.py","runtime":{"command":"python","args":["{entrypoint}"]},"fields":[]}]}"#;
+        zip.start_file("manifest.json", FileOptions::default()).unwrap();
+        zip.write_all(manifest.as_bytes()).unwrap();
+        zip.start_file("scripts/main.py", FileOptions::default()).unwrap();
+        zip.write_all(b"print('ok')").unwrap();
+        zip.finish().unwrap();
+
+        let result = read_plugin_zip(&path).unwrap();
+        assert_eq!(result.manifest["id"], "com.example.test");
+        assert!(result.files.contains("manifest.json"));
+        assert!(result.files.contains("scripts/main.py"));
+        let _ = fs::remove_file(path);
+    }
+}
