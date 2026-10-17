@@ -19,7 +19,7 @@
         "decorations": false,
         "transparent": true,
         "backgroundColor": "#00000000",
-        "noRedirectionBitmap": true
+        "noRedirectionBitmap": false
       }
     ],
     "security": { "csp": null }
