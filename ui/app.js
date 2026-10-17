@@ -652,16 +652,29 @@ $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = t
 function startGlassBackdrop() {
   if (!appWindow || !/Win/i.test(navigator.userAgent)) return;
 
-  // The variant uses the actual desktop pixels as its background image.
-  // CSS applies the existing blur on each surface; do not replace this with a
-  // tint or require WebGL to display the captured backdrop.
   const reflectionRoot = document.documentElement;
   reflectionRoot.style.setProperty('--liquidglass-reflection-image', 'none');
+
+  const refreshSelect = $('#set-glass-refresh');
+  const refreshStatus = $('#glass-refresh-status');
+  const allowedModes = new Set(['dynamic', '60', '120', 'off']);
+  let mode = 'dynamic';
+  try {
+    const saved = localStorage.getItem('00047.glassRefreshMode');
+    // Older builds only offered 5/10/20 FPS. "Off" remains Off; old numeric
+    // values migrate to Dynamic so users don't stay capped at a slow rate.
+    mode = saved === 'off' ? 'off' : (allowedModes.has(saved) ? saved : 'dynamic');
+  } catch { /* Use Dynamic when local storage is unavailable. */ }
+  if (refreshSelect) refreshSelect.value = mode;
 
   let inFlight = false;
   let loggedFailure = false;
   let geometryDirty = true;
   let lastGeometrySignature = '';
+  let frameRequest = 0;
+  let lastScheduledAt = -Infinity;
+  let metricStart = 0;
+  let completedFrames = 0;
   const reflectedSurfaceSelector = '.glass.liquidglass-variant:not(input[type="checkbox"]):not(input[type="radio"])';
 
   const markGeometryDirty = () => { geometryDirty = true; };
@@ -670,18 +683,14 @@ function startGlassBackdrop() {
     .replace(/--liquidglass-reflection-position\s*:[^;]*;?/g, '')
     .trim();
   const geometryObserver = new MutationObserver(records => {
-    // Updating our two inline image-position variables must not mark geometry
-    // dirty again on every frame. Other inline style changes still reposition
-    // surfaces, e.g. the editor's floating edge controls.
     const geometryChanged = records.some(record => {
       if (
         record.type === 'attributes' &&
         record.attributeName === 'style' &&
         record.target.matches?.(reflectedSurfaceSelector)
       ) {
-        const oldStyle = withoutReflectionOffsets(record.oldValue);
-        const newStyle = withoutReflectionOffsets(record.target.getAttribute('style'));
-        return oldStyle !== newStyle;
+        return withoutReflectionOffsets(record.oldValue) !==
+          withoutReflectionOffsets(record.target.getAttribute('style'));
       }
       return true;
     });
@@ -710,14 +719,34 @@ function startGlassBackdrop() {
         rect.left >= window.innerWidth || rect.top >= window.innerHeight
       ) continue;
 
-      surface.style.setProperty('--liquidglass-reflection-size', `${sampleWidth}px ${sampleHeight}px`);
-      surface.style.setProperty('--liquidglass-reflection-position', `${originX - rect.left}px ${originY - rect.top}px`);
+      surface.style.setProperty('--liquidglass-reflection-size', sampleWidth + 'px ' + sampleHeight + 'px');
+      surface.style.setProperty('--liquidglass-reflection-position', (originX - rect.left) + 'px ' + (originY - rect.top) + 'px');
     }
     geometryDirty = false;
   };
 
+  const showRefreshStatus = (now, gotFrame) => {
+    if (!refreshStatus) return;
+    if (mode === 'off') {
+      refreshStatus.textContent = 'Paused · holding the last captured backdrop.';
+      return;
+    }
+    if (gotFrame) completedFrames++;
+    if (!metricStart) metricStart = now;
+    const elapsed = now - metricStart;
+    if (elapsed >= 1000) {
+      const measured = Math.round(completedFrames * 1000 / elapsed);
+      const target = mode === 'dynamic' ? 'Dynamic target' : mode + ' FPS target';
+      refreshStatus.textContent = 'Measured ' + measured + ' FPS · ' + target;
+      metricStart = now;
+      completedFrames = 0;
+    } else if (!refreshStatus.textContent || refreshStatus.textContent.startsWith('Paused')) {
+      refreshStatus.textContent = 'Measuring capture throughput…';
+    }
+  };
+
   const capture = async () => {
-    if (inFlight || document.hidden) return;
+    if (inFlight || document.hidden || mode === 'off') return;
     inFlight = true;
     try {
       const frame = await invoke('capture_glass_frame');
@@ -726,56 +755,89 @@ function startGlassBackdrop() {
       }
 
       const scale = window.devicePixelRatio || 1;
-      const signature = `${frame.screenWidth}x${frame.screenHeight}@${scale}`;
+      const signature = frame.screenWidth + 'x' + frame.screenHeight + '@' + scale;
       if (geometryDirty || signature !== lastGeometrySignature) {
         updateSurfaceGeometry(frame);
         lastGeometrySignature = signature;
       }
 
-      // Paint the captured desktop itself. The existing variant pseudo-element
-      // applies filter: blur(12px), so a missing GPU context cannot reduce it to tint.
-      reflectionRoot.style.setProperty('--liquidglass-reflection-image', `url("${frame.dataUrl}")`);
+      reflectionRoot.style.setProperty('--liquidglass-reflection-image', 'url("' + frame.dataUrl + '")');
       loggedFailure = false;
+      showRefreshStatus(performance.now(), true);
     } catch (error) {
       if (!loggedFailure) {
         console.warn('LiquidGlass desktop capture unavailable:', error);
         loggedFailure = true;
       }
+      showRefreshStatus(performance.now(), false);
     } finally {
       inFlight = false;
     }
   };
 
-  let frameRequest = 0;
-  const tick = () => {
-    frameRequest = 0;
-    if (document.hidden) return;
-    if (!inFlight) void capture();
-    frameRequest = window.requestAnimationFrame(tick);
-  };
-  const startFrames = () => {
-    if (!document.hidden && !frameRequest) {
-      frameRequest = window.requestAnimationFrame(tick);
-    }
-  };
   const stopFrames = () => {
     if (frameRequest) window.cancelAnimationFrame(frameRequest);
     frameRequest = 0;
   };
+  const tick = timestamp => {
+    frameRequest = 0;
+    if (document.hidden || mode === 'off') return;
 
+    const targetInterval = mode === 'dynamic' ? 0 : 1000 / Number(mode);
+    if (!inFlight && timestamp - lastScheduledAt >= targetInterval) {
+      lastScheduledAt = timestamp;
+      void capture();
+    }
+    frameRequest = window.requestAnimationFrame(tick);
+  };
+  const startFrames = () => {
+    if (!document.hidden && mode !== 'off' && !frameRequest) {
+      frameRequest = window.requestAnimationFrame(tick);
+    }
+  };
+
+  const applyRefreshMode = () => {
+    mode = allowedModes.has(refreshSelect?.value) ? refreshSelect.value : 'dynamic';
+    try { localStorage.setItem('00047.glassRefreshMode', mode); } catch { /* Preference is optional. */ }
+    metricStart = 0;
+    completedFrames = 0;
+    if (mode === 'off') {
+      stopFrames();
+      showRefreshStatus(performance.now(), false);
+      return;
+    }
+    if (refreshStatus) refreshStatus.textContent = 'Measuring capture throughput…';
+    lastScheduledAt = -Infinity;
+    void capture();
+    startFrames();
+  };
+
+  refreshSelect?.addEventListener('change', applyRefreshMode);
   window.addEventListener('resize', markGeometryDirty, { passive: true });
   window.addEventListener('scroll', markGeometryDirty, { passive: true, capture: true });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) stopFrames();
-    else {
+    if (document.hidden) {
+      stopFrames();
+    } else {
       markGeometryDirty();
-      void capture();
-      startFrames();
+      if (mode !== 'off') {
+        void capture();
+        startFrames();
+      }
     }
   });
 
-  void capture();
-  startFrames();
+  if (mode === 'off') {
+    mode = 'dynamic';
+    void capture().finally(() => {
+      mode = 'off';
+      showRefreshStatus(performance.now(), false);
+    });
+  } else {
+    if (refreshStatus) refreshStatus.textContent = 'Measuring capture throughput…';
+    void capture();
+    startFrames();
+  }
 }
 
 function setupGlassMaterials() {

@@ -52,7 +52,7 @@ fn capture_glass_frame(window: tauri::WebviewWindow) -> Result<GlassCaptureFrame
 fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCaptureFrame, String> {
     use base64::Engine as _;
     use image::codecs::jpeg::JpegEncoder;
-    use image::{imageops::FilterType, ExtendedColorType, RgbImage};
+    use image::{ExtendedColorType, RgbImage};
     use std::{ffi::c_void, mem::size_of, ptr::{null, null_mut}, slice};
 
     // GDI is used only to acquire the real desktop pixels. The captured pixels
@@ -107,10 +107,11 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
     let screen_width = window_size.width.saturating_add((margin * 2) as u32).max(1);
     let screen_height = window_size.height.saturating_add((margin * 2) as u32).max(1);
 
-    // Keep IPC and capture costs bounded even when the window is maximized on
-    // a high-DPI 4K display. CSS scales this sample back to desktop coordinates.
-    let scale = (1500.0f64 / screen_width as f64)
-        .min(1000.0f64 / screen_height as f64)
+    // Keep each frame inexpensive enough for high-refresh updates. The variant
+    // blurs this source image, so ~1050x720 provides ample input detail while
+    // cutting pixel conversion, JPEG encode, and IPC payload work substantially.
+    let scale = (1050.0f64 / screen_width as f64)
+        .min(720.0f64 / screen_height as f64)
         .min(1.0);
     let bitmap_width = ((screen_width as f64 * scale).round() as i32).max(1);
     let bitmap_height = ((screen_height as f64 * scale).round() as i32).max(1);
@@ -181,13 +182,15 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
             return Err("Windows failed to copy desktop pixels for the reflection.".to_string());
         }
 
-        let bgra = slice::from_raw_parts(
-            pixels.cast::<u8>(),
-            bitmap_width as usize * bitmap_height as usize * 4
-        );
-        let mut rgb = Vec::with_capacity(bitmap_width as usize * bitmap_height as usize * 3);
-        for px in bgra.chunks_exact(4) {
-            rgb.extend_from_slice(&[px[2], px[1], px[0]]);
+        let pixel_count = bitmap_width as usize * bitmap_height as usize;
+        let bgra = slice::from_raw_parts(pixels.cast::<u8>(), pixel_count * 4);
+        // Allocate exactly once and write RGB directly. Repeated Vec::extend_from_slice
+        // calls for each pixel added avoidable work to every reflected frame.
+        let mut rgb = vec![0u8; pixel_count * 3];
+        for (source, target) in bgra.chunks_exact(4).zip(rgb.chunks_exact_mut(3)) {
+            target[0] = source[2];
+            target[1] = source[1];
+            target[2] = source[0];
         }
 
         SelectObject(memory_dc, old_object);
@@ -198,25 +201,10 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
         let image = RgbImage::from_raw(bitmap_width as u32, bitmap_height as u32, rgb)
             .ok_or_else(|| "Captured desktop frame had an invalid pixel buffer.".to_string())?;
         let mut small = Vec::new();
-        let sampled = if bitmap_width > 1500 || bitmap_height > 1000 {
-            image::imageops::resize(&image, 1500, 1000, FilterType::Triangle)
-        } else {
-            image
-        };
-        // Keep the original aspect ratio when only one dimension exceeds a limit.
-        let sampled = if sampled.width() > 1500 || sampled.height() > 1000 {
-            let ratio = (1500.0 / sampled.width() as f64).min(1000.0 / sampled.height() as f64);
-            image::imageops::resize(
-                &sampled,
-                (sampled.width() as f64 * ratio).round().max(1.0) as u32,
-                (sampled.height() as f64 * ratio).round().max(1.0) as u32,
-                FilterType::Triangle
-            )
-        } else {
-            sampled
-        };
-        JpegEncoder::new_with_quality(&mut small, 68)
-            .encode(sampled.as_raw(), sampled.width(), sampled.height(), ExtendedColorType::Rgb8)
+        // GDI StretchBlt above already downsamples to the target dimensions;
+        // avoid the previous redundant resize passes.
+        JpegEncoder::new_with_quality(&mut small, 55)
+            .encode(image.as_raw(), image.width(), image.height(), ExtendedColorType::Rgb8)
             .map_err(|e| format!("Could not encode desktop reflection frame: {e}"))?;
 
         Ok(GlassCaptureFrame {
