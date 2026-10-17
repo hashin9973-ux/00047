@@ -258,7 +258,6 @@ body.liquidglass {
 
 /* Desktop reflection is painted inside variant surfaces only, never across the app. */
 .glass.liquidglass-variant {
-  --liquidglass-reflection-image: none;
   --liquidglass-reflection-size: 0px 0px;
   --liquidglass-reflection-position: 0 0;
   isolation: isolate;
@@ -274,7 +273,7 @@ body.liquidglass {
   z-index: -1;
   pointer-events: none;
   border-radius: inherit;
-  background-image: var(--liquidglass-reflection-image);
+  background-image: none;
   background-size: var(--liquidglass-reflection-size);
   background-position: var(--liquidglass-reflection-position);
   background-repeat: no-repeat;
