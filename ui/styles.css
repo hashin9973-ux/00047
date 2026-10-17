@@ -230,182 +230,136 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .bp li{margin-bottom:10px}
 .bp pre{white-space:pre-wrap;word-break:break-word;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;color:var(--tx);font:12px Consolas,monospace;user-select:text}
 .er{color:var(--er)}
-/* LiquidGlass Frosty: neutral, low-chroma material treatment.
-   Preserve .canvas and its grid exactly; the frosted treatment applies to the UI
-   around it, including panels, controls, overlays, and workflow nodes. */
-:root{
-  --tx:#202020;
-  --mu:#555555;
-  --line:rgba(36,36,36,.17);
-  --ac:#626262;
-  --glass-tint:250,250,250;
-  --glass-bg-opacity:.12;
-  --glass-element-opacity:.19;
-  --glass-blur:15px;
-  --glass-element-blur:20px;
-  --glass-border-hi:rgba(255,255,255,.82);
-  --glass-border-low:rgba(45,45,45,.26);
-  --glass-element-border-mid:rgba(255,255,255,.68);
-}
-*{
-  scrollbar-color:rgba(80,80,80,.30) rgba(255,255,255,.10);
-}
-::-webkit-scrollbar-track{background:rgba(255,255,255,.10)}
-::-webkit-scrollbar-thumb{
-  background:linear-gradient(180deg,rgba(255,255,255,.52),rgba(80,80,80,.18));
-  border-color:rgba(255,255,255,.42);
-}
-::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.65)}
-.window-titlebar{color:#222;border-bottom-color:rgba(255,255,255,.22)}
-.window-titlebar-title{color:rgba(25,25,25,.72)}
-.window-control{color:rgba(25,25,25,.82)}
-.window-control:hover{background:rgba(255,255,255,.28);color:#111}
-.window-control.close:hover{background:#c42b1c;color:#fff}
 
-/* Real backdrop blur lives in .glass::before (GPU-blurred desktop capture).
-   Keep the fill achromatic and restrained; let the backdrop and reflective edge
-   do the work instead of painting the surface blue, purple, or charcoal. */
-.glass{
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.26),inset 0 -1px 0 rgba(0,0,0,.045);
-}
-.glass::after{background:rgba(var(--glass-tint),var(--glass-bg-opacity))}
-.card.glass,.acard.glass,.ctx.glass,.pop.glass,.mbox.glass,.ck-box.glass{
-  box-shadow:0 8px 28px rgba(0,0,0,.13),inset 0 1px 0 rgba(255,255,255,.38);
-}
-.card.glass::after,.acard.glass::after,.ctx.glass::after,.pop.glass::after,.mbox.glass::after,.ck-box.glass::after{
-  background:rgba(var(--glass-tint),var(--glass-element-opacity));
+/* Native window transparency is independent of the scoped desktop reflection samples. */
+html,
+body.liquidglass {
+  background: transparent !important;
+  background-color: transparent !important;
+  color: var(--tx) !important;
+  color-scheme: dark;
 }
 
-/* Neutral ink and quiet structural lines throughout non-canvas UI. */
-.mu,.brand,.save.ok,.icon-btn,.tbl th,.res span,.recent div,.empty,
-.lr .t,.lr .an,.lr .bl,.help,.fl,.fh,.mempty,.mbody,
-.ck-item small,.ck-empty{color:var(--mu)}
-.card h3,.acard h4,.tbl td,.tbl th,.chead,.help b,
-.mbox h3,.mbox p,.mbody,.mbody code,.bp pre{color:var(--tx)}
-.tbl th,.tbl td{border-bottom-color:rgba(40,40,40,.11)}
-.tbl tr[data-act=open]:hover{background:rgba(255,255,255,.22)}
-.res i{background:rgba(50,50,50,.10)}
-.res u{background:var(--ac)}
-.lr{border-bottom-color:rgba(35,35,35,.10)}
-.logs,.lr{color:var(--tx)}
-.lr .t,.lr .an,.lr .bl{color:var(--mu)}
+/* Main surface stays transparent; reflected pixels are painted only on variant controls. */
+html,
+body.liquidglass {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+body.liquidglass {
+  color: var(--tx);
+  color-scheme: dark;
+  filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
 
-/* Glass controls: clear neutral surfaces, soft defocus, and monochrome rims. */
-.btn,.ib,.icon-btn,.window-control,.eu-bar button,
-.search,.name,.mq,select,.ck-in,
-.fld input[type=text],.fld input[type=number],.fld select,
-.bp pre{
-  color:#202020;
-  background:linear-gradient(180deg,rgba(255,255,255,.24),rgba(235,235,235,.11)) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.78),rgba(55,55,55,.22)) border-box;
-  border:1px solid transparent;
-  -webkit-backdrop-filter:blur(14px) saturate(1);
-  backdrop-filter:blur(14px) saturate(1);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.38);
+/* Desktop reflection is painted inside variant surfaces only, never across the app. */
+.glass.liquidglass-variant {
+  --liquidglass-reflection-size: 0px 0px;
+  --liquidglass-reflection-position: 0 0;
+  isolation: isolate;
 }
-.btn:hover:not(:disabled),.ib:hover:not(:disabled),.icon-btn:hover,
-.eu-bar button:hover,.ck-item:hover,.ck-item.on,
-#tabs button:hover,#dock-tabs button:hover{
-  color:#111;
-  background:rgba(255,255,255,.40);
-}
-.btn.primary,.btn.danger,.btn.danger:hover:not(:disabled){
-  color:#202020;
-  background:linear-gradient(180deg,rgba(255,255,255,.30),rgba(220,220,220,.13));
-  border-color:rgba(255,255,255,.55);
-}
-.btn:focus-visible,.ib:focus-visible,.icon-btn:focus-visible,
-input:focus-visible,select:focus-visible,button:focus-visible{
-  outline:1px solid rgba(35,35,35,.58);
-  outline-offset:1px;
-}
-.search:focus,.name:focus,.mq:focus,select:focus,
-.fld input:focus,.fld select:focus,.ck-in:focus{
-  border-color:rgba(45,45,45,.48);
-  outline:none;
-}
-input,select,textarea{accent-color:#666}
-#tabs button,#dock-tabs button{
-  color:rgba(32,32,32,.66);
-}
-#tabs button:hover,#dock-tabs button:hover{color:#111}
-#tabs button.on,#dock-tabs button.on{
-  color:#171717;
-  background:rgba(255,255,255,.32);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.70),inset 0 0 0 1px rgba(40,40,40,.12);
-}
-.pill{
-  color:#292929;
-  background:rgba(255,255,255,.24);
-  border:1px solid rgba(255,255,255,.40);
-}
-.pill.stopped{color:#555}
-.pill.running{background:rgba(90,169,255,.14);color:#27618d}
-.pill.completed{background:rgba(74,222,128,.14);color:#25643b}
-.pill.failed{background:rgba(255,107,129,.14);color:#8e2939}
-.pill.stopping{background:rgba(245,177,74,.14);color:#80541c}
 
-/* Leave the .canvas background/grid unchanged. Workflow blocks themselves get
-   neutral glass bodies rather than pastel-colored fills. */
-.node{
-  color:#202020;
-  background:linear-gradient(145deg,rgba(255,255,255,.22),rgba(225,225,225,.09)) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.85),rgba(45,45,45,.28)) border-box;
-  border:1px solid transparent;
-  border-radius:14px;
-  box-shadow:0 8px 22px rgba(0,0,0,.20),inset 0 1px 0 rgba(255,255,255,.55);
-  -webkit-backdrop-filter:blur(18px) saturate(1);
-  backdrop-filter:blur(18px) saturate(1);
+/* The main liquidglass surface remains native-transparent with no sampled image or blur. */
+/* Variant reflections use screen-aligned desktop pixels clipped to each surface. */
+.glass.liquidglass-variant::before {
+  content: "" !important;
+  display: block !important;
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  background-image: var(--liquidglass-reflection-image, none);
+  background-size: var(--liquidglass-reflection-size);
+  background-position: var(--liquidglass-reflection-position);
+  background-repeat: no-repeat;
+  /* Keep the sampled layer translucent so a transparent-window capture
+     retains real desktop pixels instead of recursively copying an opaque layer. */
+  opacity: .72;
+  filter: blur(12px);
+  will-change: filter;
 }
-.node::before{background:rgba(255,255,255,.52);opacity:1}
-.node .n-title,.node .n-sum,.node .n-detail,.node .fl,.node .fh,
-.node .n-chev,.node .nhelp{color:rgba(25,25,25,.82)}
-.node .n-icon{color:rgba(25,25,25,.72)}
-.node .n-chev:hover{background:rgba(255,255,255,.42);color:#111}
-.node .n-dot{background:#777}
-.node .n-prog{background:rgba(35,35,35,.12)}
-.node.sel{
-  box-shadow:0 0 0 1.5px rgba(255,255,255,.85),0 8px 24px rgba(0,0,0,.22),
-    inset 0 1px 0 rgba(255,255,255,.60);
-}
-.node.unknown{color:#7a2525}
-.fld input[type=text],.fld input[type=number],.fld select{
-  background:rgba(255,255,255,.22);
-  color:#202020;
-}
-.fld input:focus,.fld select:focus{border-color:rgba(40,40,40,.50)}
-.port{background:rgba(245,245,245,.90);border-color:#707070}
-.port.in,.port.tgt-in{border-color:#707070}
 
-/* Secondary surfaces that were previously opaque charcoal. */
-.toast{
-  position:relative;
-  isolation:isolate;
-  color:#202020;
-  background:linear-gradient(145deg,rgba(255,255,255,.27),rgba(225,225,225,.13)) padding-box,
-    linear-gradient(180deg,rgba(255,255,255,.82),rgba(55,55,55,.25)) border-box;
-  border:1px solid transparent;
-  border-left:3px solid rgba(75,75,75,.60);
-  box-shadow:0 8px 24px rgba(0,0,0,.16),inset 0 1px 0 rgba(255,255,255,.45);
-  -webkit-backdrop-filter:blur(18px) saturate(1);
-  backdrop-filter:blur(18px) saturate(1);
+/* The two material styles share transparent fills. Variant blur applies only inside each control. */
+.glass {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  color: var(--tx) !important;
+  border: 1px solid rgba(255,255,255,.12) !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+  isolation: isolate;
+  position: relative;
 }
-.toast.err{border-left-color:#7f4343}
-.modal,#cmdk{
-  background:rgba(35,35,35,.14);
-  -webkit-backdrop-filter:blur(10px) saturate(1);
-  backdrop-filter:blur(10px) saturate(1);
+.glass::after {
+  content: none !important;
+  display: none !important;
 }
-.ck-in{
-  background:rgba(255,255,255,.20);
-  border-color:rgba(255,255,255,.52);
+.glass.liquidglass-variant {
+  background: transparent !important;
+  background-color: transparent !important;
+  border-color: rgba(255,255,255,.14) !important;
+  box-shadow: none !important;
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
 }
-.ck-item{color:#202020}
-.ck-item.on,.ck-item:hover{background:rgba(255,255,255,.38)}
-.ck-item small,.ck-empty{color:#555}
-.bp pre{
-  background:rgba(255,255,255,.18);
-  border-color:rgba(255,255,255,.42);
+input.glass.liquidglass-variant,
+select.glass.liquidglass-variant,
+textarea.glass.liquidglass-variant {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: var(--liquidglass-reflection-image, none) !important;
+  background-size: var(--liquidglass-reflection-size) !important;
+  background-position: var(--liquidglass-reflection-position) !important;
+  background-repeat: no-repeat !important;
+  color: var(--tx) !important;
 }
-.mbody code{color:#202020}
 
+/* Keep the non-canvas interface achromatic; workflow-canvas colors are untouched. */
+.save.busy, .save.err, .note,
+.pill.running, .pill.completed, .pill.failed, .pill.stopping,
+.recent .er, .recent .wa,
+.lr.info .lv, .lr.warn .lv, .lr.error .lv, .lr.error .ms,
+.er, .window-control.close:hover {
+  color: var(--tx) !important;
+}
+.btn.primary, .btn.danger,
+.pill.running, .pill.completed, .pill.failed, .pill.stopping {
+  background: transparent !important;
+  border-color: rgba(255,255,255,.10) !important;
+}
+#tabs button.on, #dock-tabs button.on,
+.mi.on, .mi:hover, .ck-item.on, .ck-item:hover,
+.tbl tr[data-act=open]:hover {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.res u { background: var(--mu) !important; }
+
+/* Hover and selected states stay transparent too; no grey tint layer. */
+.btn:hover:not(:disabled), .ib:hover:not(:disabled), .icon-btn:hover,
+.eu-bar button:hover, #tabs button:hover, #dock-tabs button:hover,
+.ck-item:hover, .ck-item.on, .mi:hover, .mi.on,
+.tbl tr[data-act=open]:hover {
+  background: transparent !important;
+}
+
+
+/* Settings panel: compact controls for reflection performance and imported extensions. */
+.settings-choice {
+  display: grid !important;
+  align-items: stretch !important;
+  gap: 6px !important;
+}
+#pop-settings #set-glass-refresh {
+  width: 100%;
+  min-width: 0;
+}
+#pop-settings > button {
+  width: 100%;
+  text-align: left;
+}
