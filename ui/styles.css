@@ -231,7 +231,7 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .bp pre{white-space:pre-wrap;word-break:break-word;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;color:var(--tx);font:12px Consolas,monospace;user-select:text}
 .er{color:var(--er)}
 
-/* Keep both document layers transparent so the native Windows backdrop is visible. */
+/* App backdrop stays transparent; the native window compositor supplies the blur. */
 html,
 body.liquidglass {
   background: transparent !important;
@@ -240,14 +240,14 @@ body.liquidglass {
   color-scheme: dark;
 }
 
-/* Shared glass material. No captured desktop texture or decorative shine. */
+/* LiquidGlass: actual backdrop filtering, with no white/grey material fill. */
 .glass {
-  background: rgba(255,255,255,.035) !important;
-  background-color: rgba(255,255,255,.035) !important;
+  background: transparent !important;
+  background-color: transparent !important;
   background-image: none !important;
-  color: var(--tx);
+  color: var(--tx) !important;
   border: 1px solid rgba(255,255,255,.12) !important;
-  box-shadow: 0 8px 22px rgba(0,0,0,.16) !important;
+  box-shadow: 0 4px 14px rgba(0,0,0,.12) !important;
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
   isolation: isolate;
@@ -259,27 +259,25 @@ body.liquidglass {
   display: none !important;
 }
 
-/* LiquidGlass Variant: surfaces and controls. */
+/* LiquidGlass Variant: stronger blur for controls, bars and other surfaces. */
 .glass.liquidglass-variant {
-  background: rgba(255,255,255,.055) !important;
-  background-color: rgba(255,255,255,.055) !important;
-  border-color: rgba(255,255,255,.16) !important;
-  box-shadow: 0 8px 22px rgba(0,0,0,.18) !important;
+  background: transparent !important;
+  background-color: transparent !important;
+  border-color: rgba(255,255,255,.14) !important;
+  box-shadow: 0 4px 14px rgba(0,0,0,.14) !important;
   -webkit-backdrop-filter: blur(18px);
   backdrop-filter: blur(18px);
 }
-
 input.glass.liquidglass-variant,
 select.glass.liquidglass-variant,
 textarea.glass.liquidglass-variant {
-  background: rgba(255,255,255,.055) !important;
+  background: transparent !important;
+  background-color: transparent !important;
   background-image: none !important;
   color: var(--tx) !important;
 }
 
-/* The editor canvas and workflow nodes keep their own styling. */
-
-/* Keep all interface feedback neutral; editor canvas colors are unaffected. */
+/* Keep the non-canvas interface neutral; the editor canvas is unchanged. */
 .save.busy, .save.err, .note,
 .pill.running, .pill.completed, .pill.failed, .pill.stopping,
 .recent .er, .recent .wa,
