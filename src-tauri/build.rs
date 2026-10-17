@@ -10,6 +10,7 @@ fn main() {
             .compile("windhawk_blur");
 
         println!("cargo:rustc-link-lib=dylib=d2d1");
+        println!("cargo:rustc-link-lib=dylib=dwmapi");
         println!("cargo:rustc-link-lib=dylib=dxguid");
         println!("cargo:rustc-link-lib=dylib=runtimeobject");
         println!("cargo:rustc-link-lib=dylib=windowsapp");
