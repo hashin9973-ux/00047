@@ -231,7 +231,8 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .bp pre{white-space:pre-wrap;word-break:break-word;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;color:var(--tx);font:12px Consolas,monospace;user-select:text}
 .er{color:var(--er)}
 
-/* LiquidGlass: let the native Windows backdrop remain visible through the WebView. */
+/* Keep both document layers transparent so the native Windows backdrop is visible. */
+html,
 body.liquidglass {
   background: transparent !important;
   background-color: transparent !important;
