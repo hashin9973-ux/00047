@@ -54,7 +54,10 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
     use base64::Engine as _;
     use image::codecs::jpeg::JpegEncoder;
     use image::{ExtendedColorType, RgbImage};
-    use std::{ffi::c_void, mem::size_of, ptr::{null, null_mut}, slice};
+    use std::{ffi::c_void, mem::size_of, ptr::{null, null_mut}, slice, sync::atomic::{AtomicBool, Ordering}};
+
+    // Display affinity is process/window setup, not per-frame work.
+    static DISPLAY_AFFINITY_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
     // GDI is used only to acquire the real desktop pixels. The captured pixels
     // are downsampled and JPEG encoded before they cross the Tauri IPC bridge.
@@ -110,8 +113,10 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
 
     // Keep IPC and capture costs bounded even when the window is maximized on
     // a high-DPI 4K display. CSS scales this sample back to desktop coordinates.
-    const MAX_CAPTURE_WIDTH: f64 = 1280.0;
-    const MAX_CAPTURE_HEIGHT: f64 = 800.0;
+    // A slightly smaller sample has materially less GDI, JPEG and IPC work;
+    // the 12px glass blur hides most source-detail loss while improving cadence.
+    const MAX_CAPTURE_WIDTH: f64 = 1024.0;
+    const MAX_CAPTURE_HEIGHT: f64 = 640.0;
     let scale = (MAX_CAPTURE_WIDTH / screen_width as f64)
         .min(MAX_CAPTURE_HEIGHT / screen_height as f64)
         .min(1.0);
@@ -120,10 +125,12 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
 
     let hwnd = window.hwnd().map_err(|e| format!("Native window handle unavailable: {e}"))?.0;
     unsafe {
-        // Best-effort only: Windows may reject display affinity on transparent
-        // or layered HWNDs. Keep capture running when that exclusion is unavailable;
-        // otherwise one failed API call disables every glass reflection frame.
-        let _capture_exclusion_enabled = SetWindowDisplayAffinity(hwnd, 0x00000011) != 0;
+        // Best-effort once: some transparent/layered windows reject display affinity.
+        // Never spend a native API call on every animation frame or abort capture
+        // if exclusion is unavailable.
+        if !DISPLAY_AFFINITY_ATTEMPTED.swap(true, Ordering::Relaxed) {
+            let _capture_exclusion_enabled = SetWindowDisplayAffinity(hwnd, 0x00000011) != 0;
+        }
 
         let screen_dc = GetDC(null_mut());
         if screen_dc.is_null() {
@@ -200,7 +207,7 @@ fn capture_glass_frame_windows(window: &tauri::WebviewWindow) -> Result<GlassCap
         let image = RgbImage::from_raw(bitmap_width as u32, bitmap_height as u32, rgb)
             .ok_or_else(|| "Captured desktop frame had an invalid pixel buffer.".to_string())?;
         let mut small = Vec::new();
-        JpegEncoder::new_with_quality(&mut small, 58)
+        JpegEncoder::new_with_quality(&mut small, 50)
             .encode(image.as_raw(), image.width(), image.height(), ExtendedColorType::Rgb8)
             .map_err(|e| format!("Could not encode desktop reflection frame: {e}"))?;
 
