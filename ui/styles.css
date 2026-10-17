@@ -244,35 +244,29 @@ body.liquidglass {
   backdrop-filter: none !important;
 }
 
-/* Clear LiquidGlass: no blur or opaque fill, only a light-catching border. */
+/* Clear glass: transparent surface with a plain outline. No reflection gradients. */
 .glass {
   background: transparent !important;
   background-color: transparent !important;
-  background: linear-gradient(transparent, transparent) padding-box,
-    linear-gradient(135deg, rgba(255,255,255,.48), rgba(255,255,255,.10) 24%,
-      rgba(255,255,255,.22) 48%, rgba(255,255,255,.05) 72%, rgba(255,255,255,.34)) border-box !important;
   color: var(--tx) !important;
-  border: 1px solid transparent !important;
+  border: 1px solid rgba(255,255,255,.12) !important;
   box-shadow: none !important;
   position: relative;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
 
-/* Blurred LiquidGlass: live compositor blur of whatever is behind each panel. */
+/* Blurred glass: live compositor blur with a plain border. No simulated reflections. */
 .glass.liquidglass-variant {
   background: rgba(24,26,32,.24) !important;
   background-color: rgba(24,26,32,.24) !important;
-  background: linear-gradient(145deg, rgba(255,255,255,.045), rgba(255,255,255,.008)) padding-box,
-    linear-gradient(135deg, rgba(255,255,255,.48), rgba(255,255,255,.12) 25%,
-      rgba(255,255,255,.26) 52%, rgba(255,255,255,.07) 75%, rgba(255,255,255,.36)) border-box !important;
-  border: 1px solid transparent !important;
+  border: 1px solid rgba(255,255,255,.12) !important;
   -webkit-backdrop-filter: blur(18px) saturate(115%) !important;
   backdrop-filter: blur(18px) saturate(115%) !important;
   box-shadow: none !important;
 }
-.glass.liquidglass-variant::before,
-.glass.liquidglass-variant::after {
+.glass::before,
+.glass::after {
   content: none !important;
   display: none !important;
 }
