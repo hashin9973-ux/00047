@@ -231,7 +231,7 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .bp pre{white-space:pre-wrap;word-break:break-word;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0 0;color:var(--tx);font:12px Consolas,monospace;user-select:text}
 .er{color:var(--er)}
 
-/* App backdrop stays transparent; the native window compositor supplies the blur. */
+/* Native window transparency is independent of the scoped desktop reflection samples. */
 html,
 body.liquidglass {
   background: transparent !important;
@@ -240,15 +240,13 @@ body.liquidglass {
   color-scheme: dark;
 }
 
-/* Main surface: show sampled desktop pixels sharply through a transparent window. */
+/* Main surface stays transparent; reflected pixels are painted only on variant controls. */
 html,
 body.liquidglass {
   background: transparent !important;
   background-color: transparent !important;
 }
 body.liquidglass {
-  position: relative;
-  isolation: isolate;
   color: var(--tx);
   color-scheme: dark;
   filter: none !important;
@@ -292,7 +290,6 @@ body.liquidglass {
   isolation: isolate;
   position: relative;
 }
-.glass::before,
 .glass::after {
   content: none !important;
   display: none !important;
