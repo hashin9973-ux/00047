@@ -247,7 +247,11 @@ impl NativeModuleManager {
         // Initial installation has no sidecar yet, so inspect the DLL to obtain metadata.
         let probe = inspect_module(&path)?;
         if probe.id != id { return Err("native module id does not match installed filename".into()); }
-        let metadata = metadata.unwrap_or(probe);
+        let mut metadata = metadata.unwrap_or(probe);
+        if metadata.file_name.is_empty() {
+            // First load: the descriptor does not yet have a sidecar manifest.
+            metadata.file_name = format!("{id}.dll");
+        }
         if metadata.id != id || metadata.file_name != format!("{id}.dll") {
             return Err("native module metadata does not match its installed filename".into());
         }
