@@ -186,7 +186,9 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       const maxLength = setting.maxLength == null ? 1024 : setting.maxLength;
       control = '<input type="text" data-setting-id="' + id + '" data-setting-type="string" maxlength="' + esc(String(maxLength)) + '" value="' + esc(String(value == null ? '' : value)) + '" required>';
     }
-    return '<label class="native-setting-field"><span><b>' + label + '</b>' + description + '</span>' + control + '</label>';
+    const wrapper = kind === 'stringArray' ? 'div' : 'label';
+    return '<' + wrapper + ' class="native-setting-field"><span><b>' + label + '</b>' + description +
+      '</span>' + control + '</' + wrapper + '>';
   }
 
   async function toggleSettings(button, id) {
