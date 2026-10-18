@@ -327,3 +327,7 @@ textarea.glass.liquidglass-variant {
   -webkit-backdrop-filter: blur(18px) saturate(115%) !important;
   backdrop-filter: blur(18px) saturate(115%) !important;
 }
+
+
+/* Independent extension host */
+.ext-notice,.ext-roadmap{padding:16px 18px;margin:12px 0}.ext-notice p,.ext-roadmap p{margin:6px 0 0;max-width:1000px}.ext-roadmap h3{margin:0;font-size:14px}.ext-packages{display:grid;grid-template-columns:1fr;gap:12px;margin-top:12px}.ext-package{padding:18px}.ext-package-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.ext-package-head h3{margin:0 0 6px;font-size:15px}.ext-package-head p{margin:0 0 8px}.ext-package-head code,.ext-component code{font-size:11px;overflow-wrap:anywhere;white-space:pre-wrap;color:var(--mu)}.ext-components{margin-top:14px;border-top:1px solid var(--line)}.ext-component{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid var(--line)}.ext-component:last-child{border-bottom:0}.ext-component-info{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:0;flex:1}.ext-component-info b{font-size:13px}.ext-component-info p{margin:0}.ext-component-info code{max-width:100%}.ext-component-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.ext-component-actions .btn{white-space:nowrap}@media(max-width:760px){.ext-package-head,.ext-component{align-items:flex-start;flex-direction:column}.ext-component-actions{justify-content:flex-start}}
