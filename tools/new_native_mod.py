@@ -51,19 +51,19 @@ def create_project(mod_id: str, name: str, output_dir: str, target: str = "explo
     files = {
         "manifest.json": json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         "mod.cpp": r'''#include "00047_mod_api.h"
-#include "00047_mod_services.h"
+#include "windhawk_nonhook_compat.h"
 
 WMOD_00047_EXPORT std::uint32_t WINAPI WmodGetApiVersion(void) {
     return WMOD_00047_ABI_VERSION;
 }
 
 WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void) {
-    wmod::Log(L"info", L"Starter mod initialized");
+    Wh_Log(L"Starter mod initialized");
     return TRUE;
 }
 
 WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) {
-    wmod::Log(L"info", L"Starter mod shutting down");
+    Wh_Log(L"Starter mod shutting down");
 }
 ''',
         "CMakeLists.txt": f'''cmake_minimum_required(VERSION 3.21)
@@ -106,7 +106,7 @@ The first command builds a deterministic ZIP and validates it before publishing 
 
 ## Native code warning
 
-Native mods execute inside their target process without a sandbox. This template does not contain a hook engine or Windhawk API compatibility layer. Keep WmodShutdownV1 responsible for releasing resources owned by your mod, test in a disposable Windows environment, and enable only code you trust.
+Native mods execute inside their target process without a sandbox. This template includes a limited non-hook subset of the Windhawk API (logging, settings, and simple local values); it does not provide Windhawk function hooks, symbol APIs, or a compatible Windhawk runtime. Keep WmodShutdownV1 responsible for releasing resources owned by your mod, test in a disposable Windows environment, and enable only code you trust.
 ''',
     }
 
