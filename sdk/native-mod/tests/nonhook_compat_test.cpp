@@ -143,6 +143,14 @@ int wmain() {
     std::vector<BYTE> oversized(wmod::windhawk_compat::kMaxStorageBinaryBytes + 1, 0x5A);
     CHECK(Wh_SetBinaryValue(L"tooLarge", oversized.data(), oversized.size()) == FALSE);
 
+    std::vector<BYTE> maximumInput(wmod::windhawk_compat::kMaxStorageBinaryBytes);
+    for (size_t i = 0; i < maximumInput.size(); ++i)
+        maximumInput[i] = static_cast<BYTE>((i * 37) & 0xFF);
+    std::vector<BYTE> maximumOutput(maximumInput.size(), 0);
+    CHECK(Wh_SetBinaryValue(L"maxBlob", maximumInput.data(), maximumInput.size()) == TRUE);
+    CHECK(Wh_GetBinaryValue(L"maxBlob", maximumOutput.data(), maximumOutput.size()) == maximumOutput.size());
+    for (size_t i = 0; i < maximumInput.size(); ++i) CHECK(maximumOutput[i] == maximumInput[i]);
+
     // Delete removes keys from either storage section.
     CHECK(Wh_DeleteValue(L"counter") == TRUE);
     CHECK(Wh_GetIntValue(L"counter", 17) == 17);
