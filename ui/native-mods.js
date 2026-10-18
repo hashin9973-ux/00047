@@ -134,7 +134,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     let control = '';
     if (kind === 'boolean') {
       control = '<input type="checkbox" data-setting-id="' + id + '" data-setting-type="boolean" ' + (value === true ? 'checked' : '') + '>';
-    } else if (kind === 'select') {
+    } else if (kind === 'select' || (kind === 'string' && setting.dynamicSelect === true)) {
       control = '<select data-setting-id="' + id + '" data-setting-type="select">' +
         (setting.options || []).map(option => '<option value="' + esc(option.value) + '" ' + (String(value) === String(option.value) ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('') +
         '</select>';
