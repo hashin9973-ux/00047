@@ -537,7 +537,7 @@ inline BOOL Wh_SetStringValue(PCWSTR valueName, PCWSTR value) {
 
 // Binary values are stored separately from strings and integers in the package-scoped
 // INI file. A zero return means missing, malformed, or insufficient capacity.
-inline size_t Wh_GetBinaryValue(PCWSTR valueName, BYTE* buffer, size_t bufferSize) {
+inline size_t Wh_GetBinaryValue(PCWSTR valueName, void* buffer, size_t bufferSize) {
     if (!::wmod::windhawk_compat::ValidStorageKey(valueName) || (!buffer && bufferSize != 0))
         return 0;
     try {
@@ -555,14 +555,14 @@ inline size_t Wh_GetBinaryValue(PCWSTR valueName, BYTE* buffer, size_t bufferSiz
             decoded.size() > bufferSize || (decoded.size() > 0 && !buffer)) {
             return 0;
         }
-        if (!decoded.empty()) std::copy(decoded.begin(), decoded.end(), buffer);
+        if (!decoded.empty()) std::copy(decoded.begin(), decoded.end(), static_cast<BYTE*>(buffer));
         return decoded.size();
     } catch (...) {
         return 0;
     }
 }
 
-inline BOOL Wh_SetBinaryValue(PCWSTR valueName, const BYTE* buffer, size_t bufferSize) {
+inline BOOL Wh_SetBinaryValue(PCWSTR valueName, const void* buffer, size_t bufferSize) {
     if (!::wmod::windhawk_compat::ValidStorageKey(valueName) ||
         bufferSize > ::wmod::windhawk_compat::kMaxStorageBinaryBytes ||
         (bufferSize > 0 && !buffer)) return FALSE;
@@ -570,7 +570,7 @@ inline BOOL Wh_SetBinaryValue(PCWSTR valueName, const BYTE* buffer, size_t buffe
         const auto path = ::wmod::windhawk_compat::ValuesPath();
         if (path.empty()) return FALSE;
         std::wstring encoded;
-        if (!::wmod::windhawk_compat::EncodeBinary(buffer, bufferSize, encoded)) return FALSE;
+        if (!::wmod::windhawk_compat::EncodeBinary(static_cast<const BYTE*>(buffer), bufferSize, encoded)) return FALSE;
         return WritePrivateProfileStringW(L"binary", valueName, encoded.c_str(), path.c_str());
     } catch (...) {
         return FALSE;
