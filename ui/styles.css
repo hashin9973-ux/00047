@@ -327,3 +327,16 @@ textarea.glass.liquidglass-variant {
   -webkit-backdrop-filter: blur(18px) saturate(115%) !important;
   backdrop-filter: blur(18px) saturate(115%) !important;
 }
+
+
+/* General extension package manager and runtime-configuration dialog. */
+.plugin-package{padding:16px;margin-top:12px;min-width:0}
+.plugin-package .sec{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.plugin-package h3{margin:0 0 5px;font-size:14px}
+.plugin-package .mu{overflow-wrap:anywhere}
+.plugin-config-fields{display:grid;grid-template-columns:1fr;gap:12px}
+.plugin-config-field{display:flex;flex-direction:column;gap:6px;margin-bottom:10px;color:var(--tx);font-size:13px}
+.plugin-config-field input:not([type=checkbox]),.plugin-config-field select{width:100%;min-width:0;background:var(--glass-control-bg,rgba(25,27,33,.8));color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:10px;font:inherit}
+.plugin-config-field input[type=checkbox]{align-self:flex-start;accent-color:var(--accent,var(--tx))}
+.plugin-package pre{white-space:pre-wrap;overflow-wrap:anywhere}
+@media(min-width:900px){.plugin-config-fields{grid-template-columns:1fr 1fr}}

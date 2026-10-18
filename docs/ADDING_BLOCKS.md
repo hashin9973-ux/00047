@@ -51,7 +51,7 @@ Top-level properties:
 - `manifestVersion`: currently `1`.
 - `id`: unique package ID using lowercase letters, digits, dots, dashes or underscores. It is used as the installed package folder name.
 - `name` and `version`: human-readable package metadata.
-- `blocks`: 1–100 block definitions.
+- `blocks`: optional; if present, define 1–100 block definitions. A package may instead define `commands` or `services`.
 
 Each block uses the normal 00047 block UI metadata: `kind` (must start with `user.`), `category` (`condition` or `action`), `title`, optional `icon` and `description`, `fields`, and optional `summary`. Field types are `text`, `file`, `number` (with numeric `min` and `max`), `select` (with `options` such as `[["fast","Fast"]]`), `bool`, and `time`. Preset fields like `{"preset":"timeout"}` and `{"preset":"onFail"}` are also supported.
 
@@ -67,6 +67,19 @@ Each block uses the normal 00047 block UI metadata: `kind` (must start with `use
 A script reports a Condition result via its exit code: `0` means satisfied and any other code means not satisfied. For Actions, exit code `0` means success and non-zero means failure. stdout/stderr are captured by the current block runner where available. Use the usual `summary`/field schema to configure the editor.
 
 **This is an open runtime contract, not a list of built-in languages.** 00047 does not need to understand Python, JavaScript, Ruby, Lua, or another language; it invokes the `runtime.command` you declare. The interpreter must be installed and discoverable on PATH unless the ZIP provides a runnable interpreter/executable and the manifest points to it. Language package dependencies must also be installed or included by the plugin author.
+
+## App-level commands and background services
+
+A package does not need to define any `blocks` array. It may instead define `commands`, `services`, or both. This extends the same ZIP/plugin installer to app-level functionality that is not a condition or action in the automation graph.
+
+- `commands` are one-shot operations that appear in the Plugins page. They use the same `entrypoint`, `runtime.command`, `runtime.args`, and field definitions as blocks. The host returns the exit code, stdout, stderr, and elapsed time.
+- `services` are long-running external processes. The Plugins page can start and stop them. `autoStart: true` starts the service when 00047 launches. Services managed by 00047 are stopped on app exit or restart.
+- Both may define `fields` and a `defaults` object. Field values are passed as `FIELD_<KEY>` environment variables. `timeoutSec` is supported for one-shot commands (1–86400 seconds; default 120 seconds).
+- Commands/services can launch any available interpreter or packaged executable; 00047 does not parse the language. The interpreter/compiler/runtime and any dependencies still need to be compatible with the machine.
+
+See [`docs/PLUGIN_PLATFORM.md`](PLUGIN_PLATFORM.md) for a complete manifest example and the native-mod roadmap.
+
+**This still is not native DLL injection.** A script command or background service can orchestrate other tools, but cannot by itself hook functions inside Explorer or other processes. Windhawk-like native customization requires a separate Windows-only native module host, hooking/compatibility layer, and recovery path.
 
 ## Importing
 

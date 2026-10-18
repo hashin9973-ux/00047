@@ -2,6 +2,7 @@
 
 mod blocks;
 mod custom;
+mod plugin_host;
 mod spec;
 mod engine;
 mod logstore;
@@ -11,6 +12,7 @@ mod sys;
 
 use engine::{Engine, Runtime};
 use model::{Automation, LogEntry, RunRecord};
+use plugin_host::{PluginHost, PluginRunResult};
 use std::sync::{Arc, Mutex};
 use store::Store;
 use tauri::{
@@ -264,10 +266,15 @@ fn hide_to_tray(app: AppHandle, eng: State<'_, Arc<Engine>>) {
 }
 
 #[tauri::command]
-async fn exit_app(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Result<(), String> {
+async fn exit_app(
+    app: AppHandle,
+    eng: State<'_, Arc<Engine>>,
+    host: State<'_, Arc<PluginHost>>,
+) -> Result<(), String> {
     save_window(&app);
     let e = eng.inner().clone();
     e.shutdown().await;
+    host.stop_all().await;
     app.exit(0);
     Ok(())
 }
@@ -358,6 +365,40 @@ fn list_block_specs() -> serde_json::Value {
 }
 
 #[tauri::command]
+async fn list_external_plugins(host: State<'_, Arc<PluginHost>>) -> serde_json::Value {
+    host.list_plugins().await
+}
+
+#[tauri::command]
+async fn plugin_run_command(
+    host: State<'_, Arc<PluginHost>>,
+    plugin_id: String,
+    command_id: String,
+    cfg: serde_json::Value,
+) -> Result<PluginRunResult, String> {
+    host.run_command(plugin_id, command_id, cfg).await
+}
+
+#[tauri::command]
+async fn plugin_start_service(
+    host: State<'_, Arc<PluginHost>>,
+    plugin_id: String,
+    service_id: String,
+    cfg: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    host.start_service(plugin_id, service_id, cfg).await
+}
+
+#[tauri::command]
+async fn plugin_stop_service(
+    host: State<'_, Arc<PluginHost>>,
+    plugin_id: String,
+    service_id: String,
+) -> Result<serde_json::Value, String> {
+    host.stop_service(plugin_id, service_id).await
+}
+
+#[tauri::command]
 async fn block_pack_preview(app: AppHandle) -> Result<Option<custom::PackPreview>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog().file().add_filter("00047 script plugin pack", &["zip"]).pick_file(move |p| {
@@ -381,10 +422,15 @@ fn open_blocks_folder() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn restart_app(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Result<(), String> {
+async fn restart_app(
+    app: AppHandle,
+    eng: State<'_, Arc<Engine>>,
+    host: State<'_, Arc<PluginHost>>,
+) -> Result<(), String> {
     save_window(&app);
     let e = eng.inner().clone();
     e.shutdown().await;
+    host.stop_all().await;
     app.restart()
 }
 
@@ -412,8 +458,10 @@ fn quit_app(app: &AppHandle) {
     save_window(app);
     let app = app.clone();
     let eng = app.state::<Arc<Engine>>().inner().clone();
+    let host = app.state::<Arc<PluginHost>>().inner().clone();
     tauri::async_runtime::spawn(async move {
         eng.shutdown().await;
+        host.stop_all().await;
         app.exit(0);
     });
 }
@@ -476,6 +524,10 @@ fn main() {
             block_pack_preview,
             block_pack_install,
             open_blocks_folder,
+            list_external_plugins,
+            plugin_run_command,
+            plugin_start_service,
+            plugin_stop_service,
             restart_app
         ])
         .setup(|app| {
@@ -485,8 +537,17 @@ fn main() {
             let _ = std::fs::create_dir_all(dir.join("blocks"));
             let (store, warn) = Store::load(&dir);
             let engine = Arc::new(Engine::new(app.handle().clone(), Arc::new(store), &dir));
+            let plugin_host = Arc::new(PluginHost::default());
             app.manage(engine.clone());
+            app.manage(plugin_host.clone());
             app.manage(Mutex::new(sys::CpuState::default()));
+            let host_for_startup = plugin_host.clone();
+            let engine_for_startup = engine.clone();
+            tauri::async_runtime::spawn(async move {
+                for warning in host_for_startup.start_auto_services().await {
+                    engine_for_startup.app_log("error", format!("Auto-start plugin service failed: {warning}"));
+                }
+            });
             engine.app_log("info", format!("00047 started (data folder: {})", dir.display()));
             if let Some(w) = warn {
                 engine.app_log("error", w);
@@ -530,6 +591,10 @@ fn main() {
             if let Some(e) = handle.try_state::<Arc<Engine>>() {
                 let e = e.inner().clone();
                 tauri::async_runtime::block_on(e.shutdown());
+            }
+            if let Some(host) = handle.try_state::<Arc<PluginHost>>() {
+                let host = host.inner().clone();
+                tauri::async_runtime::block_on(host.stop_all());
             }
         }
     });

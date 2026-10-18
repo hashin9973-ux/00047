@@ -612,14 +612,132 @@ async function loadBlockSpecs() {
   catch (e) { toast('Could not load extra blocks: ' + e, 'err'); }
 }
 
+function pluginFieldHtml(field, value) {
+  const key = esc(field.key || '');
+  const label = esc(field.label || field.key || 'Setting');
+  const current = value ?? field.default ?? '';
+  const required = field.required ? ' required' : '';
+  const help = field.help ? `<small class="mu">${esc(field.help)}</small>` : '';
+  if (field.type === 'bool') {
+    return `<label class="plugin-config-field"><span>${label}</span><input data-plugin-field="${key}" type="checkbox"${current === true ? ' checked' : ''}${required}></label>${help}`;
+  }
+  if (field.type === 'select') {
+    const options = (field.options || []).map(pair => `<option value="${esc(pair[0])}"${String(pair[0]) === String(current) ? ' selected' : ''}>${esc(pair[1])}</option>`).join('');
+    return `<label class="plugin-config-field"><span>${label}</span><select data-plugin-field="${key}"${required}>${options}</select></label>${help}`;
+  }
+  const type = field.type === 'number' ? 'number' : field.type === 'time' ? 'time' : 'text';
+  const min = field.type === 'number' && field.min != null ? ` min="${esc(field.min)}"` : '';
+  const max = field.type === 'number' && field.max != null ? ` max="${esc(field.max)}"` : '';
+  const maxLen = field.maxLen != null ? ` maxlength="${esc(field.maxLen)}"` : '';
+  return `<label class="plugin-config-field"><span>${label}</span><input data-plugin-field="${key}" type="${type}" value="${esc(current)}"${min}${max}${maxLen}${required}></label>${help}`;
+}
+
+function promptPluginConfig(title, fields = [], defaults = {}) {
+  if (!fields.length) return Promise.resolve({});
+  return new Promise(resolve => {
+    const m = $('#modal');
+    const controls = fields.map(f => pluginFieldHtml(f, defaults?.[f.key])).join('');
+    m.innerHTML = `<form class="mbox glass wide" id="plugin-config-form"><h3>${esc(title)}</h3><div class="mbody"><p class="mu">Settings are passed to the plugin process. It runs with the current user's permissions.</p><div class="plugin-config-fields">${controls}</div></div><div class="mbtn"><button class="btn" type="button" data-plugin-cancel>Cancel</button><button class="btn primary" type="submit">Continue</button></div></form>`;
+    m.hidden = false;
+    const form = $('#plugin-config-form', m);
+    const close = value => { m.hidden = true; m.innerHTML = ''; resolve(value); };
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      const cfg = {};
+      for (const input of form.querySelectorAll('[data-plugin-field]')) {
+        const key = input.dataset.pluginField;
+        cfg[key] = input.type === 'checkbox' ? input.checked
+          : input.type === 'number' ? Number(input.value) : input.value;
+      }
+      close(cfg);
+    });
+    $('[data-plugin-cancel]', form).addEventListener('click', () => close(null));
+    m.onclick = event => { if (event.target === m) close(null); };
+  });
+}
+
+async function invokePluginCommand(plugin, command) {
+  const cfg = await promptPluginConfig(command.title, command.fields || [], command.defaults || {});
+  if (cfg === null) return;
+  try {
+    const result = await invoke('plugin_run_command', { pluginId: plugin.id, commandId: command.id, cfg });
+    const state = result.success ? 'Succeeded' : `Exited with code ${result.exit_code ?? 'unknown'}`;
+    const output = [result.stdout ? `<h4>Standard output</h4><pre>${esc(result.stdout)}</pre>` : '',
+      result.stderr ? `<h4>Standard error</h4><pre>${esc(result.stderr)}</pre>` : ''].join('');
+    await htmlModal(`${command.title} — ${state}`,
+      `<p>${esc(state)} in ${result.elapsed_ms} ms.</p>${output || '<p class="mu">The process produced no output.</p>'}`,
+      [['close', 'Close']]);
+  } catch (error) { toast(`Plugin command failed: ${error}`, 'err'); }
+}
+
+async function togglePluginService(plugin, service) {
+  try {
+    if (service.running) {
+      await invoke('plugin_stop_service', { pluginId: plugin.id, serviceId: service.id });
+      toast(`Stopped service: ${service.title}`);
+    } else {
+      const cfg = await promptPluginConfig(service.title, service.fields || [], service.defaults || {});
+      if (cfg === null) return;
+      await invoke('plugin_start_service', { pluginId: plugin.id, serviceId: service.id, cfg });
+      toast(`Started service: ${service.title}`);
+    }
+    await renderPlugins();
+  } catch (error) { toast(`Plugin service failed: ${error}`, 'err'); }
+}
+
 async function renderPlugins() {
- const host=$('#view-plugins');
- host.innerHTML='<div class="plugins-head"><div><h2>Plugins</h2><p class="mu">Install and manage trusted 00047 block packs.</p></div><div class="plugins-actions"><button class="btn" data-plugin-action="folder">Open plugins folder</button><button class="btn" data-plugin-action="reload">Reload plugins</button><button class="btn primary" data-plugin-action="install">+ Install plugin</button></div></div><div class="plugin-grid"><article class="card glass plugin-card"><div class="plugin-icon">▦</div><div><h3>Block packs</h3><p class="mu">Add custom conditions and actions to the automation editor using a JSON block pack.</p></div></article><article class="card glass plugin-card"><div class="plugin-icon">⚠</div><div><h3>Trust and permissions</h3><p class="mu">Installed blocks can run programs and scripts with your Windows account permissions. Review commands before installing.</p></div></article></div><div class="card glass plugin-list"><div class="sec"><h3>Installed plugins</h3><span class="mu" id="plugin-count">Loading…</span></div><div id="plugin-items" class="plugin-items"><p class="mu">Loading installed block packs…</p></div><div id="plugin-errors"></div></div>';
- host.querySelectorAll('[data-plugin-action]').forEach(b=>b.addEventListener('click',async()=>{const a=b.dataset.pluginAction;if(a==='folder'){try{await invoke('open_blocks_folder')}catch(e){toast('Could not open plugins folder: '+e,'err')}}else if(a==='install')await installPack();else if(a==='reload')await reloadBlocks()}));
- try{const info=await invoke('list_block_specs');if(S.view!=='plugins')return;const custom=info.specs.filter(x=>x.origin==='custom');$('#plugin-count').textContent=`${custom.length} installed`;
- $('#plugin-items').innerHTML=custom.length?custom.map(x=>`<div class="plugin-item"><div class="plugin-icon small">▦</div><div class="plugin-info"><b>${esc(x.title)}</b><small>${esc(x.category)} · ${esc(x.kind)}</small></div><span class="plugin-status">Installed</span></div>`).join(''):'<div class="plugin-empty"><div class="plugin-icon">＋</div><b>No plugins installed</b><p class="mu">Install a trusted JSON block pack to add custom blocks.</p><button class="btn primary" data-plugin-action="install">Install your first plugin</button></div>';
- const b=$('#plugin-items [data-plugin-action="install"]');if(b)b.addEventListener('click',installPack);$('#plugin-errors').innerHTML=info.errors.length?`<div class="plugin-errors"><b>Plugin loading warnings</b><ul>${info.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`:'';
- }catch(e){$('#plugin-count').textContent='Unavailable';$('#plugin-items').innerHTML=`<p class="er">Could not load plugins: ${esc(e)}</p><button class="btn" data-plugin-action="retry">Retry</button>`;}
+  const host = $('#view-plugins');
+  host.innerHTML = '<div class="plugins-head"><div><h2>Plugins</h2><p class="mu">Manage block packs, app-level commands, and background workers. Packages may run native executables or any installed language runtime.</p></div><div class="plugins-actions"><button class="btn" data-plugin-action="folder">Open plugins folder</button><button class="btn" data-plugin-action="reload">Reload plugins</button><button class="btn primary" data-plugin-action="install">+ Install package</button></div></div><div class="plugin-grid"><article class="card glass plugin-card"><div class="plugin-icon">⌘</div><div><h3>External runtimes</h3><p class="mu">Commands and long-running services run outside 00047, separate from the automation graph.</p></div></article><article class="card glass plugin-card"><div class="plugin-icon">⚠</div><div><h3>Trust and permissions</h3><p class="mu">External programs inherit your Windows account permissions. They are not sandboxed. Review source and runtime commands before installing.</p></div></article></div><div class="card glass plugin-list"><div class="sec"><h3>Installed packages</h3><span class="mu" id="plugin-count">Loading…</span></div><div id="plugin-items" class="plugin-items"><p class="mu">Loading packages…</p></div><div id="plugin-errors"></div></div>';
+  host.querySelectorAll('[data-plugin-action]').forEach(button => button.addEventListener('click', async () => {
+    const action = button.dataset.pluginAction;
+    if (action === 'folder') {
+      try { await invoke('open_blocks_folder'); } catch (error) { toast('Could not open plugins folder: ' + error, 'err'); }
+    } else if (action === 'install') await installPack();
+    else if (action === 'reload') await reloadBlocks();
+  }));
+
+  try {
+    const info = await invoke('list_external_plugins');
+    if (S.view !== 'plugins') return;
+    const plugins = info.plugins || [];
+    const blockInfo = await invoke('list_block_specs');
+    const customBlocks = (blockInfo.specs || []).filter(x => x.origin === 'custom');
+    $('#plugin-count').textContent = `${plugins.length} packages · ${customBlocks.length} custom blocks loaded`;
+    const packagesHtml = plugins.map(plugin => {
+      const commands = (plugin.commands || []).map(command =>
+        `<div class="plugin-item"><div class="plugin-icon small">▶</div><div class="plugin-info"><b>${esc(command.title)}</b><small>Command · ${esc(command.id)} · ${esc(command.runtime?.command || '')}</small></div><button class="btn" data-plugin-run="${esc(plugin.id)}" data-command-id="${esc(command.id)}">Run</button></div>`).join('');
+      const services = (plugin.services || []).map(service =>
+        `<div class="plugin-item"><div class="plugin-icon small">◉</div><div class="plugin-info"><b>${esc(service.title)}</b><small>Service · ${esc(service.id)} · ${service.running ? 'Running' : 'Stopped'}${service.pid ? ' · PID ' + esc(service.pid) : ''}</small></div><button class="btn ${service.running ? '' : 'primary'}" data-plugin-service="${esc(plugin.id)}" data-service-id="${esc(service.id)}" data-running="${service.running ? 'true' : 'false'}">${service.running ? 'Stop' : 'Start'}</button></div>`).join('');
+      const blocks = plugin.blockCount ? `<p class="mu">${plugin.blockCount} automation block(s)</p>` : '';
+      const about = plugin.description ? `<p class="mu">${esc(plugin.description)}</p>` : '';
+      return `<article class="plugin-package card glass"><div class="sec"><div><h3>${esc(plugin.name)}</h3><small class="mu">${esc(plugin.id)} · v${esc(plugin.version)}</small></div><span class="plugin-status">Installed</span></div>${about}${blocks}${commands || services ? `<div class="plugin-items">${commands}${services}</div>` : '<p class="mu">No app-level commands or services. This package may contribute automation blocks only.</p>'}</article>`;
+    }).join('');
+    const legacy = !plugins.length && customBlocks.length
+      ? `<article class="plugin-package card glass"><h3>Legacy custom blocks</h3><p class="mu">${customBlocks.length} custom block(s) are loaded from block packages. They remain supported for compatibility.</p></article>`
+      : '';
+    $('#plugin-items').innerHTML = packagesHtml + legacy || '<div class="plugin-empty"><div class="plugin-icon">＋</div><b>No external packages installed</b><p class="mu">Install a trusted ZIP package to add blocks, commands, or services.</p><button class="btn primary" data-plugin-action="install">Install your first package</button></div>';
+    const installButton = $('#plugin-items [data-plugin-action="install"]');
+    if (installButton) installButton.addEventListener('click', installPack);
+    for (const button of host.querySelectorAll('[data-plugin-run]')) {
+      button.addEventListener('click', () => {
+        const plugin = plugins.find(x => x.id === button.dataset.pluginRun);
+        const command = plugin?.commands?.find(x => x.id === button.dataset.commandId);
+        if (plugin && command) invokePluginCommand(plugin, command);
+      });
+    }
+    for (const button of host.querySelectorAll('[data-plugin-service]')) {
+      button.addEventListener('click', () => {
+        const plugin = plugins.find(x => x.id === button.dataset.pluginService);
+        const service = plugin?.services?.find(x => x.id === button.dataset.serviceId);
+        if (plugin && service) togglePluginService(plugin, service);
+      });
+    }
+    const warnings = [...(info.errors || []), ...(blockInfo.errors || [])];
+    $('#plugin-errors').innerHTML = warnings.length ? `<div class="plugin-errors"><b>Plugin loading warnings</b><ul>${warnings.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>` : '';
+  } catch (error) {
+    $('#plugin-count').textContent = 'Unavailable';
+    $('#plugin-items').innerHTML = `<p class="er">Could not load plugins: ${esc(error)}</p>`;
+  }
 }
 
 async function openBlocksManager() {
@@ -642,14 +760,16 @@ async function installPack() {
   try {
     const pv = await invoke('block_pack_preview');
     if (!pv) return;
-    const rows = pv.blocks.map(b => `<li><b>${esc(b.title)}</b> <small>${esc(b.category)} · ${esc(b.kind)}</small><pre>${esc(b.command)}</pre></li>`).join('');
-    const errs = pv.errors.length ? `<p class="er">Skipped: ${pv.errors.map(esc).join('<br>')}</p>` : '';
+    const blocks = (pv.blocks || []).map(b => `<li><b>${esc(b.title)}</b> <small>${esc(b.category)} · ${esc(b.kind)}</small><pre>${esc(b.command)}</pre></li>`).join('');
+    const extensions = (pv.extensions || []).map(x => `<li><b>${esc(x.title)}</b> <small>${esc(x.extension_type)} · ${esc(x.id)}</small><pre>${esc(x.command)}</pre></li>`).join('');
+    const components = (blocks || extensions) ? `<ul class="bp">${blocks}${extensions}</ul>` : '<p>No executable components were declared.</p>';
+    const errs = (pv.errors || []).length ? `<p class="er">Skipped: ${pv.errors.map(esc).join('<br>')}</p>` : '';
     const c = await htmlModal(`Install "${pv.file}"?`,
-      `<p>This ZIP will install these blocks. The listed runtime commands can execute code with your Windows account permissions:</p><ul class="bp">${rows}</ul>${errs}`,
+      `<p>This package may register automation blocks, app-level commands, and long-running services. Runtime code runs with your Windows account permissions; install only source you trust.</p>${components}${errs}`,
       [['cancel', 'Cancel'], ['go', 'Install', 'primary']]);
     if (c !== 'go') return;
     await invoke('block_pack_install', { path: pv.path });
-    toast('Plugin installed. Choose "Reload" in Custom blocks to load it.');
+    toast('Plugin package installed. Choose Reload plugins to load its blocks and auto-start services.');
   } catch (e) { toast('Install failed: ' + e, 'err'); }
 }
 

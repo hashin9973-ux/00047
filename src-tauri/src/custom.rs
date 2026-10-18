@@ -393,6 +393,96 @@ fn read_plugin_zip(path: &Path) -> Result<PluginArchive, String> {
     Ok(PluginArchive { manifest, files })
 }
 
+fn valid_extension_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && !id.starts_with('.')
+        && !id.ends_with('.')
+        && !id.contains("..")
+        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-' || c == '_')
+}
+
+/// Validates an app-level command or long-lived service with the familiar block field/runtime schema.
+fn validate_runtime_extension(ext: &Value, extension_type: &str) -> Result<(), String> {
+    let label = format!("{} extension", extension_type);
+    let id = ext.get("id").and_then(Value::as_str).unwrap_or("");
+    if !valid_extension_id(id) {
+        return Err(format!("{label} id must use lowercase a-z, digits, dots, dashes or underscores (max 80 chars)"));
+    }
+    let title = ext.get("title").and_then(Value::as_str).unwrap_or("").trim();
+    if title.is_empty() || title.chars().count() > 100 {
+        return Err(format!("{label} '{id}': title is required (max 100 characters)"));
+    }
+    let entrypoint = ext.get("entrypoint").and_then(Value::as_str).unwrap_or("");
+    if !valid_relative_path(entrypoint) {
+        return Err(format!("{label} '{id}': entrypoint must be a safe relative path inside the ZIP"));
+    }
+    let runtime = ext.get("runtime").ok_or_else(|| format!("{label} '{id}': runtime is required"))?;
+    let command = runtime.get("command").and_then(Value::as_str).unwrap_or("").trim();
+    if command.is_empty() || command.len() > 2048 {
+        return Err(format!("{label} '{id}': runtime.command is required (max 2048 characters)"));
+    }
+    let args = runtime.get("args").and_then(Value::as_array)
+        .ok_or_else(|| format!("{label} '{id}': runtime.args must be an array of strings"))?;
+    if args.len() > 128 {
+        return Err(format!("{label} '{id}': runtime.args may contain at most 128 arguments"));
+    }
+    if args.iter().any(|arg| arg.as_str().is_none()) {
+        return Err(format!("{label} '{id}': runtime.args must contain only strings"));
+    }
+    let fields = ext.get("fields").cloned().unwrap_or_else(|| json!([]));
+    if !fields.is_array() {
+        return Err(format!("{label} '{id}': fields must be an array"));
+    }
+    let fake = json!({
+        "kind": "user.extension",
+        "category": "action",
+        "title": "Extension",
+        "fields": fields,
+        "run": {
+            "type": "plugin",
+            "program": command,
+            "args": args,
+            "entrypoint": entrypoint
+        }
+    });
+    check_spec(&fake).map_err(|e| format!("{label} '{id}': {e}"))?;
+    for field in spec::fields(&fake) {
+        let key = field.get("key").and_then(Value::as_str).unwrap_or("");
+        if matches!(key, "pluginDir" | "entrypoint" | "pluginId" | "extensionId") {
+            return Err(format!("{label} '{id}': field key '{key}' is reserved by the plugin host"));
+        }
+    }
+    if let Some(timeout) = ext.get("timeoutSec") {
+        let n = timeout.as_u64().ok_or_else(|| format!("{label} '{id}': timeoutSec must be an integer from 1 to 86400"))?;
+        if !(1..=86400).contains(&n) {
+            return Err(format!("{label} '{id}': timeoutSec must be from 1 to 86400"));
+        }
+    }
+    if let Some(defaults) = ext.get("defaults") {
+        if !defaults.is_object() {
+            return Err(format!("{label} '{id}': defaults must be a JSON object"));
+        }
+    }
+    if extension_type == "service" && ext.get("autoStart").is_some() && !ext["autoStart"].is_boolean() {
+        return Err(format!("{label} '{id}': autoStart must be a boolean"));
+    }
+    Ok(())
+}
+
+fn extension_array<'a>(manifest: &'a Value, key: &str) -> Result<Vec<&'a Value>, String> {
+    match manifest.get(key) {
+        None => Ok(Vec::new()),
+        Some(Value::Array(items)) => {
+            if items.len() > 100 {
+                return Err(format!("manifest {key} may contain at most 100 entries"));
+            }
+            Ok(items.iter().collect())
+        }
+        Some(_) => Err(format!("manifest {key} must be an array")),
+    }
+}
+
 fn validate_manifest_header(manifest: &Value) -> Result<(), String> {
     if manifest.get("manifestVersion").and_then(Value::as_u64) != Some(1) {
         return Err("manifestVersion must be 1".into());
@@ -409,10 +499,21 @@ fn validate_manifest_header(manifest: &Value) -> Result<(), String> {
     if version.is_empty() || version.len() > 40 {
         return Err("manifest version is required (max 40 characters)".into());
     }
-    let blocks = manifest.get("blocks").and_then(Value::as_array)
-        .ok_or("manifest blocks must be an array")?;
-    if blocks.is_empty() || blocks.len() > 100 {
-        return Err("manifest must define between 1 and 100 blocks".into());
+
+    let blocks = extension_array(manifest, "blocks")?;
+    let commands = extension_array(manifest, "commands")?;
+    let services = extension_array(manifest, "services")?;
+    if blocks.is_empty() && commands.is_empty() && services.is_empty() {
+        return Err("manifest must define at least one block, command, or service".into());
+    }
+    for ext in &commands { validate_runtime_extension(ext, "command")?; }
+    for ext in &services { validate_runtime_extension(ext, "service")?; }
+    let mut extension_ids = HashSet::new();
+    for ext in commands.iter().chain(services.iter()) {
+        let ext_id = ext.get("id").and_then(Value::as_str).unwrap_or("");
+        if !extension_ids.insert(ext_id.to_string()) {
+            return Err(format!("manifest contains duplicate app-level extension id '{ext_id}'"));
+        }
     }
     Ok(())
 }
@@ -554,10 +655,19 @@ pub struct BlockPreview {
     pub command: String,
 }
 #[derive(Serialize)]
+pub struct ExtensionPreview {
+    pub extension_type: String,
+    pub id: String,
+    pub title: String,
+    pub entrypoint: String,
+    pub command: String,
+}
+#[derive(Serialize)]
 pub struct PackPreview {
     pub file: String,
     pub path: String,
     pub blocks: Vec<BlockPreview>,
+    pub extensions: Vec<ExtensionPreview>,
     pub errors: Vec<String>,
 }
 
@@ -573,10 +683,20 @@ fn describe(s: &Value) -> String {
     parts.join(" ")
 }
 
+fn describe_runtime(ext: &Value) -> String {
+    let runtime = &ext["runtime"];
+    let mut parts = vec![runtime["command"].as_str().unwrap_or("").to_string()];
+    if let Some(args) = runtime["args"].as_array() {
+        parts.extend(args.iter().map(|a| format!("\"{}\"", a.as_str().unwrap_or(""))));
+    }
+    parts.join(" ")
+}
+
 fn preview_plugin(path: &Path) -> Result<PackPreview, String> {
     let archive = read_plugin_zip(path)?;
     let manifest = &archive.manifest;
     let mut blocks = Vec::new();
+    let mut extensions = Vec::new();
     let mut errors = Vec::new();
     let preview_dir = PathBuf::from("__00047_plugin_preview__");
     let manifest_blocks = manifest["blocks"].as_array().cloned().unwrap_or_default();
@@ -600,13 +720,35 @@ fn preview_plugin(path: &Path) -> Result<PackPreview, String> {
             Err(e) => errors.push(e),
         }
     }
-    if blocks.is_empty() {
-        return Err(format!("no valid plugin blocks in this ZIP{}", if errors.is_empty() { String::new() } else { format!(": {}", errors.join("; ")) }));
+    for (extension_type, key) in [("command", "commands"), ("service", "services")] {
+        if let Some(items) = manifest.get(key).and_then(Value::as_array) {
+            for ext in items {
+                let id = ext["id"].as_str().unwrap_or("unknown");
+                let entrypoint = ext["entrypoint"].as_str().unwrap_or("");
+                if let Err(e) = validate_runtime_extension(ext, extension_type) {
+                    errors.push(e);
+                    continue;
+                }
+                if !valid_relative_path(entrypoint) || !archive.files.contains(entrypoint) {
+                    errors.push(format!("{extension_type} '{id}': entrypoint '{entrypoint}' is missing or unsafe in the ZIP"));
+                    continue;
+                }
+                extensions.push(ExtensionPreview {
+                    extension_type: extension_type.into(),
+                    id: id.into(),
+                    title: ext["title"].as_str().unwrap_or("").into(),
+                    entrypoint: entrypoint.into(),
+                    command: describe_runtime(ext),
+                });
+            }
+        }
+    }
+    if blocks.is_empty() && extensions.is_empty() {
+        return Err(format!("no valid plugin components in this ZIP{}", if errors.is_empty() { String::new() } else { format!(": {}", errors.join("; ")) }));
     }
     let file = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    Ok(PackPreview { file, path: path.to_string_lossy().to_string(), blocks, errors })
+    Ok(PackPreview { file, path: path.to_string_lossy().to_string(), blocks, extensions, errors })
 }
-
 pub fn preview(path: &Path) -> Result<PackPreview, String> {
     if path.extension().and_then(|x| x.to_str()).map(|x| x.eq_ignore_ascii_case("zip")).unwrap_or(false) {
         return preview_plugin(path);
@@ -628,7 +770,7 @@ pub fn preview(path: &Path) -> Result<PackPreview, String> {
         return Err(format!("no valid blocks in this file{}", if errors.is_empty() { String::new() } else { format!(": {}", errors.join("; ")) }));
     }
     let file = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    Ok(PackPreview { file, path: path.to_string_lossy().to_string(), blocks, errors })
+    Ok(PackPreview { file, path: path.to_string_lossy().to_string(), blocks, extensions: vec![], errors })
 }
 
 fn extract_plugin(path: &Path, destination: &Path) -> Result<(), String> {
@@ -679,19 +821,31 @@ fn install_plugin(path: &Path, file_name: &str) -> Result<String, String> {
         let _ = fs::remove_dir_all(&stage);
         return Err(e);
     }
-    // Validate the actual extracted tree before replacing an installed version.
+    // Validate all executable entrypoints after extraction before replacing an installed version.
     let manifest_blocks = archive.manifest["blocks"].as_array().cloned().unwrap_or_default();
-    let mut valid_blocks = 0usize;
+    let mut valid_components = 0usize;
     for block in &manifest_blocks {
         if let Ok(spec) = normalize_plugin_block(block, &stage, true) {
             if check_spec(&spec).is_ok() {
-                valid_blocks += 1;
+                valid_components += 1;
             }
         }
     }
-    if valid_blocks == 0 {
+    for (extension_type, key) in [("command", "commands"), ("service", "services")] {
+        if let Some(items) = archive.manifest.get(key).and_then(Value::as_array) {
+            for ext in items {
+                if validate_runtime_extension(ext, extension_type).is_ok() {
+                    let entrypoint = ext["entrypoint"].as_str().unwrap_or("");
+                    if valid_relative_path(entrypoint) && stage.join(entrypoint).is_file() {
+                        valid_components += 1;
+                    }
+                }
+            }
+        }
+    }
+    if valid_components == 0 {
         let _ = fs::remove_dir_all(&stage);
-        return Err("plugin contained no valid blocks after extraction".into());
+        return Err("plugin contained no valid blocks, commands, or services after extraction".into());
     }
     if target.exists() {
         fs::rename(&target, &backup).map_err(|e| format!("could not stage previous plugin version: {e}"))?;
@@ -720,6 +874,97 @@ pub fn install(path: &Path) -> Result<String, String> {
     }
     fs::copy(path, &dest).map_err(|e| format!("copy: {e}"))?;
     Ok(pv.file)
+}
+
+/// Lists installed package metadata, including app-level extensions that do not register blocks.
+pub fn list_external_plugins() -> Value {
+    let Some(root) = DIR.get() else {
+        return json!({"plugins": [], "errors": ["plugin directory is not initialised"]});
+    };
+    let packages = root.join("packages");
+    let mut plugins = Vec::new();
+    let mut errors = Vec::new();
+    let entries = match fs::read_dir(&packages) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return json!({"plugins": [], "errors": []}),
+        Err(e) => return json!({"plugins": [], "errors": [format!("cannot read packages directory: {e}")]}),
+    };
+    let mut dirs: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join("manifest.json").is_file()).collect();
+    dirs.sort();
+    for dir in dirs {
+        let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let content = match fs::read_to_string(dir.join("manifest.json")) {
+            Ok(v) => v,
+            Err(e) => { errors.push(format!("{name}: cannot read manifest.json: {e}")); continue; }
+        };
+        let manifest: Value = match serde_json::from_str(content.trim_start_matches('\u{feff}')) {
+            Ok(v) => v,
+            Err(e) => { errors.push(format!("{name}: invalid manifest.json: {e}")); continue; }
+        };
+        if let Err(e) = validate_manifest_header(&manifest) {
+            errors.push(format!("{name}: {e}")); continue;
+        }
+        let id = manifest["id"].as_str().unwrap_or("");
+        if id != name {
+            errors.push(format!("{name}: package directory does not match manifest id '{id}'"));
+            continue;
+        }
+        let commands: Vec<Value> = manifest["commands"].as_array().into_iter().flatten().map(|ext| json!({
+            "id": ext["id"], "title": ext["title"], "description": ext["description"],
+            "entrypoint": ext["entrypoint"], "runtime": ext["runtime"], "fields": spec::fields(ext),
+            "defaults": ext["defaults"], "timeoutSec": ext["timeoutSec"]
+        })).collect();
+        let services: Vec<Value> = manifest["services"].as_array().into_iter().flatten().map(|ext| json!({
+            "id": ext["id"], "title": ext["title"], "description": ext["description"],
+            "entrypoint": ext["entrypoint"], "runtime": ext["runtime"], "fields": spec::fields(ext),
+            "defaults": ext["defaults"], "autoStart": ext["autoStart"]
+        })).collect();
+        plugins.push(json!({
+            "id": id, "name": manifest["name"], "version": manifest["version"],
+            "description": manifest["description"],
+            "blockCount": manifest["blocks"].as_array().map(|b| b.len()).unwrap_or(0),
+            "commands": commands, "services": services
+        }));
+    }
+    json!({"plugins": plugins, "errors": errors})
+}
+
+/// Resolves a declared app-level command/service. The entrypoint must resolve to a file
+/// below the installed package directory; the UI never supplies executable paths.
+pub fn runtime_extension(plugin_id: &str, extension_type: &str, extension_id: &str) -> Result<(PathBuf, Value), String> {
+    if !valid_plugin_id(plugin_id) { return Err("invalid plugin id".into()); }
+    if !valid_extension_id(extension_id) { return Err("invalid extension id".into()); }
+    let key = match extension_type {
+        "command" => "commands",
+        "service" => "services",
+        _ => return Err("extension type must be command or service".into()),
+    };
+    let root = DIR.get().ok_or("plugin directory is not initialised")?;
+    let package = fs::canonicalize(root.join("packages").join(plugin_id))
+        .map_err(|e| format!("plugin package not found: {e}"))?;
+    let manifest_text = fs::read_to_string(package.join("manifest.json")).map_err(|e| format!("cannot read manifest.json: {e}"))?;
+    if manifest_text.len() as u64 > MAX_PLUGIN_MANIFEST {
+        return Err("manifest.json exceeds the 1 MB limit".into());
+    }
+    let manifest: Value = serde_json::from_str(manifest_text.trim_start_matches('\u{feff}'))
+        .map_err(|e| format!("invalid manifest.json: {e}"))?;
+    validate_manifest_header(&manifest)?;
+    if manifest["id"].as_str() != Some(plugin_id) {
+        return Err("package id does not match the installed directory".into());
+    }
+    let ext = manifest.get(key).and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|item| item["id"].as_str() == Some(extension_id)))
+        .cloned().ok_or_else(|| format!("{extension_type} '{extension_id}' is not declared by plugin '{plugin_id}'"))?;
+    validate_runtime_extension(&ext, extension_type)?;
+    let entrypoint = ext["entrypoint"].as_str().unwrap_or("");
+    if !valid_relative_path(entrypoint) { return Err("extension entrypoint is not a safe relative path".into()); }
+    let resolved = fs::canonicalize(package.join(entrypoint))
+        .map_err(|e| format!("extension entrypoint could not be resolved: {e}"))?;
+    if !resolved.starts_with(&package) || !resolved.is_file() {
+        return Err("extension entrypoint must be a file inside its package directory".into());
+    }
+    Ok((package, ext))
 }
 
 #[cfg(test)]
@@ -755,6 +1000,61 @@ mod script_plugin_tests {
         assert_eq!(normalized["run"]["type"], "plugin");
         assert_eq!(normalized["run"]["program"], "python");
         assert_eq!(normalized["run"]["args"][0], "{entrypoint}");
+    }
+
+    #[test]
+    fn runtime_only_manifests_are_valid_without_automation_blocks() {
+        let manifest = json!({
+            "manifestVersion": 1,
+            "id": "com.example.runtime-only",
+            "name": "Runtime-only package",
+            "version": "1.0.0",
+            "commands": [{
+                "id": "inspect", "title": "Inspect", "entrypoint": "scripts/inspect.py",
+                "runtime": { "command": "python", "args": ["{entrypoint}"] }, "fields": []
+            }],
+            "services": [{
+                "id": "watcher", "title": "Watcher", "entrypoint": "scripts/watch.py",
+                "runtime": { "command": "python", "args": ["{entrypoint}"] }, "autoStart": false
+            }]
+        });
+        assert!(validate_manifest_header(&manifest).is_ok());
+    }
+
+    #[test]
+    fn runtime_extensions_reject_unsafe_entrypoints_and_reserved_fields() {
+        let unsafe_path = json!({
+            "id": "runner", "title": "Runner", "entrypoint": "../runner.py",
+            "runtime": { "command": "python", "args": ["{entrypoint}"] }
+        });
+        assert!(validate_runtime_extension(&unsafe_path, "command").is_err());
+        let reserved_field = json!({
+            "id": "runner", "title": "Runner", "entrypoint": "scripts/runner.py",
+            "runtime": { "command": "python", "args": ["{entrypoint}"] },
+            "fields": [{"key":"pluginDir","label":"Directory","type":"text"}]
+        });
+        assert!(validate_runtime_extension(&reserved_field, "command").is_err());
+    }
+
+    #[test]
+    fn zip_preview_accepts_a_command_only_package() {
+        let path = std::env::temp_dir().join(format!("00047-command-plugin-test-{}.zip", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let file = File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let manifest = r#"{"manifestVersion":1,"id":"com.example.command-only","name":"Command Only","version":"1.0.0","commands":[{"id":"hello","title":"Hello","entrypoint":"scripts/hello.py","runtime":{"command":"python","args":["{entrypoint}"]},"fields":[]} ]}"#;
+        zip.start_file("manifest.json", FileOptions::default()).unwrap();
+        zip.write_all(manifest.as_bytes()).unwrap();
+        zip.start_file("scripts/hello.py", FileOptions::default()).unwrap();
+        zip.write_all(b"print('hello')").unwrap();
+        zip.finish().unwrap();
+
+        let result = preview_plugin(&path).unwrap();
+        assert!(result.blocks.is_empty());
+        assert_eq!(result.extensions.len(), 1);
+        assert_eq!(result.extensions[0].extension_type, "command");
+        assert_eq!(result.extensions[0].id, "hello");
+        let _ = fs::remove_file(path);
     }
 
     #[test]
