@@ -342,6 +342,57 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_select_options_merge_static_labels_and_keep_disconnected_selection() {
+        let temp = TestRoot::new();
+        let package = temp.path.join("packages").join("com.example.test-mod");
+
+        let manifest_path = package.join("manifest.json");
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["settings"].as_array_mut().unwrap().push(serde_json::json!({
+            "id": "device",
+            "label": "Device",
+            "type": "select",
+            "dynamicSelect": true,
+            "default": "",
+            "options": [{ "value": "static", "label": "Static" }]
+        }));
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        fs::write(package.join("wh_values.ini"),
+            "[values]\n::wh_select_option::device::speaker=Speakers\n::wh_select_option::device::static=Runtime static label\n::wh_select_option::other::ignored=Ignore me\n"
+        ).unwrap();
+        fs::write(package.join("settings.json"), serde_json::to_vec(&serde_json::json!({
+            "device": "offline-device"
+        })).unwrap()).unwrap();
+
+        let result = read_settings(&temp.path, "com.example.test-mod").unwrap();
+        let spec = result.settings.iter().find(|s| s.id == "device").unwrap();
+        assert!(spec.dynamic_select);
+        assert_eq!(spec.options.iter().find(|o| o.value == "static").unwrap().label, "Runtime static label");
+        assert_eq!(spec.options.iter().find(|o| o.value == "speaker").unwrap().label, "Speakers");
+        assert_eq!(spec.options.iter().find(|o| o.value == "offline-device").unwrap().label, "offline-device");
+        assert_eq!(result.values.get("device"), Some(&Value::String("offline-device".into())));
+
+        let mut updated = result.values.clone();
+        updated.insert("device".into(), Value::String("speaker".into()));
+        let saved = write_settings(&temp.path, "com.example.test-mod", serde_json::to_value(updated).unwrap()).unwrap();
+        assert_eq!(saved.values.get("device"), Some(&Value::String("speaker".into())));
+        let reread = read_settings(&temp.path, "com.example.test-mod").unwrap();
+        assert_eq!(reread.values.get("device"), Some(&Value::String("speaker".into())));
+    }
+
+    #[test]
+    fn dynamic_select_schema_can_start_without_options() {
+        let spec: SettingSpec = serde_json::from_value(serde_json::json!({
+            "id": "device",
+            "label": "Device",
+            "type": "select",
+            "dynamicSelect": true,
+            "default": ""
+        })).unwrap();
+        assert!(validate_specs(&[spec]).is_ok());
+    }
+
+    #[test]
     fn schema_accepts_supported_setting_types() {
         let s = schema();
         assert!(validate_specs(&s).is_ok());
