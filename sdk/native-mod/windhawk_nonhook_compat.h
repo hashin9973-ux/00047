@@ -27,7 +27,7 @@ namespace wmod::windhawk_compat {
 inline constexpr size_t kMaxJsonBytes = 256 * 1024;
 inline constexpr size_t kMaxSettingNameChars = 256;
 inline constexpr size_t kMaxStorageStringChars = 32 * 1024;
-inline constexpr size_t kMaxStorageBinaryBytes = 16 * 1024;
+inline constexpr size_t kMaxStorageBinaryBytes = 16 * 1024 - 1;
 inline constexpr size_t kMaxLogChars = 8192;
 
 inline bool ReadUtf8File(const std::filesystem::path& path, std::wstring& output) noexcept {
