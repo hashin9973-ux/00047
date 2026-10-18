@@ -38,6 +38,7 @@ jobs:
           node --check ui/blocks.js
           node --check ui/editor.js
           node --check ui/app.js
+          node --check ui/extensions.js
           node --check ui/native-mods.js
 
       - name: Validate Tauri JSON configuration
