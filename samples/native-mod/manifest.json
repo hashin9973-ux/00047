@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.00047-sample-native-mod",
+  "name": "00047 Sample Native Mod",
+  "version": "1.0.0",
+  "description": "A no-op lifecycle sample proving native mod load and shutdown. It only writes OutputDebugString messages.",
+  "architecture": "x64",
+  "module": "bin/00047_sample_native_mod.dll",
+  "targets": [
+    "explorer.exe"
+  ]
+}
