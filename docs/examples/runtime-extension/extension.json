@@ -12,5 +12,6 @@
       "LOG_LEVEL": "info"
     }
   },
-  "autoStart": false
+  "autoStart": false,
+  "protocol": "stdio-jsonl-v1"
 }
