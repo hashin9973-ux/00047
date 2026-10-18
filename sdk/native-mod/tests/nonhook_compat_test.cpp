@@ -123,7 +123,7 @@ int wmain() {
         {"id":"stringSetting","label":"String","type":"string","default":"Hello \u263A"},
         {"id":"choice","label":"Choice","type":"select","default":"mica",
          "options":[{"value":"mica","label":"Mica"}]},
-        {"id":"dynamicSetting","label":"Dynamic choice","type":"select","default":"missing",
+        {"id":"dynamicSetting","label":"Dynamic choice","type":"string","default":"missing",
          "dynamicSelect":true,"options":[{"value":"static","label":"Static"}]}
       ]
     })json";
