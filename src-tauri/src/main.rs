@@ -5,6 +5,7 @@ mod custom;
 mod spec;
 mod engine;
 mod extensions;
+mod native_mods;
 mod logstore;
 mod model;
 mod store;
@@ -12,7 +13,7 @@ mod sys;
 
 use engine::{Engine, Runtime};
 use model::{Automation, LogEntry, RunRecord};
-use std::sync::{Arc, Mutex};
+use std::{sync::{Arc, Mutex}, time::Duration};
 use store::Store;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -448,6 +449,61 @@ fn open_extensions_folder(ext: State<'_, extensions::ExtensionManager>) -> Resul
 }
 
 #[tauri::command]
+fn list_native_mods(mods: State<'_, Arc<native_mods::NativeModManager>>) -> native_mods::NativeModList {
+    mods.list()
+}
+
+#[tauri::command]
+async fn native_mod_pack_preview(
+    app: AppHandle,
+    mods: State<'_, Arc<native_mods::NativeModManager>>,
+) -> Result<Option<native_mods::NativeModPreview>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().add_filter("00047 native mod package", &["zip"]).pick_file(move |p| {
+        let _ = tx.send(p);
+    });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    mods.preview(&path).map(Some)
+}
+
+#[tauri::command]
+fn native_mod_pack_install(
+    mods: State<'_, Arc<native_mods::NativeModManager>>,
+    path: String,
+) -> Result<String, String> {
+    mods.install(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+fn native_mod_enable(mods: State<'_, Arc<native_mods::NativeModManager>>, id: String) -> Result<String, String> {
+    mods.enable(&id)
+}
+
+#[tauri::command]
+fn native_mod_disable(mods: State<'_, Arc<native_mods::NativeModManager>>, id: String) -> Result<String, String> {
+    mods.disable(&id)
+}
+
+#[tauri::command]
+fn native_mod_uninstall(mods: State<'_, Arc<native_mods::NativeModManager>>, id: String) -> Result<(), String> {
+    mods.uninstall(&id)
+}
+
+#[tauri::command]
+fn native_mod_refresh(mods: State<'_, Arc<native_mods::NativeModManager>>) -> native_mods::NativeModList {
+    mods.apply_enabled_mods();
+    mods.list()
+}
+
+#[tauri::command]
+fn open_native_mods_folder(mods: State<'_, Arc<native_mods::NativeModManager>>) -> Result<(), String> {
+    let dir = mods.root_path();
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    sys::start_file(&dir.to_string_lossy(), "")
+}
+
+#[tauri::command]
 async fn restart_app(
     app: AppHandle,
     eng: State<'_, Arc<Engine>>,
@@ -556,6 +612,14 @@ fn main() {
             extension_restart,
             extension_uninstall,
             open_extensions_folder,
+            list_native_mods,
+            native_mod_pack_preview,
+            native_mod_pack_install,
+            native_mod_enable,
+            native_mod_disable,
+            native_mod_uninstall,
+            native_mod_refresh,
+            open_native_mods_folder,
             restart_app
         ])
         .setup(|app| {
@@ -564,6 +628,18 @@ fn main() {
             custom::init(dir.join("blocks"));
             let _ = std::fs::create_dir_all(dir.join("blocks"));
             app.manage(extensions::ExtensionManager::new(dir.join("extensions")));
+            let native_mod_manager = Arc::new(native_mods::NativeModManager::new(dir.join("native-mods")));
+            app.manage(native_mod_manager.clone());
+            // Reapply explicitly enabled mods only to the fixed shell-process allow-list.
+            let native_mod_monitor = native_mod_manager.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_secs(5));
+                loop {
+                    ticker.tick().await;
+                    let manager = native_mod_monitor.clone();
+                    let _ = tokio::task::spawn_blocking(move || manager.apply_enabled_mods()).await;
+                }
+            });
             let (store, warn) = Store::load(&dir);
             let engine = Arc::new(Engine::new(app.handle().clone(), Arc::new(store), &dir));
             app.manage(engine.clone());
