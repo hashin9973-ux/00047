@@ -1,5 +1,7 @@
 # Script plugins for 00047
 
+> **Runtime extensions are separate from block packs.** If you need a resident helper process, a script or executable that is not tied to an automation node, or a packaged runtime in any language, see [EXTENSIONS.md](EXTENSIONS.md). Block packs remain the right format for reusable conditions and actions inside an automation.
+
 The recommended extension format is a **ZIP package with a root-level `manifest.json` and the script files it references**. JSON is only the manifest: the actual logic lives in scripts or executables inside the ZIP.
 
 ## ZIP layout
