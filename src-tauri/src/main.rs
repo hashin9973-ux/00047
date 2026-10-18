@@ -3,6 +3,7 @@
 mod blocks;
 mod custom;
 mod extension_host;
+mod native_module_host;
 mod spec;
 mod engine;
 mod logstore;
@@ -12,6 +13,7 @@ mod sys;
 
 use engine::{Engine, Runtime};
 use extension_host::{ExtensionCatalog, ExtensionManager, ExtensionPreview};
+use native_module_host::{NativeModuleCatalog, NativeModuleManager, NativeModuleStatus};
 use model::{Automation, LogEntry, RunRecord};
 use std::sync::{Arc, Mutex};
 use store::Store;
@@ -270,11 +272,13 @@ async fn exit_app(
     app: AppHandle,
     eng: State<'_, Arc<Engine>>,
     extensions: State<'_, Arc<ExtensionManager>>,
+    modules: State<'_, Arc<NativeModuleManager>>,
 ) -> Result<(), String> {
     save_window(&app);
     let e = eng.inner().clone();
     e.shutdown().await;
     extensions.shutdown().await;
+    modules.shutdown();
     app.exit(0);
     Ok(())
 }
@@ -367,6 +371,66 @@ fn list_block_specs() -> serde_json::Value {
 #[tauri::command]
 fn list_extensions(extensions: State<'_, Arc<ExtensionManager>>) -> ExtensionCatalog {
     extensions.catalog()
+}
+
+#[tauri::command]
+fn list_native_modules(modules: State<'_, Arc<NativeModuleManager>>) -> NativeModuleCatalog {
+    modules.catalog()
+}
+
+#[tauri::command]
+async fn native_module_load(
+    app: AppHandle,
+    modules: State<'_, Arc<NativeModuleManager>>,
+) -> Result<NativeModuleStatus, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().add_filter("00047 native module", &["dll"])
+        .pick_file(move |p| { let _ = tx.send(p); });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else {
+        return Err("native module selection was cancelled".into());
+    };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    modules.install_and_start(&path)
+}
+
+#[tauri::command]
+fn native_module_start(
+    modules: State<'_, Arc<NativeModuleManager>>,
+    id: String,
+) -> Result<NativeModuleStatus, String> {
+    modules.start(&id)
+}
+
+#[tauri::command]
+fn native_module_unload(
+    modules: State<'_, Arc<NativeModuleManager>>,
+    id: String,
+) -> Result<(), String> {
+    modules.unload(&id)
+}
+
+#[tauri::command]
+fn native_module_uninstall(
+    modules: State<'_, Arc<NativeModuleManager>>,
+    id: String,
+) -> Result<(), String> {
+    modules.uninstall(&id)
+}
+
+#[tauri::command]
+fn native_module_set_autostart(
+    modules: State<'_, Arc<NativeModuleManager>>,
+    id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    modules.set_auto_start(&id, enabled)
+}
+
+#[tauri::command]
+fn native_module_open_folder(modules: State<'_, Arc<NativeModuleManager>>) -> Result<(), String> {
+    std::fs::create_dir_all(modules.root()).map_err(|e| e.to_string())?;
+    let _ = sys::start_file(&modules.root().to_string_lossy(), "");
+    Ok(())
 }
 
 #[tauri::command]
@@ -466,11 +530,13 @@ async fn restart_app(
     app: AppHandle,
     eng: State<'_, Arc<Engine>>,
     extensions: State<'_, Arc<ExtensionManager>>,
+    modules: State<'_, Arc<NativeModuleManager>>,
 ) -> Result<(), String> {
     save_window(&app);
     let e = eng.inner().clone();
     e.shutdown().await;
     extensions.shutdown().await;
+    modules.shutdown();
     app.restart()
 }
 
@@ -539,6 +605,13 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             update_windhawk_blur,
             list_extensions,
+            list_native_modules,
+            native_module_load,
+            native_module_start,
+            native_module_unload,
+            native_module_uninstall,
+            native_module_set_autostart,
+            native_module_open_folder,
             extension_pack_preview,
             extension_pack_install,
             extension_start,
@@ -580,6 +653,8 @@ fn main() {
             let _ = std::fs::create_dir_all(dir.join("blocks"));
             let extensions = Arc::new(ExtensionManager::new(dir.join("extensions"), app.handle().clone()));
             app.manage(extensions.clone());
+            let native_modules = Arc::new(NativeModuleManager::new(dir.join("native-modules"), app.handle().clone()));
+            app.manage(native_modules.clone());
             let (store, warn) = Store::load(&dir);
             let engine = Arc::new(Engine::new(app.handle().clone(), Arc::new(store), &dir));
             app.manage(engine.clone());
@@ -614,6 +689,7 @@ fn main() {
             }
             engine.start_autostart();
             extensions.start_autostart();
+            native_modules.start_autostart();
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -631,6 +707,9 @@ fn main() {
             }
             if let Some(extensions) = handle.try_state::<Arc<ExtensionManager>>() {
                 tauri::async_runtime::block_on(extensions.shutdown());
+            }
+            if let Some(modules) = handle.try_state::<Arc<NativeModuleManager>>() {
+                modules.shutdown();
             }
         }
     });
