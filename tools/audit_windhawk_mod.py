@@ -18,7 +18,7 @@ IGNORED_PARTS = {
     ".git", ".vs", "build", "dist", "node_modules", "out", "target", "vendor",
 }
 IGNORED_FILENAMES = {
-    "mods_api.h", "mods_api_internal.h", "windhawk_nonhook_compat.h",
+    "mods_api.h", "mods_api_internal.h", "windhawk_nonhook_compat.h", "windhawk_symbol_compat.h",
 }
 
 SUPPORTED = {
@@ -39,14 +39,14 @@ SUPPORTED = {
     "Wh_ClearDynamicSelectOptions": "Supported for manifest-declared dynamicSelect settings; option storage is package-scoped.",
     "Wh_GetUrlContent": "Bounded HTTP(S)-only URL retrieval; semantics and options are not guaranteed ABI-identical.",
     "Wh_FreeUrlContent": "Frees content returned by the 00047 Wh_GetUrlContent helper.",
+    "Wh_FindFirstSymbol": "Bounded DbgHelp enumeration of symbols for a loaded module; PDB/network behavior is limited and must be reviewed.",
+    "Wh_FindNextSymbol": "Iterates a bounded snapshot returned by Wh_FindFirstSymbol; result pointers are owned by the search handle.",
+    "Wh_FindCloseSymbol": "Releases a symbol search snapshot returned by Wh_FindFirstSymbol.",
 }
 UNSUPPORTED = {
     "Wh_SetFunctionHook": "No 00047 function-hook engine is available.",
     "Wh_RemoveFunctionHook": "No 00047 function-hook engine is available.",
     "Wh_ApplyHookOperations": "No 00047 hook-operation queue is available.",
-    "Wh_FindFirstSymbol": "Private/PDB symbol enumeration is not provided.",
-    "Wh_FindNextSymbol": "Private/PDB symbol enumeration is not provided.",
-    "Wh_FindCloseSymbol": "Private/PDB symbol enumeration is not provided.",
     "Wh_Disasm": "The Windhawk disassembly API is not provided.",
 }
 CALLBACK_PREFIX = "Wh_Mod"
@@ -230,8 +230,8 @@ def audit_paths(inputs: list[Path]) -> dict:
         "summary": counts,
         "note": (
             "Static audit only. Passing does not prove ABI compatibility or safety. "
-            "Unsupported function-hook, PDB-symbol, disassembly, and lifecycle APIs "
-            "require an alternate implementation or manual port."
+            "Unsupported function-hook and disassembly APIs, plus lifecycle callbacks "
+            "without an automatic adapter require manual porting or a compatible runtime."
         ),
     }
 

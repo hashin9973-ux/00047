@@ -100,6 +100,9 @@ jobs:
           $testExe = Join-Path $build "Release/00047_native_mod_compat_test.exe"
           if (-not (Test-Path $testExe)) { throw "Native SDK compatibility test executable was not created." }
           & $testExe
+          $symbolTestExe = Join-Path $build "Release/00047_windhawk_symbol_compat_test.exe"
+          if (-not (Test-Path $symbolTestExe)) { throw "Symbol compatibility test executable was not created." }
+          & $symbolTestExe
 
       - name: Install prebuilt Tauri CLI
         run: npm install --no-save @tauri-apps/cli@^2
