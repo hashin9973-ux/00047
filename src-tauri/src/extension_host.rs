@@ -279,6 +279,9 @@ impl ExtensionManager {
             return Err("extension is already running".into());
         }
         let manifest = read_manifest(&dir.join("extension.json"))?;
+        if manifest.id != id {
+            return Err("extension directory id does not match extension.json".into());
+        }
         validate_manifest(&manifest, Some(&dir), None)?;
         let entrypoint = dir.join(&manifest.entrypoint).to_string_lossy().to_string();
         let command = expand_template(&manifest.runtime.command, &dir, &manifest, &entrypoint);
