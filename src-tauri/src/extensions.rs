@@ -419,6 +419,10 @@ fn valid_relative_path(value: &str) -> bool {
         && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
+fn windows_zip_path_key(path: &str) -> String {
+    path.trim_end_matches('/').to_lowercase()
+}
+
 fn placeholders(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let (mut out, mut i) = (Vec::new(), 0);
@@ -559,7 +563,7 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
         }
         // Windows filesystems are case-insensitive by default. Reject archives whose
         // entries would alias when extracted, including "folder" vs "folder/".
-        let windows_key = normalized.to_lowercase();
+        let windows_key = windows_zip_path_key(normalized);
         if !windows_path_keys.insert(windows_key) {
             return Err(format!("ZIP entries collide on Windows (case-insensitive path): {name}"));
         }
@@ -628,17 +632,18 @@ mod tests {
 
     #[test]
     fn extension_zip_paths_that_alias_on_windows_are_rejected() {
-        let mut seen = HashSet::new();
-        for path in ["scripts/worker.py", "Scripts/Worker.py"] {
-            let normalized = path.trim_end_matches('/').to_lowercase();
-            assert!(seen.insert(normalized), "case-insensitive path alias should be rejected");
-        }
-
-        let mut seen_dirs = HashSet::new();
-        for path in ["assets", "assets/"] {
-            let normalized = path.trim_end_matches('/').to_lowercase();
-            assert!(seen_dirs.insert(normalized), "file/directory path alias should be rejected");
-        }
+        assert_eq!(
+            windows_zip_path_key("scripts/worker.py"),
+            windows_zip_path_key("Scripts/Worker.py")
+        );
+        assert_eq!(
+            windows_zip_path_key("assets"),
+            windows_zip_path_key("assets/")
+        );
+        assert_ne!(
+            windows_zip_path_key("Scripts/Worker.py"),
+            windows_zip_path_key("Scripts/Another.py")
+        );
     }
 
     #[test]
