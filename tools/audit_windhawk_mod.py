@@ -165,13 +165,27 @@ def audit_text(path: str, source: str) -> list[dict]:
     findings: dict[str, dict] = {}
     for match in IDENTIFIER.finditer(code):
         name = match.group(0)
-        if name in SUPPORTED:
+        callback_context = code[max(0, match.start() - 120):min(len(code), match.end() + 120)]
+        settings_reload_variant = (
+            name == "Wh_ModSettingsChanged"
+            and re.search(
+                r"\\b(?:BOOL|bool)\\s+Wh_ModSettingsChanged\\s*\\(\\s*(?:BOOL|bool)\\s*\\*",
+                callback_context,
+            )
+        )
+        if settings_reload_variant:
+            category = "unsupported"
+            reason = (
+                "The opt-in adapter only supports void Wh_ModSettingsChanged(void); "
+                "the BOOL(BOOL* bReload) reload/unload protocol is not implemented."
+            )
+        elif name in SUPPORTED:
             category, reason = "supported-with-limitations", SUPPORTED[name]
         elif name in UNSUPPORTED:
             category, reason = "unsupported", UNSUPPORTED[name]
         elif name == "Wh_ModSettingsChanged":
             category = "adapter-available-lifecycle"
-            reason = "The opt-in windhawk_settings_changed_adapter.h watches settings.json and invokes this callback on a worker thread; thread affinity differs from Windhawk."
+            reason = "Only void Wh_ModSettingsChanged(void) is supported by the opt-in watcher; it runs on a worker thread, not a Windhawk/UI thread."
         elif name in ADAPTER_CALLBACKS:
             category = "adapter-available-lifecycle"
             reason = "The opt-in windhawk_nonhook_adapter.h maps this lifecycle callback onto the Wmod ABI; callback ordering must be reviewed."
