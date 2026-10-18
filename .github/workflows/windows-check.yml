@@ -29,6 +29,9 @@ jobs:
       - name: Validate native-mod authoring tools
         run: python -m unittest discover -s tools/tests -v
 
+      - name: Audit non-hook Windhawk lifecycle sample
+        run: python tools/audit_windhawk_mod.py sdk/native-mod/tests/windhawk_nonhook_adapter_smoke.cpp --fail-on-unsupported
+
       - name: Check frontend JavaScript syntax
         shell: pwsh
         run: |
