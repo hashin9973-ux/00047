@@ -545,7 +545,7 @@ fn read_archive(path: &Path) -> Result<PluginArchive, String> {
     if meta.len() > MAX_ZIP_BYTES { return Err("extension ZIP exceeds 20 MB".into()); }
     let file = File::open(path).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("invalid ZIP: {e}"))?;
-    if archive.is_empty() || archive.len() > MAX_ENTRIES { return Err(format!("extension ZIP must contain 1 to {MAX_ENTRIES} entries")); }
+    if archive.len() == 0 || archive.len() > MAX_ENTRIES { return Err(format!("extension ZIP must contain 1 to {MAX_ENTRIES} entries")); }
     let mut files = HashSet::new();
     let mut unpacked = 0u64;
     for i in 0..archive.len() {
