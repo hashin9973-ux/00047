@@ -1,8 +1,8 @@
 //! Independent extension packages for 00047.
 //!
 //! Unlike workflow block packs, these components are managed directly by the app.
-//! They can launch applications or long-running services using any installed
-//! interpreter/runtime. They are not sandboxed and run with the current user's permissions.
+//! They can launch applications, long-running services, or bounded one-shot commands.
+//! Extension code is not sandboxed and runs with the current user's permissions.
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -13,13 +13,23 @@ use std::{
     process::Stdio,
     sync::Mutex,
 };
-use tokio::process::{Child, Command};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt},
+    process::{Child, Command},
+    task::JoinHandle,
+    time::{timeout, Duration, Instant},
+};
 use zip::ZipArchive;
 
 const MAX_ZIP_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_FILES: usize = 500;
 const MAX_UNPACKED_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const DEFAULT_COMMAND_TIMEOUT_MS: u64 = 15_000;
+const MIN_COMMAND_TIMEOUT_MS: u64 = 100;
+const MAX_COMMAND_TIMEOUT_MS: u64 = 120_000;
+const MAX_COMMAND_OUTPUT_BYTES: usize = 256 * 1024;
+const OUTPUT_READER_GRACE_MS: u64 = 2_000;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,6 +66,8 @@ struct RuntimeSpec {
     working_directory: Option<String>,
     #[serde(default)]
     environment: HashMap<String, String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -78,6 +90,20 @@ pub struct ComponentPreview {
     pub kind: String,
     pub description: String,
     pub command: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExtensionCommandResult {
+    pub package_id: String,
+    pub component_id: String,
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub output_truncated: bool,
+    pub duration_ms: u64,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Serialize)]
@@ -187,7 +213,13 @@ impl ExtensionManager {
                     description: component.description.clone(),
                     command: command_preview(component, &folder),
                     running: is_running,
-                    status: if is_running { "Running" } else { "Stopped" }.into(),
+                    status: if component.kind == "command" {
+                        "Run on demand".into()
+                    } else if is_running {
+                        "Running".into()
+                    } else {
+                        "Stopped".into()
+                    },
                 });
             }
             packages.push(InstalledPackage {
@@ -284,6 +316,9 @@ impl ExtensionManager {
                 return Err(format!("{}: entrypoint is missing or unsafe", component.id));
             }
         }
+        if component.kind == "command" {
+            return Err("One-shot command components must use Run, not Start.".into());
+        }
 
         let key = process_key(package_id, component_id);
         let mut children = self.children.lock().map_err(|_| "Extension process table is unavailable.")?;
@@ -328,6 +363,106 @@ impl ExtensionManager {
         let child = cmd.spawn().map_err(|e| format!("could not start '{command}': {e}"))?;
         children.insert(key, RunningProcess { child });
         Ok(())
+    }
+
+    /// Runs a one-shot extension command and returns bounded stdout/stderr.
+    /// Output is limited to 256 KiB per stream; excess bytes are drained but not retained.
+    pub async fn run_command(
+        &self,
+        package_id: &str,
+        component_id: &str,
+    ) -> Result<ExtensionCommandResult, String> {
+        if !valid_id(package_id) || !valid_id(component_id) {
+            return Err("Invalid extension component identifier.".into());
+        }
+        let folder = self.package_dir(package_id)?;
+        let manifest = load_manifest(&folder)?;
+        if manifest.id != package_id {
+            return Err("Package ID does not match its installed folder.".into());
+        }
+        let component = manifest.components.iter()
+            .find(|c| c.id == component_id)
+            .ok_or_else(|| format!("Extension component '{component_id}' was not found."))?;
+        if component.kind != "command" {
+            return Err("Only components with kind 'command' can be run as one-shot commands.".into());
+        }
+        if let Some(ep) = &component.entrypoint {
+            if !valid_relative_path(ep) || !folder.join(ep).is_file() {
+                return Err(format!("{}: entrypoint is missing or unsafe", component.id));
+            }
+        }
+
+        let entrypoint = component.entrypoint.as_ref()
+            .map(|path| folder.join(path).to_string_lossy().to_string()).unwrap_or_default();
+        let dir = folder.to_string_lossy().to_string();
+        let command = substitute(&component.runtime.command, &dir, &entrypoint, component_id);
+        if command.trim().is_empty() {
+            return Err("The extension command is empty.".into());
+        }
+        let args: Vec<String> = component.runtime.args.iter()
+            .map(|arg| substitute(arg, &dir, &entrypoint, component_id)).collect();
+        let cwd = component.runtime.working_directory.as_deref()
+            .unwrap_or("{extensionDir}");
+        let cwd = substitute(cwd, &dir, &entrypoint, component_id);
+
+        let mut cmd = Command::new(&command);
+        cmd.args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .env("EXTENSION_DIR", &dir)
+            .env("EXTENSION_COMPONENT_ID", component_id)
+            .env("EXTENSION_ENTRYPOINT", &entrypoint);
+        for (name, value) in &component.runtime.environment {
+            cmd.env(name, substitute(value, &dir, &entrypoint, component_id));
+        }
+        if !cwd.trim().is_empty() {
+            cmd.current_dir(&cwd);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.as_std_mut().creation_flags(0x0800_0000);
+        }
+
+        let started = Instant::now();
+        let mut child = cmd.spawn()
+            .map_err(|e| format!("could not run extension command '{command}': {e}"))?;
+        let stdout = child.stdout.take().ok_or("extension stdout pipe was unavailable")?;
+        let stderr = child.stderr.take().ok_or("extension stderr pipe was unavailable")?;
+        let stdout_reader = tokio::spawn(read_bounded_output(stdout, MAX_COMMAND_OUTPUT_BYTES));
+        let stderr_reader = tokio::spawn(read_bounded_output(stderr, MAX_COMMAND_OUTPUT_BYTES));
+        let limit = component.runtime.timeout_ms.unwrap_or(DEFAULT_COMMAND_TIMEOUT_MS);
+        let wait_result = timeout(Duration::from_millis(limit), child.wait()).await;
+        let timed_out = wait_result.is_err();
+        let exit_status = match wait_result {
+            Ok(Ok(status)) => Some(status),
+            Ok(Err(error)) => return Err(format!("could not wait for extension command: {error}")),
+            Err(_) => {
+                // Kill and reap the timed-out command before reading the final pipe state.
+                let _ = child.start_kill();
+                child.wait().await.ok()
+            }
+        };
+
+        let stdout_result = collect_output(stdout_reader).await?;
+        let stderr_result = collect_output(stderr_reader).await?;
+        let (stdout_bytes, stdout_truncated) = stdout_result;
+        let (stderr_bytes, stderr_truncated) = stderr_result;
+        let output_truncated = stdout_truncated || stderr_truncated;
+        let success = !timed_out && exit_status.as_ref().map(|status| status.success()).unwrap_or(false);
+        Ok(ExtensionCommandResult {
+            package_id: package_id.to_string(),
+            component_id: component_id.to_string(),
+            success,
+            exit_code: exit_status.and_then(|status| status.code()),
+            timed_out,
+            output_truncated,
+            duration_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
+        })
     }
 
     pub async fn stop(&self, package_id: &str, component_id: &str) -> Result<(), String> {
@@ -404,6 +539,48 @@ impl ExtensionManager {
     }
 }
 
+async fn read_bounded_output<R>(
+    mut reader: R,
+    limit: usize,
+) -> std::io::Result<(Vec<u8>, bool)>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut output = Vec::with_capacity(limit.min(16 * 1024));
+    let mut buffer = [0u8; 8192];
+    let mut truncated = false;
+    loop {
+        let count = reader.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(output.len());
+        let retained = count.min(remaining);
+        output.extend_from_slice(&buffer[..retained]);
+        if retained < count {
+            // Continue draining the pipe to prevent a child from blocking on a full pipe.
+            truncated = true;
+        }
+    }
+    Ok((output, truncated))
+}
+
+async fn collect_output(
+    mut task: JoinHandle<std::io::Result<(Vec<u8>, bool)>>,
+) -> Result<(Vec<u8>, bool), String> {
+    match timeout(Duration::from_millis(OUTPUT_READER_GRACE_MS), &mut task).await {
+        Ok(Ok(Ok(result))) => Ok(result),
+        Ok(Ok(Err(error))) => Err(format!("could not read extension command output: {error}")),
+        Ok(Err(error)) => Err(format!("extension output reader failed: {error}")),
+        Err(_) => {
+            // A descendant may have inherited a pipe and kept it open after the
+            // direct child exited. Never wait indefinitely for that descendant.
+            task.abort();
+            Ok((b"[output pipe remained open; remaining output omitted]".to_vec(), true))
+        }
+    }
+}
+
 fn process_key(package_id: &str, component_id: &str) -> String {
     format!("{package_id}/{component_id}")
 }
@@ -476,8 +653,19 @@ fn validate_manifest(manifest: &Manifest, files: Option<&HashSet<String>>) -> Re
         if c.description.chars().count() > 1000 {
             return Err(format!("{}: component description is too long", c.id));
         }
-        if !matches!(c.kind.as_str(), "app" | "service") {
-            return Err(format!("{}: kind must be 'app' or 'service'", c.id));
+        if !matches!(c.kind.as_str(), "app" | "service" | "command") {
+            return Err(format!("{}: kind must be 'app', 'service', or 'command'", c.id));
+        }
+        if let Some(timeout_ms) = c.runtime.timeout_ms {
+            if c.kind != "command" {
+                return Err(format!("{}: runtime.timeoutMs is only valid for command components", c.id));
+            }
+            if !(MIN_COMMAND_TIMEOUT_MS..=MAX_COMMAND_TIMEOUT_MS).contains(&timeout_ms) {
+                return Err(format!(
+                    "{}: runtime.timeoutMs must be between {} and {}",
+                    c.id, MIN_COMMAND_TIMEOUT_MS, MAX_COMMAND_TIMEOUT_MS
+                ));
+            }
         }
         if c.runtime.command.trim().is_empty() || c.runtime.command.len() > 2048 {
             return Err(format!("{}: runtime.command is required (max 2048 characters)", c.id));
