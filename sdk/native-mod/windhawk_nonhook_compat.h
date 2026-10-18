@@ -402,6 +402,109 @@ inline PCWSTR SettingString(PCWSTR key) noexcept {
     }
 }
 
+inline constexpr size_t kMaxBinaryValueBytes = 16 * 1024;
+
+inline std::wstring EncodeBase64(const BYTE* data, size_t size) {
+    static constexpr wchar_t alphabet[] =
+        L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::wstring output;
+    output.reserve(((size + 2) / 3) * 4);
+    for (size_t i = 0; i < size; i += 3) {
+        const unsigned int a = data[i];
+        const unsigned int b = (i + 1 < size) ? data[i + 1] : 0;
+        const unsigned int c = (i + 2 < size) ? data[i + 2] : 0;
+        const unsigned int triple = (a << 16) | (b << 8) | c;
+        output.push_back(alphabet[(triple >> 18) & 0x3F]);
+        output.push_back(alphabet[(triple >> 12) & 0x3F]);
+        output.push_back(i + 1 < size ? alphabet[(triple >> 6) & 0x3F] : L'=');
+        output.push_back(i + 2 < size ? alphabet[triple & 0x3F] : L'=');
+    }
+    return output;
+}
+
+inline int Base64Value(wchar_t ch) noexcept {
+    if (ch >= L'A' && ch <= L'Z') return static_cast<int>(ch - L'A');
+    if (ch >= L'a' && ch <= L'z') return static_cast<int>(ch - L'a' + 26);
+    if (ch >= L'0' && ch <= L'9') return static_cast<int>(ch - L'0' + 52);
+    if (ch == L'+') return 62;
+    if (ch == L'/') return 63;
+    return -1;
+}
+
+inline bool DecodeBase64(std::wstring_view encoded, std::vector<BYTE>& bytes) {
+    bytes.clear();
+    if (encoded.empty() || encoded.size() % 4 != 0 ||
+        encoded.size() > ((kMaxBinaryValueBytes + 2) / 3) * 4) return false;
+    try {
+        bytes.reserve((encoded.size() / 4) * 3);
+        for (size_t i = 0; i < encoded.size(); i += 4) {
+            const bool pad2 = encoded[i + 2] == L'=';
+            const bool pad3 = encoded[i + 3] == L'=';
+            const bool last = i + 4 == encoded.size();
+            if (encoded[i] == L'=' || encoded[i + 1] == L'=' ||
+                (pad2 && !pad3) || ((pad2 || pad3) && !last)) {
+                bytes.clear();
+                return false;
+            }
+            const int a = Base64Value(encoded[i]);
+            const int b = Base64Value(encoded[i + 1]);
+            const int cc = pad2 ? 0 : Base64Value(encoded[i + 2]);
+            const int d = pad3 ? 0 : Base64Value(encoded[i + 3]);
+            if (a < 0 || b < 0 || cc < 0 || d < 0) {
+                bytes.clear();
+                return false;
+            }
+            const unsigned int triple = (static_cast<unsigned int>(a) << 18) |
+                (static_cast<unsigned int>(b) << 12) |
+                (static_cast<unsigned int>(cc) << 6) | static_cast<unsigned int>(d);
+            bytes.push_back(static_cast<BYTE>((triple >> 16) & 0xFF));
+            if (!pad2) bytes.push_back(static_cast<BYTE>((triple >> 8) & 0xFF));
+            if (!pad3) bytes.push_back(static_cast<BYTE>(triple & 0xFF));
+        }
+        if (bytes.empty() || bytes.size() > kMaxBinaryValueBytes) {
+            bytes.clear();
+            return false;
+        }
+        return true;
+    } catch (...) {
+        bytes.clear();
+        return false;
+    }
+}
+
+inline BOOL SetBinaryValue(PCWSTR key, const BYTE* data, size_t size) noexcept {
+    try {
+        if (!ValidStorageKey(key) || !data || size == 0 || size > kMaxBinaryValueBytes) return FALSE;
+        const auto path = ValuesPath();
+        if (path.empty()) return FALSE;
+        const std::wstring encoded = EncodeBase64(data, size);
+        return WritePrivateProfileStringW(L"binary", key, encoded.c_str(), path.c_str());
+    } catch (...) {
+        return FALSE;
+    }
+}
+
+inline size_t GetBinaryValue(PCWSTR key, BYTE* buffer, size_t bufferSize) noexcept {
+    try {
+        if (!ValidStorageKey(key) || !buffer ||
+            bufferSize > std::numeric_limits<DWORD>::max()) return 0;
+        const auto path = ValuesPath();
+        if (path.empty()) return 0;
+        std::vector<wchar_t> encoded(((kMaxBinaryValueBytes + 2) / 3) * 4 + 2, L'\0');
+        const DWORD copied = GetPrivateProfileStringW(
+            L"binary", key, L"", encoded.data(), static_cast<DWORD>(encoded.size()), path.c_str());
+        if (copied == 0 || copied >= encoded.size() - 1) return 0;
+        std::vector<BYTE> decoded;
+        if (!DecodeBase64(std::wstring_view(encoded.data(), copied), decoded) ||
+            decoded.size() > bufferSize) return 0;
+        std::copy(decoded.begin(), decoded.end(), buffer);
+        return decoded.size();
+    } catch (...) {
+        return 0;
+    }
+}
+
+
 inline void Logf(PCWSTR format, ...) noexcept {
     if (!format) return;
     wchar_t buffer[kMaxLogChars + 1]{};
@@ -488,6 +591,16 @@ inline BOOL Wh_SetStringValue(PCWSTR valueName, PCWSTR value) {
     const auto path = ::wmod::windhawk_compat::ValuesPath();
     if (path.empty()) return FALSE;
     return WritePrivateProfileStringW(L"values", valueName, value, path.c_str());
+}
+
+inline size_t Wh_GetBinaryValue(PCWSTR valueName, void* buffer, size_t bufferSize) {
+    return ::wmod::windhawk_compat::GetBinaryValue(
+        valueName, static_cast<BYTE*>(buffer), bufferSize);
+}
+
+inline BOOL Wh_SetBinaryValue(PCWSTR valueName, const void* buffer, size_t bufferSize) {
+    return ::wmod::windhawk_compat::SetBinaryValue(
+        valueName, static_cast<const BYTE*>(buffer), bufferSize);
 }
 
 #endif // WMOD_00047_WINDHAWK_NONHOOK_COMPAT_H
