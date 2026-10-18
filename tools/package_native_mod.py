@@ -23,6 +23,8 @@ def build_package(manifest_path: str, dll_path: str, output_path: str) -> dict:
             raise ValidationError(f"{label} input must not be a symbolic link")
         if not file_path.is_file():
             raise ValidationError(f"{label} input does not exist or is not a file: {file_path}")
+    if output_file.suffix.lower() != ".zip":
+        raise ValidationError("output filename must end with .zip")
 
     manifest_real = manifest_file.resolve()
     dll_real = dll_file.resolve()
@@ -48,7 +50,7 @@ def build_package(manifest_path: str, dll_path: str, output_path: str) -> dict:
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     fd, staging_name = tempfile.mkstemp(
-        prefix=f".{output_file.name}.", suffix=".tmp", dir=str(output_file.parent)
+        prefix=f".{output_file.stem}.", suffix=".zip", dir=str(output_file.parent)
     )
     os.close(fd)
     try:
