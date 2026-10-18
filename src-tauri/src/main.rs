@@ -4,6 +4,7 @@ mod blocks;
 mod custom;
 mod spec;
 mod engine;
+mod extensions;
 mod logstore;
 mod model;
 mod store;
@@ -381,10 +382,81 @@ fn open_blocks_folder() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn restart_app(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Result<(), String> {
+async fn list_extensions(ext: State<'_, extensions::ExtensionManager>) -> extensions::ExtensionList {
+    ext.list()
+}
+
+#[tauri::command]
+async fn extension_pack_preview(
+    app: AppHandle,
+    ext: State<'_, extensions::ExtensionManager>,
+) -> Result<Option<extensions::PackagePreview>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().add_filter("00047 extension package", &["zip"]).pick_file(move |p| {
+        let _ = tx.send(p);
+    });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    ext.preview(&path).map(Some)
+}
+
+#[tauri::command]
+fn extension_pack_install(ext: State<'_, extensions::ExtensionManager>, path: String) -> Result<String, String> {
+    ext.install(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+async fn extension_start(
+    ext: State<'_, extensions::ExtensionManager>,
+    package_id: String,
+    component_id: String,
+) -> Result<(), String> {
+    ext.start(&package_id, &component_id).await
+}
+
+#[tauri::command]
+async fn extension_stop(
+    ext: State<'_, extensions::ExtensionManager>,
+    package_id: String,
+    component_id: String,
+) -> Result<(), String> {
+    ext.stop(&package_id, &component_id).await
+}
+
+#[tauri::command]
+async fn extension_restart(
+    ext: State<'_, extensions::ExtensionManager>,
+    package_id: String,
+    component_id: String,
+) -> Result<(), String> {
+    ext.restart(&package_id, &component_id).await
+}
+
+#[tauri::command]
+async fn extension_uninstall(
+    ext: State<'_, extensions::ExtensionManager>,
+    package_id: String,
+) -> Result<(), String> {
+    ext.uninstall(&package_id).await
+}
+
+#[tauri::command]
+fn open_extensions_folder(ext: State<'_, extensions::ExtensionManager>) -> Result<(), String> {
+    let dir = ext.root_path();
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    sys::start_file(&dir.to_string_lossy(), "")
+}
+
+#[tauri::command]
+async fn restart_app(
+    app: AppHandle,
+    eng: State<'_, Arc<Engine>>,
+    ext: State<'_, extensions::ExtensionManager>,
+) -> Result<(), String> {
     save_window(&app);
     let e = eng.inner().clone();
     e.shutdown().await;
+    ext.shutdown().await;
     app.restart()
 }
 
@@ -476,6 +548,14 @@ fn main() {
             block_pack_preview,
             block_pack_install,
             open_blocks_folder,
+            list_extensions,
+            extension_pack_preview,
+            extension_pack_install,
+            extension_start,
+            extension_stop,
+            extension_restart,
+            extension_uninstall,
+            open_extensions_folder,
             restart_app
         ])
         .setup(|app| {
@@ -483,6 +563,7 @@ fn main() {
             std::fs::create_dir_all(&dir)?;
             custom::init(dir.join("blocks"));
             let _ = std::fs::create_dir_all(dir.join("blocks"));
+            app.manage(extensions::ExtensionManager::new(dir.join("extensions")));
             let (store, warn) = Store::load(&dir);
             let engine = Arc::new(Engine::new(app.handle().clone(), Arc::new(store), &dir));
             app.manage(engine.clone());
@@ -526,6 +607,9 @@ fn main() {
             #[cfg(target_os = "windows")]
             if let Some(w) = handle.get_webview_window("main") {
                 destroy_native_blur(&w);
+            }
+            if let Some(ext) = handle.try_state::<extensions::ExtensionManager>() {
+                tauri::async_runtime::block_on(ext.shutdown());
             }
             if let Some(e) = handle.try_state::<Arc<Engine>>() {
                 let e = e.inner().clone();
