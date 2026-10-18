@@ -796,7 +796,7 @@ inline bool WriteUrlContentFile(PCWSTR target, const std::string& content) noexc
 
 inline const WH_URL_CONTENT* GetUrlContent(PCWSTR url,
     const WH_GET_URL_CONTENT_OPTIONS* options) noexcept {
-    if (options && options->optionsSize < sizeof(WH_GET_URL_CONTENT_OPTIONS)) return nullptr;
+    if (options && options->optionsSize != sizeof(WH_GET_URL_CONTENT_OPTIONS)) return nullptr;
     if (options && options->targetFilePath && !*options->targetFilePath) return nullptr;
     if (options && options->targetFilePath) {
         size_t path_length = 0;
