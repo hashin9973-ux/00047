@@ -23,6 +23,7 @@ class WindhawkAuditTests(unittest.TestCase):
         self.assertEqual(findings["Wh_SetFunctionHook"]["category"], "unsupported")
         self.assertEqual(findings["Wh_ModInit"]["category"], "adapter-available-lifecycle")
         self.assertEqual(findings["Wh_MadeUpThing"]["category"], "unknown-api")
+        self.assertEqual(findings["Wh_FindFirstSymbol"]["category"], "supported-with-limitations")
         self.assertNotIn("Wh_Disasm", findings)
 
     def test_preserves_line_numbers_while_masking_comments_and_literals(self):
@@ -55,8 +56,11 @@ class WindhawkAuditTests(unittest.TestCase):
 
     def test_supported_matrix_matches_sdk_header(self):
         root = Path(__file__).resolve().parents[2]
-        header = root / "sdk" / "native-mod" / "windhawk_nonhook_compat.h"
-        code = mask_cpp_noncode(header.read_text(encoding="utf-8"))
+        headers = [
+            root / "sdk" / "native-mod" / "windhawk_nonhook_compat.h",
+            root / "sdk" / "native-mod" / "windhawk_symbol_compat.h",
+        ]
+        code = "\\n".join(mask_cpp_noncode(header.read_text(encoding="utf-8")) for header in headers)
         identifiers = set(IDENTIFIER.findall(code))
         missing = set(SUPPORTED) - identifiers
         self.assertFalse(missing, f"SDK header missing advertised supported APIs: {sorted(missing)}")
