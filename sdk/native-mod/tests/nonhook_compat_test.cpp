@@ -256,6 +256,8 @@ int wmain() {
     CHECK(Wh_GetUrlContent(L"file:///C:/Windows/win.ini", nullptr) == nullptr);
     WH_GET_URL_CONTENT_OPTIONS invalidOptions{};
     CHECK(Wh_GetUrlContent(L"https://example.invalid/", &invalidOptions) == nullptr);
+    WH_GET_URL_CONTENT_OPTIONS undersizedOptions{sizeof(WH_GET_URL_CONTENT_OPTIONS) - 1, nullptr};
+    CHECK(Wh_GetUrlContent(L"https://example.invalid/", &undersizedOptions) == nullptr);
 
     unsigned short httpPort = 0;
     SOCKET httpListener = INVALID_SOCKET;
