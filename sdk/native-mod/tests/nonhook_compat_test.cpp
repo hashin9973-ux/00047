@@ -138,6 +138,42 @@ bool TestWindhawkLifecycleAdapter(const std::filesystem::path& directory) {
     return ok;
 }
 
+bool TestSettingsChangeAdapter(const std::filesystem::path& directory) {
+    const auto dllPath = directory / L"00047_windhawk_settings_changed_smoke.dll";
+    HMODULE module = LoadLibraryW(dllPath.c_str());
+    if (!module) return false;
+
+    using Initialize = BOOL (WINAPI*)();
+    using Shutdown = void (WINAPI*)();
+    using GetCount = unsigned long (WINAPI*)();
+    const auto initialize = reinterpret_cast<Initialize>(
+        GetProcAddress(module, "WmodInitializeV1"));
+    const auto shutdown = reinterpret_cast<Shutdown>(
+        GetProcAddress(module, "WmodShutdownV1"));
+    const auto getCount = reinterpret_cast<GetCount>(
+        GetProcAddress(module, "AdapterSettingsChangedCount"));
+    if (!initialize || !shutdown || !getCount || initialize() == FALSE) {
+        FreeLibrary(module);
+        return false;
+    }
+
+    bool ok = true;
+    const auto settings = directory / L"settings.json";
+    ok = WriteUtf8(settings, R"json({"intSetting":101})json");
+    for (int i = 0; ok && i < 100 && getCount() == 0; ++i) Sleep(50);
+    ok = ok && getCount() > 0;
+
+    shutdown();
+    const auto countAfterShutdown = getCount();
+    ok = WriteUtf8(settings, R"json({"intSetting":102})json") && ok;
+    Sleep(250);
+    ok = ok && getCount() == countAfterShutdown;
+
+    FreeLibrary(module);
+    DeleteFileW(settings.c_str());
+    return ok;
+}
+
 #define CHECK(condition) do { \
     if (!(condition)) { \
         std::wcerr << L"FAILED check at line " << __LINE__ << L"\n"; \
@@ -179,6 +215,8 @@ int wmain() {
       ]
     })json";
     CHECK(WriteUtf8(manifest, manifestJson));
+    CHECK(TestSettingsChangeAdapter(directory));
+    DeleteFileW(settings.c_str());
 
     // Defaults are read from manifest.json before the settings editor has saved
     // the first settings.json file.
