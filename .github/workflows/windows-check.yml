@@ -21,6 +21,14 @@ jobs:
         with:
           node-version: 22
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate native-mod authoring tool
+        run: python -m unittest discover -s tools/tests -v
+
       - name: Check frontend JavaScript syntax
         shell: pwsh
         run: |
