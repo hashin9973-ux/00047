@@ -11,7 +11,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Mutex,
+    sync::{atomic::{AtomicUsize, Ordering}, Mutex},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -30,6 +30,7 @@ const MIN_COMMAND_TIMEOUT_MS: u64 = 100;
 const MAX_COMMAND_TIMEOUT_MS: u64 = 120_000;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 256 * 1024;
 const OUTPUT_READER_GRACE_MS: u64 = 2_000;
+const MAX_CONCURRENT_COMMANDS: usize = 4;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,9 +142,18 @@ struct RunningProcess {
     child: Child,
 }
 
+struct ActiveCommandGuard<'a>(&'a AtomicUsize);
+
+impl Drop for ActiveCommandGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
 pub struct ExtensionManager {
     root: PathBuf,
     children: Mutex<HashMap<String, RunningProcess>>,
+    active_commands: AtomicUsize,
 }
 
 struct ReadPackage {
@@ -153,7 +163,11 @@ struct ReadPackage {
 impl ExtensionManager {
     pub fn new(root: PathBuf) -> Self {
         let _ = fs::create_dir_all(root.join("packages"));
-        Self { root, children: Mutex::new(HashMap::new()) }
+        Self {
+            root,
+            children: Mutex::new(HashMap::new()),
+            active_commands: AtomicUsize::new(0),
+        }
     }
 
     pub fn root_path(&self) -> &Path {
@@ -377,6 +391,16 @@ impl ExtensionManager {
         if !valid_id(package_id) || !valid_id(component_id) {
             return Err("Invalid extension component identifier.".into());
         }
+        self.active_commands.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |active| (active < MAX_CONCURRENT_COMMANDS).then_some(active + 1),
+        ).map_err(|_| format!(
+            "Too many extension commands are already running (maximum {}).",
+            MAX_CONCURRENT_COMMANDS
+        ))?;
+        let _active_command = ActiveCommandGuard(&self.active_commands);
+
         let folder = self.package_dir(package_id)?;
         let manifest = load_manifest(&folder)?;
         if manifest.id != package_id {
