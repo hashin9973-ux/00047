@@ -93,7 +93,7 @@ pub struct ComponentPreview {
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionCommandResult {
     pub package_id: String,
