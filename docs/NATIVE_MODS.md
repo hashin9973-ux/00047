@@ -38,6 +38,16 @@ Include sdk/native-mod/00047_mod_api.h when building a native x64 DLL. The exact
 
 A no-op C++ sample is in samples/native-mod. It writes debug output only, so it is safe as a loader-lifecycle example without modifying the desktop.
 
+## Author-side package validation
+
+Before sharing a mod ZIP, run the standard-library-only validator from the repository root:
+
+    python tools/validate_native_mod.py path/to/mod.zip
+
+It checks ZIP size and entry limits, path traversal and duplicate paths, symlinks and encryption, manifest fields, allowed target process names, the x64 PE32+ machine type, and the three required lifecycle exports. The validator is author tooling only; 00047 still performs its own checks at installation time. Its regression tests run in Windows CI:
+
+    python -m unittest discover -s tools/tests -v
+
 ## Settings and logs
 
 A mod may declare an optional `settings` array in `manifest.json`. Each setting has a unique `id`, a `label`, a `type`, and a `default`. Supported types are `boolean`, `string`, `integer`, `number`, and `select`. Numeric settings can declare `min`, `max`, and `step`; string settings can declare `maxLength`; select settings declare `options` with unique `value` and `label` properties.
