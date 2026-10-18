@@ -90,6 +90,7 @@ pub struct ComponentPreview {
     pub kind: String,
     pub description: String,
     pub command: String,
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -242,6 +243,7 @@ impl ExtensionManager {
             kind: c.kind.clone(),
             description: c.description.clone(),
             command: command_preview(c, Path::new("<install-dir>")),
+            timeout_ms: c.runtime.timeout_ms,
         }).collect();
         Ok(PackagePreview {
             file: path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
