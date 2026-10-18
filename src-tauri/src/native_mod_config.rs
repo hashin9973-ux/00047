@@ -28,6 +28,7 @@ pub struct SettingSpec {
     #[serde(default)] pub max: Option<f64>,
     #[serde(default)] pub step: Option<f64>,
     #[serde(default)] pub max_length: Option<usize>,
+    #[serde(default)] pub dynamic_select: bool,
     #[serde(default)] pub options: Vec<SettingOption>,
 }
 
@@ -75,10 +76,104 @@ fn load_specs(folder: &Path) -> Result<Vec<SettingSpec>, String> {
     let manifest: Value = serde_json::from_str(content.trim_start_matches('\u{feff}'))
         .map_err(|e| format!("Invalid native mod manifest: {e}"))?;
     let raw = manifest.get("settings").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
-    let specs: Vec<SettingSpec> = serde_json::from_value(raw)
+    let mut specs: Vec<SettingSpec> = serde_json::from_value(raw)
         .map_err(|e| format!("Invalid native mod settings schema: {e}"))?;
+    merge_dynamic_select_options(folder, &mut specs)?;
     validate_specs(&specs)?;
     Ok(specs)
+}
+
+fn read_profile_text(path: &Path) -> Result<Option<String>, String> {
+    let meta = match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("Cannot inspect native mod values file: {e}")),
+        Ok(meta) => meta,
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 512 * 1024 {
+        return Err("wh_values.ini must be a regular file no larger than 512 KB.".into());
+    }
+    let bytes = fs::read(path).map_err(|e| format!("Cannot read native mod values file: {e}"))?;
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units = bytes[2..].chunks_exact(2)
+            .map(|p| u16::from_le_bytes([p[0], p[1]])).collect::<Vec<_>>();
+        return Ok(Some(String::from_utf16_lossy(&units)));
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let units = bytes[2..].chunks_exact(2)
+            .map(|p| u16::from_be_bytes([p[0], p[1]])).collect::<Vec<_>>();
+        return Ok(Some(String::from_utf16_lossy(&units)));
+    }
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+    Ok(Some(String::from_utf8_lossy(bytes).into_owned()))
+}
+
+fn dynamic_select_entries(folder: &Path) -> Result<Vec<(String, String, String)>, String> {
+    let Some(content) = read_profile_text(&folder.join("wh_values.ini"))? else {
+        return Ok(Vec::new());
+    };
+    let mut in_values = false;
+    let mut entries = Vec::new();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            in_values = line[1..line.len() - 1].trim().eq_ignore_ascii_case("values");
+            continue;
+        }
+        if !in_values {
+            continue;
+        }
+        let Some((key, label)) = line.split_once('=') else {
+            continue;
+        };
+        let Some(suffix) = key.strip_prefix("::wh_select_option::") else {
+            continue;
+        };
+        let Some((setting_path, value)) = suffix.split_once("::") else {
+            continue;
+        };
+        if !valid_setting_key(setting_path) || value.chars().count() > 100
+            || label.chars().count() > 100 {
+            continue;
+        }
+        entries.push((setting_path.to_owned(), value.to_owned(), label.to_owned()));
+    }
+    Ok(entries)
+}
+
+fn merge_dynamic_select_options(folder: &Path, specs: &mut [SettingSpec]) -> Result<(), String> {
+    let entries = dynamic_select_entries(folder)?;
+    for (setting_path, value, label) in entries {
+        let Some(spec) = specs.iter_mut().find(|s| s.id == setting_path && s.kind == "select" && s.dynamic_select) else {
+            continue;
+        };
+        if let Some(existing) = spec.options.iter_mut().find(|o| o.value == value) {
+            // Runtime options can relabel a static option without changing its stored value.
+            existing.label = label;
+        } else if spec.options.len() < MAX_OPTIONS {
+            spec.options.push(SettingOption { value, label });
+        }
+    }
+    Ok(())
+}
+
+fn append_stored_dynamic_select_values(specs: &mut [SettingSpec], values: &HashMap<String, Value>) {
+    for spec in specs.iter_mut().filter(|s| s.kind == "select" && s.dynamic_select) {
+        let Some(selected) = values.get(&spec.id).and_then(Value::as_str) else {
+            continue;
+        };
+        if selected.chars().count() > 100 || spec.options.iter().any(|o| o.value == selected)
+            || spec.options.len() >= MAX_OPTIONS {
+            continue;
+        }
+        spec.options.push(SettingOption {
+            value: selected.to_owned(),
+            // Keep a disconnected/renamed current selection visible until the user changes it.
+            label: selected.to_owned(),
+        });
+    }
 }
 
 fn validate_specs(specs: &[SettingSpec]) -> Result<(), String> {
@@ -93,13 +188,17 @@ fn validate_specs(specs: &[SettingSpec]) -> Result<(), String> {
         if s.step.is_some_and(|n| !n.is_finite() || n <= 0.0) { return Err(format!("Setting '{}': step must be positive and finite.", s.id)); }
         if s.max_length.is_some_and(|n| n > MAX_SETTING_TEXT) { return Err(format!("Setting '{}': maxLength may not exceed {MAX_SETTING_TEXT}.", s.id)); }
         if s.options.len() > MAX_OPTIONS { return Err(format!("Setting '{}': too many select options.", s.id)); }
+        if s.dynamic_select && s.kind != "select" {
+            return Err(format!("Setting '{}': dynamicSelect is only valid for select settings.", s.id));
+        }
         if s.kind == "select" {
-            if s.options.is_empty() { return Err(format!("Setting '{}': select settings need options.", s.id)); }
+            if s.options.is_empty() && !s.dynamic_select {
+                return Err(format!("Setting '{}': select settings need options or dynamicSelect:true.", s.id));
+            }
             let mut choices = HashSet::new();
             for o in &s.options {
-                if o.value.is_empty() || o.value.len() > 100 || o.label.trim().is_empty()
-                    || o.label.chars().count() > 100 || !choices.insert(o.value.clone()) {
-                    return Err(format!("Setting '{}': select options must have unique values and non-empty labels.", s.id));
+                if o.value.len() > 100 || o.label.chars().count() > 100 || !choices.insert(o.value.clone()) {
+                    return Err(format!("Setting '{}': select option values must be unique and values/labels may not exceed 100 characters.", s.id));
                 }
             }
         } else if !s.options.is_empty() {
@@ -129,7 +228,11 @@ fn validate_value(s: &SettingSpec, v: &Value) -> Result<(), String> {
         }
         "select" => {
             let selected = v.as_str().ok_or("expected an option value")?;
-            if !s.options.iter().any(|o| o.value == selected) { return Err("value is not one of the declared options".into()); }
+            if s.dynamic_select {
+                if selected.chars().count() > 100 { return Err("dynamic select value exceeds 100 characters".into()); }
+            } else if !s.options.iter().any(|o| o.value == selected) {
+                return Err("value is not one of the declared options".into());
+            }
         }
         other => return Err(format!("unsupported setting type '{other}'")),
     }
@@ -170,14 +273,17 @@ fn stored_values(folder: &Path, specs: &[SettingSpec]) -> Result<HashMap<String,
 
 pub fn read_settings(root: &Path, id: &str) -> Result<NativeModSettings, String> {
     let folder = package_directory(root, id)?;
-    let settings = load_specs(&folder)?;
+    let mut settings = load_specs(&folder)?;
     let values = stored_values(&folder, &settings)?;
+    append_stored_dynamic_select_values(&mut settings, &values);
     Ok(NativeModSettings { id: id.into(), settings, values })
 }
 
 pub fn write_settings(root: &Path, id: &str, values: Value) -> Result<NativeModSettings, String> {
     let folder = package_directory(root, id)?;
-    let settings = load_specs(&folder)?;
+    let mut settings = load_specs(&folder)?;
+    let previously_stored = stored_values(&folder, &settings)?;
+    append_stored_dynamic_select_values(&mut settings, &previously_stored);
     let object = values.as_object().ok_or("Settings must be submitted as a JSON object")?;
     if serde_json::to_vec(&values).map_err(|e| e.to_string())?.len() > MAX_SETTINGS_BYTES as usize {
         return Err("Settings object exceeds the 256 KB limit.".into());
@@ -196,6 +302,7 @@ pub fn write_settings(root: &Path, id: &str, values: Value) -> Result<NativeModS
     }
     fs::write(&path, serde_json::to_vec_pretty(&checked).map_err(|e| e.to_string())?)
         .map_err(|e| format!("Cannot save settings.json: {e}"))?;
+    append_stored_dynamic_select_values(&mut settings, &checked);
     Ok(NativeModSettings { id: id.into(), settings, values: checked })
 }
 
