@@ -247,6 +247,13 @@ impl NativeModuleManager {
         // Initial installation has no sidecar yet, so inspect the DLL to obtain metadata.
         let probe = inspect_module(&path)?;
         if probe.id != id { return Err("native module id does not match installed filename".into()); }
+        let metadata = metadata.unwrap_or(probe);
+        if metadata.id != id || metadata.file_name != format!("{id}.dll") {
+            return Err("native module metadata does not match its installed filename".into());
+        }
+        let metadata_bytes = serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string())?;
+        fs::write(&meta_path, metadata_bytes).map_err(|e| format!("write native module metadata: {e}"))?;
+
         let context = Box::new(HostContext { app: self.app.clone(), id: probe.id.clone() });
         let host = HostApiV1 {
             abi_version: NATIVE_ABI_VERSION,
@@ -261,23 +268,15 @@ impl NativeModuleManager {
         let mut user_data = 0usize;
         let rc = unsafe { start(&host, &mut user_data) };
         if rc != 0 {
+            // Give the module a chance to undo partial initialization before unloading it.
             unsafe { let _ = stop(&host, user_data); }
             return Err(format!("native module start returned error code {rc}"));
         }
-        let metadata = metadata.unwrap_or(probe);
-        let mut status = NativeModuleStatus {
+        let status = NativeModuleStatus {
             id: metadata.id.clone(), name: metadata.name.clone(), version: metadata.version.clone(),
             description: metadata.description.clone(), path: path.to_string_lossy().to_string(),
             auto_start: metadata.auto_start, state: "running".into(), last_error: None,
         };
-        status.auto_start = metadata.auto_start;
-        let bytes = serde_json::to_vec_pretty(&NativeModuleMetadata {
-            file_name: format!("{id}.dll"),
-            auto_start: status.auto_start,
-            id: status.id.clone(), name: status.name.clone(), version: status.version.clone(),
-            description: status.description.clone(),
-        }).map_err(|e| e.to_string())?;
-        fs::write(&meta_path, bytes).map_err(|e| format!("write native module metadata: {e}"))?;
         let _ = fs::remove_file(self.disabled_path(id)?);
         let record = NativeModuleRecord { status: status.clone(), _library: library, host, _context: context, stop, user_data };
         self.state.lock().unwrap().insert(id.to_string(), record);
