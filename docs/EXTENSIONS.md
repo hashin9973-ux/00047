@@ -94,12 +94,25 @@ A runtime extension is arbitrary code execution. It runs as the signed-in Window
 
 The host starts a separate process. It does **not** yet provide a stable in-process native module ABI, inject DLLs into Explorer/Start/notification processes, or implement Windhawk's mod/hook system. Those features require a separate native-extension layer with architecture checks, a compatibility contract, safe enable/disable and recovery paths, and careful validation against Windows versions. This version is the runtime/lifecycle foundation for that work, not Windhawk parity.
 
+## In-process native modules (Windows)
+
+In addition to external process extensions, the **In-process native modules** section accepts Windows DLLs that export the ABI in [`docs/extension_sdk/00047_native_extension.h`](extension_sdk/00047_native_extension.h). This interface can be implemented in C, C++, Rust, or any language capable of producing a compatible Windows DLL and C ABI exports.
+
+The DLL exports `extension_00047_get_api_v1`, returning an ABI v1 descriptor with an ID, display metadata, and `start`/`stop` callbacks. The host passes a small versioned host API table with a logging callback. The host calls `stop` before unloading and during normal app shutdown; a nonzero stop result prevents normal unload because the module may still have active code.
+
+The C++ example is in [`docs/examples/native-module/native_hello.cpp`](examples/native-module/native_hello.cpp). Build it as a DLL with the supplied header, then use the Extensions view to load it. Loaded modules are copied into the app's managed native-module folder. Auto-start is opt-in.
+
+**Native DLLs execute inside the 00047 process. They are not sandboxed and can crash or corrupt 00047.** The host must load a DLL to inspect its ABI, so even the initial inspection executes its DLL entrypoint. Only load modules whose source you trust.
+
+This ABI is an in-process extension surface, not full Windhawk parity. Loading a DLL into 00047 does not, by itself, load it into `explorer.exe`, `StartMenuExperienceHost.exe`, or notification processes. Target-process loading, native hook lifetimes, Windows-build compatibility checks, crash recovery, and a target-process IPC contract remain a distinct engineering layer.
+
 ## Development status
 
-The extension manager and block-pack manager are intentionally separate. A future native-mod API should not be forced into an automation-node model. The planned architecture is:
+The extension manager, in-process native module manager, and automation block-pack manager are separate systems:
 
-1. Process extensions: language/runtime-agnostic execution and lifecycle management (implemented in this phase).
-2. Host API: versioned IPC for commands, events, settings, and custom UI contributions.
-3. Native Windows modules: separately reviewed in-process APIs and, if required, controlled target-process integration for shell customization.
+1. **External process extensions**: language/runtime-agnostic execution and lifecycle management.
+2. **In-process native modules**: versioned C ABI for code that must run inside 00047 itself.
+3. **Host API and UI contributions**: planned versioned IPC for commands, events, settings, and custom extension UI.
+4. **Windows target-process modules**: a later subsystem for Explorer/Start/notification integration, with architecture and Windows-build compatibility checks, explicit opt-in, and a recovery path.
 
-Native target-process modifications can destabilize Explorer and the desktop. That work should include per-mod isolation where possible, explicit opt-in, Windows/build compatibility checks, and a documented recovery path.
+Target-process modifications can destabilize Explorer and the desktop. A complete implementation should not unload a module while its code is running, should restore hooks/state on disable, and should have a reliable way to recover if 00047 or a target process terminates unexpectedly.
