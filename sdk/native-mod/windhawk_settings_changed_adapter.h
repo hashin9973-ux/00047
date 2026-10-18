@@ -64,18 +64,41 @@ public:
             if (directory == INVALID_HANDLE_VALUE) return false;
 
             HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-            if (!stop) {
+            HANDLE ready = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (!stop || !ready) {
+                if (stop) CloseHandle(stop);
+                if (ready) CloseHandle(ready);
                 CloseHandle(directory);
                 return false;
             }
 
             directory_ = directory;
             stopEvent_ = stop;
+            readyEvent_ = ready;
             callback_ = callback;
             worker_ = CreateThread(nullptr, 0, &Watcher::ThreadMain, this, 0, nullptr);
             if (!worker_) {
+                CloseHandle(readyEvent_);
                 CloseHandle(stopEvent_);
                 CloseHandle(directory_);
+                readyEvent_ = nullptr;
+                stopEvent_ = nullptr;
+                directory_ = INVALID_HANDLE_VALUE;
+                callback_ = nullptr;
+                return false;
+            }
+            // Do not report a successful start until the first directory watch
+            // request is pending; this avoids losing an immediate settings write.
+            if (WaitForSingleObject(readyEvent_, 5000) != WAIT_OBJECT_0) {
+                SetEvent(stopEvent_);
+                CancelIoEx(directory_, nullptr);
+                WaitForSingleObject(worker_, INFINITE);
+                CloseHandle(worker_);
+                CloseHandle(readyEvent_);
+                CloseHandle(stopEvent_);
+                CloseHandle(directory_);
+                worker_ = nullptr;
+                readyEvent_ = nullptr;
                 stopEvent_ = nullptr;
                 directory_ = INVALID_HANDLE_VALUE;
                 callback_ = nullptr;
@@ -96,9 +119,11 @@ public:
         WaitForSingleObject(worker_, INFINITE);
 
         CloseHandle(worker_);
+        CloseHandle(readyEvent_);
         CloseHandle(stopEvent_);
         CloseHandle(directory_);
         worker_ = nullptr;
+        readyEvent_ = nullptr;
         stopEvent_ = nullptr;
         directory_ = INVALID_HANDLE_VALUE;
         callback_ = nullptr;
@@ -143,6 +168,8 @@ private:
         if (!self) return 1;
         const HANDLE directory = self->directory_;
         const HANDLE stop = self->stopEvent_;
+        const HANDLE ready = self->readyEvent_;
+        bool signaledReady = false;
 
         std::array<BYTE, kWatchBufferBytes> buffer{};
         while (true) {
@@ -165,6 +192,10 @@ private:
                 continue;
             }
 
+            if (!signaledReady) {
+                SetEvent(ready);
+                signaledReady = true;
+            }
             HANDLE waitHandles[2] = {stop, overlapped.hEvent};
             const DWORD wait = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
             if (wait == WAIT_OBJECT_0) {
@@ -210,6 +241,7 @@ private:
     std::mutex mutex_;
     HANDLE directory_ = INVALID_HANDLE_VALUE;
     HANDLE stopEvent_ = nullptr;
+    HANDLE readyEvent_ = nullptr;
     HANDLE worker_ = nullptr;
     Callback callback_ = nullptr;
 };
