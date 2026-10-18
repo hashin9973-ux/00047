@@ -327,3 +327,14 @@ textarea.glass.liquidglass-variant {
   -webkit-backdrop-filter: blur(18px) saturate(115%) !important;
   backdrop-filter: blur(18px) saturate(115%) !important;
 }
+
+
+/* General runtime extensions */
+.plugin-section-head{margin-top:24px}
+.extension-item{align-items:flex-start;flex-wrap:wrap}
+.extension-item .plugin-info{flex:1 1 260px}
+.extension-item .plugin-status{margin-top:4px}
+.extension-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.extension-autostart{font-size:12px;color:var(--mu);margin-top:4px}
+.extension-autostart input{accent-color:var(--mu)}
+@media(max-width:760px){.extension-actions{width:100%;justify-content:flex-start}.extension-item .plugin-status{margin-left:auto}}
