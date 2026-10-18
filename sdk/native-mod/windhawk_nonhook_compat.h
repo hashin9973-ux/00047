@@ -685,13 +685,18 @@ inline BOOL Wh_SetDynamicSelectOption(PCWSTR settingPath, PCWSTR value, PCWSTR l
     }
     std::wstring key;
     if (!::wmod::windhawk_compat::DynamicSelectStorageKey(settingPath, value, key)) return FALSE;
-    return Wh_SetStringValue(key.c_str(), label);
+    if (!Wh_SetStringValue(key.c_str(), label)) return FALSE;
+    const auto path = ::wmod::windhawk_compat::ValuesPath();
+    // Flush Win32 profile caching so the 00047 settings UI can immediately see options.
+    return !path.empty() && WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
 }
 
 inline BOOL Wh_DeleteDynamicSelectOption(PCWSTR settingPath, PCWSTR value) {
     std::wstring key;
     if (!::wmod::windhawk_compat::DynamicSelectStorageKey(settingPath, value, key)) return FALSE;
-    return Wh_DeleteValue(key.c_str());
+    if (!Wh_DeleteValue(key.c_str())) return FALSE;
+    const auto path = ::wmod::windhawk_compat::ValuesPath();
+    return !path.empty() && WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
 }
 
 inline BOOL Wh_ClearDynamicSelectOptions(PCWSTR settingPath) {
@@ -724,7 +729,8 @@ inline BOOL Wh_ClearDynamicSelectOptions(PCWSTR settingPath) {
         for (const auto& key : keys) {
             if (!Wh_DeleteValue(key.c_str())) ok = FALSE;
         }
-        return ok;
+        const BOOL flushed = WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+        return ok && flushed;
     } catch (...) {
         return FALSE;
     }
