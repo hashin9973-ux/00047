@@ -261,4 +261,118 @@ mod tests {
         assert!(!valid_mod_id("../escape"));
         assert!(!valid_setting_key("not valid"));
     }
+
+    
+    struct TestRoot {
+        path: PathBuf,
+    }
+
+    impl TestRoot {
+        fn new() -> Self {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "00047-native-mod-config-{}-{nonce}",
+                std::process::id()
+            ));
+            let package = root.join("packages").join("com.example.test-mod");
+            fs::create_dir_all(&package).unwrap();
+            let manifest = serde_json::json!({
+                "id": "com.example.test-mod",
+                "settings": [
+                    { "id": "enabled", "label": "Enabled", "type": "boolean", "default": true },
+                    { "id": "opacity", "label": "Opacity", "type": "number", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.1 },
+                    { "id": "style", "label": "Style", "type": "select", "default": "mica",
+                      "options": [{ "value": "mica", "label": "Mica" }, { "value": "acrylic", "label": "Acrylic" }] },
+                    { "id": "label", "label": "Label", "type": "string", "default": "Example", "maxLength": 40 }
+                ]
+            });
+            fs::write(
+                package.join("manifest.json"),
+                serde_json::to_vec_pretty(&manifest).unwrap(),
+            ).unwrap();
+            Self { path: root }
+        }
+    }
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn settings_round_trip_persists_only_valid_declared_values() {
+        let temp = TestRoot::new();
+        let id = "com.example.test-mod";
+
+        let initial = read_settings(&temp.path, id).unwrap();
+        assert_eq!(initial.values.get("enabled"), Some(&Value::Bool(true)));
+        assert_eq!(initial.values.get("opacity"), Some(&serde_json::json!(0.5)));
+        assert_eq!(initial.values.get("style"), Some(&Value::String("mica".into())));
+
+        let values = serde_json::json!({
+            "enabled": false,
+            "opacity": 0.7,
+            "style": "acrylic",
+            "label": "persisted"
+        });
+        let saved = write_settings(&temp.path, id, values.clone()).unwrap();
+        assert_eq!(saved.values.get("enabled"), Some(&Value::Bool(false)));
+        assert_eq!(saved.values.get("label"), Some(&Value::String("persisted".into())));
+        assert_eq!(read_settings(&temp.path, id).unwrap().values, saved.values);
+
+        assert!(write_settings(&temp.path, id, serde_json::json!({
+            "enabled": true,
+            "opacity": 0.7,
+            "style": "acrylic",
+            "label": "persisted",
+            "unknown": "not declared"
+        })).unwrap_err().contains("Unknown setting"));
+        assert!(write_settings(&temp.path, id, serde_json::json!({
+            "enabled": true,
+            "opacity": 0.75,
+            "style": "acrylic",
+            "label": "persisted"
+        })).unwrap_err().contains("step"));
+        assert_eq!(read_settings(&temp.path, id).unwrap().values, saved.values);
+    }
+
+    #[test]
+    fn invalid_persisted_values_fall_back_to_schema_defaults() {
+        let temp = TestRoot::new();
+        let package = temp.path.join("packages").join("com.example.test-mod");
+        fs::write(package.join("settings.json"), serde_json::to_vec(&serde_json::json!({
+            "enabled": "yes",
+            "opacity": 0.55,
+            "style": "unknown",
+            "label": "kept"
+        })).unwrap()).unwrap();
+
+        let values = read_settings(&temp.path, "com.example.test-mod").unwrap().values;
+        assert_eq!(values.get("enabled"), Some(&Value::Bool(true)));
+        assert_eq!(values.get("opacity"), Some(&serde_json::json!(0.5)));
+        assert_eq!(values.get("style"), Some(&Value::String("mica".into())));
+        assert_eq!(values.get("label"), Some(&Value::String("kept".into())));
+    }
+
+    #[test]
+    fn log_reader_returns_only_the_most_recent_bounded_lines() {
+        let temp = TestRoot::new();
+        let package = temp.path.join("packages").join("com.example.test-mod");
+        let content = (0..250).map(|n| format!("log-{n:03}\\n")).collect::<String>();
+        fs::write(package.join("mod.log"), content).unwrap();
+
+        let lines = read_logs(&temp.path, "com.example.test-mod").unwrap();
+        assert_eq!(lines.len(), MAX_LOG_LINES);
+        assert_eq!(lines.first().map(String::as_str), Some("log-050"));
+        assert_eq!(lines.last().map(String::as_str), Some("log-249"));
+    }
+
+    #[test]
+    fn missing_log_is_an_empty_list() {
+        let temp = TestRoot::new();
+        assert!(read_logs(&temp.path, "com.example.test-mod").unwrap().is_empty());
+    }
+
 }
