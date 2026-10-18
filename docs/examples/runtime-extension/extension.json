@@ -1,0 +1,16 @@
+{
+  "manifestVersion": 1,
+  "id": "org.example.heartbeat",
+  "name": "Heartbeat example",
+  "version": "1.0.0",
+  "description": "A small resident process for testing extension lifecycle and logs.",
+  "entrypoint": "scripts/main.js",
+  "runtime": {
+    "command": "node",
+    "args": ["{entrypoint}"],
+    "env": {
+      "LOG_LEVEL": "info"
+    }
+  },
+  "autoStart": false
+}
