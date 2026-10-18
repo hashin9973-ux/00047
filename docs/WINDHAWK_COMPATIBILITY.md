@@ -32,7 +32,20 @@ A detected call to one of these APIs is a blocker, not a warning that can be ign
 
 ## Lifecycle migration
 
-Windhawk callbacks such as `Wh_ModInit`, `Wh_ModAfterInit`, `Wh_ModBeforeUninit`, `Wh_ModUninit`, and `Wh_ModSettingsChanged` require manual adaptation to 00047's `WmodGetApiVersion`, `WmodInitializeV1`, and `WmodShutdownV1` ABI. There is no automatic semantic conversion for settings-change callbacks.
+For non-hook mods that provide the usual init and shutdown callbacks, the opt-in header `sdk/native-mod/windhawk_nonhook_adapter.h` maps `Wh_ModInit`, `Wh_ModAfterInit`, `Wh_ModBeforeUninit`, and `Wh_ModUninit` onto 00047's `WmodGetApiVersion`, `WmodInitializeV1`, and `WmodShutdownV1` ABI. Define `WMOD_BUILD_DLL`, include the adapter header after the callback definitions, and ensure the callback signatures match the adapter contract:
+
+```cpp
+WMOD_DEFINE_WINDHAWK_LIFECYCLE(
+    Wh_ModInit,
+    Wh_ModAfterInit,
+    Wh_ModBeforeUninit,
+    Wh_ModUninit
+)
+```
+
+This adapter preserves a basic callback order only; it is not a Windhawk runtime. If a port has no implementation for a void callback, `wmod::windhawk_adapter::NoopCallback` can be supplied explicitly. Do not use the adapter to hide missing behavior. The mod still must be free of unsupported hook, symbol, and disassembly APIs and its settings/storage calls must be ported to the supported helpers.
+
+`Wh_ModSettingsChanged` is **not** called automatically: 00047 does not yet provide an equivalent settings-change callback protocol. Any reload/update behavior needs a deliberate alternative. Review the mod's assumptions about callback timing, exceptions, threading, and cleanup before enabling it in a shell process.
 
 ## CI
 
