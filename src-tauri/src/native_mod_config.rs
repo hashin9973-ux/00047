@@ -381,6 +381,21 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_select_reader_accepts_utf16_windows_ini_files() {
+        let temp = TestRoot::new();
+        let package = temp.path.join("packages").join("com.example.test-mod");
+        let text = "[values]\n::wh_select_option::device::speaker=Speakers\n";
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        fs::write(package.join("wh_values.ini"), bytes).unwrap();
+
+        let entries = dynamic_select_entries(&package).unwrap();
+        assert_eq!(entries, vec![("device".into(), "speaker".into(), "Speakers".into())]);
+    }
+
+    #[test]
     fn dynamic_select_schema_can_start_without_options() {
         let spec: SettingSpec = serde_json::from_value(serde_json::json!({
             "id": "device",
