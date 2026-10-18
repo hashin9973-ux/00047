@@ -63,6 +63,10 @@ class WindhawkAuditTests(unittest.TestCase):
         stubs = set(UNSUPPORTED) & identifiers
         self.assertFalse(stubs, f"Unsupported APIs must not be declared as compatibility stubs: {sorted(stubs)}")
 
+    def test_settings_changed_callback_stays_manual(self):
+        report = audit_text("mod.cpp", "void Wh_ModSettingsChanged() {}")
+        self.assertEqual(report[0]["category"], "manual-lifecycle-adaptation")
+
 
 if __name__ == "__main__":
     unittest.main()
