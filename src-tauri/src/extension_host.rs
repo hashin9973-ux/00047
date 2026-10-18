@@ -321,7 +321,7 @@ impl ExtensionManager {
         let mut child_command = Command::new(&command);
         child_command.args(&args)
             .current_dir(&dir)
-            .stdin(Stdio::null())
+            .stdin(if manifest.protocol.as_deref() == Some("stdio-jsonl-v1") { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -341,6 +341,22 @@ impl ExtensionManager {
             format!("could not start '{command}': {e}")
         })?;
         let pid = child.id();
+        let control = if manifest.protocol.as_deref() == Some("stdio-jsonl-v1") {
+            let Some(stdin) = child.stdin.take() else {
+                let _ = child.start_kill();
+                return Err("the extension requested stdio-jsonl-v1 but its stdin pipe was unavailable".into());
+            };
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<String>();
+            spawn_control_writer(self.app.clone(), manifest.id.clone(), stdin, receiver);
+            let _ = sender.send(serde_json::json!({
+                "type": "host.started",
+                "protocolVersion": 1,
+                "extensionId": manifest.id
+            }).to_string());
+            Some(sender)
+        } else {
+            None
+        };
         let cancel = CancellationToken::new();
         let mut status = default_status(&manifest);
         status.state = "running".into();
@@ -352,6 +368,7 @@ impl ExtensionManager {
             states.insert(manifest.id.clone(), RuntimeRecord {
                 status: status.clone(),
                 cancel: Some(cancel.clone()),
+                control: control.clone(),
             });
         }
         self.emit_status(&status);
@@ -397,6 +414,7 @@ impl ExtensionManager {
         record.status.pid = None;
         record.status.started_at = None;
         record.cancel = None;
+        record.control = None;
         match result {
             Ok(exit) if stopped_by_user => {
                 record.status.state = "stopped".into();
