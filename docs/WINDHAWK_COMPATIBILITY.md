@@ -16,7 +16,7 @@ The scanner reads C/C++ source/header files, masks comments and ordinary/raw str
 
 ## Supported subset
 
-The current source-level helpers cover `Wh_Log`, `Wh_GetIntSetting`, `Wh_GetStringSetting`, `Wh_FreeStringSetting`, scalar/string/binary local-storage APIs, `Wh_DeleteValue`, `Wh_GetModStoragePath`, dynamic-select option management, and bounded HTTP(S) retrieval through `Wh_GetUrlContent` / `Wh_FreeUrlContent`, and bounded `Wh_FindFirstSymbol` / `Wh_FindNextSymbol` / `Wh_FindCloseSymbol` enumeration using Windows DbgHelp.
+The current source-level helpers cover `Wh_Log`, `Wh_GetIntSetting`, `Wh_GetStringSetting`, `Wh_FreeStringSetting`, scalar/string/binary local-storage APIs, `Wh_DeleteValue`, `Wh_GetModStoragePath`, dynamic-select option management, bounded HTTP(S) retrieval through `Wh_GetUrlContent` / `Wh_FreeUrlContent`, and bounded `Wh_FindFirstSymbol` / `Wh_FindNextSymbol` / `Wh_FindCloseSymbol` enumeration using Windows DbgHelp. `Wh_ModSettingsChanged` can be wired through a separate opt-in lifecycle adapter.
 
 “Supported with limitations” deliberately does not mean binary compatibility. Storage is package-scoped; URL retrieval is bounded and rejects credential-bearing URLs; settings use 00047's manifest/settings files; and runtime callbacks are different. Symbol enumeration is a DbgHelp-backed snapshot capped at 100,000 records and approximately 4 million stored name characters, depends on matching PDB/symbol availability, and may perform network I/O when a symbol server is selected. DbgHelp state is process-global, so lookup can fail or conflict when another component initialized DbgHelp incompatibly. Use an empty `symbolServer` in tests to suppress remote retrieval. Review [NATIVE_MODS.md](NATIVE_MODS.md) before porting.
 
@@ -44,7 +44,7 @@ WMOD_DEFINE_WINDHAWK_LIFECYCLE(
 
 The adapter guards repeated initialization and shutdown, and a failed init does not trigger the shutdown callbacks. Callback ordering is mapped, but timing remains different; the adapter is not a Windhawk runtime. If a port has no implementation for a void callback, `wmod::windhawk_adapter::NoopCallback` can be supplied explicitly. Do not use the adapter to hide missing behavior. The mod still must be free of unsupported hook and disassembly APIs and its settings/storage calls must be ported to the supported helpers.
 
-`Wh_ModSettingsChanged` is **not** called automatically: 00047 does not yet provide an equivalent settings-change callback protocol. Any reload/update behavior needs a deliberate alternative. Review the mod's assumptions about callback timing, exceptions, threading, and cleanup before enabling it in a shell process.
+Mods that define `Wh_ModSettingsChanged` can use `sdk/native-mod/windhawk_settings_changed_adapter.h` and `WMOD_DEFINE_WINDHAWK_LIFECYCLE_WITH_SETTINGS_CHANGED` instead of the basic lifecycle macro. It watches the mod package directory for changes to `settings.json` and invokes the callback on a dedicated worker thread, then stops and joins that thread before shutdown callbacks. Thread affinity differs from Windhawk: the callback must be thread-safe, brief, and not assume UI/shell-thread affinity. Initialization fails if the directory cannot be watched. Review the mod's assumptions about callback timing, exceptions, threading, and cleanup before enabling it in a shell process.
 
 ## CI
 
