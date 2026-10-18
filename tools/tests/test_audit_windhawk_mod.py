@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from audit_windhawk_mod import audit_paths, audit_text, mask_cpp_noncode
+from audit_windhawk_mod import IDENTIFIER, SUPPORTED, UNSUPPORTED, audit_paths, audit_text, mask_cpp_noncode
 
 
 class WindhawkAuditTests(unittest.TestCase):
@@ -52,6 +52,16 @@ class WindhawkAuditTests(unittest.TestCase):
     def test_finds_lifecycle_callbacks_without_call_syntax(self):
         report = audit_text("mod.cpp", "BOOL Wh_ModInit() { return TRUE; }")
         self.assertEqual(report[0]["category"], "manual-lifecycle-adaptation")
+
+    def test_supported_matrix_matches_sdk_header(self):
+        root = Path(__file__).resolve().parents[2]
+        header = root / "sdk" / "native-mod" / "windhawk_nonhook_compat.h"
+        code = mask_cpp_noncode(header.read_text(encoding="utf-8"))
+        identifiers = set(IDENTIFIER.findall(code))
+        missing = set(SUPPORTED) - identifiers
+        self.assertFalse(missing, f"SDK header missing advertised supported APIs: {sorted(missing)}")
+        stubs = set(UNSUPPORTED) & identifiers
+        self.assertFalse(stubs, f"Unsupported APIs must not be declared as compatibility stubs: {sorted(stubs)}")
 
 
 if __name__ == "__main__":
