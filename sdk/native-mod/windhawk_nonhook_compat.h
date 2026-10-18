@@ -10,10 +10,13 @@
 
 #include "00047_mod_services.h"
 
+#include <algorithm>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdint>
 #include <cwchar>
 #include <limits>
+#include <new>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -218,7 +221,7 @@ inline bool ExtractJsonProperty(std::wstring_view object, std::wstring_view want
         const size_t value_start = SkipWhitespace(object, i + 1);
         const size_t value_end = SkipJsonValue(object, value_start);
         if (value_end == std::wstring_view::npos) return false;
-        if (key == wanted) {
+        if (std::wstring_view(key) == wanted) {
             raw_value.assign(object.substr(value_start, value_end - value_start));
             return true;
         }
@@ -255,8 +258,9 @@ inline bool DefaultFromManifest(std::wstring_view manifest, std::wstring_view se
         const auto spec = settings.substr(i, end - i);
         std::wstring raw_id;
         std::wstring id;
+        size_t id_end = 0;
         if (ExtractJsonProperty(spec, L"id", raw_id) &&
-            ParseStringToken(TrimJson(raw_id), 0, end /* overwritten below */, &id) &&
+            ParseStringToken(TrimJson(raw_id), 0, id_end, &id) &&
             id == setting_id) {
             return ExtractJsonProperty(spec, L"default", raw_value);
         }
@@ -338,11 +342,12 @@ inline int SettingInt(PCWSTR key) noexcept {
     if (value.empty() || value.front() == L'"') return 0;
     if (value == L"true") return 1;
     if (value == L"false" || value == L"null") return 0;
+    std::wstring number(value);
     wchar_t* end = nullptr;
     errno = 0;
-    const long long parsed = _wcstoi64(value.data(), &end, 10);
-    if (errno != 0 || end == value.data() ||
-        static_cast<size_t>(end - value.data()) != value.size() ||
+    const long long parsed = _wcstoi64(number.c_str(), &end, 10);
+    if (errno != 0 || end == number.c_str() ||
+        static_cast<size_t>(end - number.c_str()) != number.size() ||
         parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max()) return 0;
     return static_cast<int>(parsed);
 }
@@ -351,7 +356,7 @@ inline PCWSTR SettingString(PCWSTR key) noexcept {
     std::wstring raw, decoded;
     if (!ReadRawSetting(key, raw) || !DecodeJsonString(raw, decoded) ||
         decoded.size() > kMaxStorageStringChars) {
-        return nullptr;
+        decoded.clear();
     }
     auto* result = new (std::nothrow) wchar_t[decoded.size() + 1];
     if (!result) return nullptr;
@@ -397,7 +402,7 @@ inline PCWSTR Wh_GetStringSetting(PCWSTR valueName, ...) {
     std::wstring key;
     const bool ok = ::wmod::windhawk_compat::FormatKey(valueName, args, key);
     va_end(args);
-    return ok ? ::wmod::windhawk_compat::SettingString(key.c_str()) : nullptr;
+    return ::wmod::windhawk_compat::SettingString(ok ? key.c_str() : L"");
 }
 
 inline void Wh_FreeStringSetting(PCWSTR value) {
