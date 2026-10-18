@@ -409,7 +409,9 @@ impl ExtensionManager {
     }
 
     pub async fn stop_and_wait(&self, id: &str) -> Result<(), String> {
-        if self.is_running(id) {
+        let should_stop = self.state.lock().unwrap().get(id)
+            .map(|r| r.status.state == "running").unwrap_or(false);
+        if should_stop {
             self.stop(id)?;
         }
         for _ in 0..40 {
