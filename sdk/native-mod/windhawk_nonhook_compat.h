@@ -385,6 +385,8 @@ inline bool ReadManifestSettingSpec(PCWSTR key, std::wstring& type,
     }
 }
 
+inline bool ParseSettingInt(std::wstring_view raw, int& result);
+
 inline bool ConvertSettingToString(std::wstring_view raw, std::wstring_view type,
     std::wstring& output) {
     output.clear();
@@ -400,6 +402,12 @@ inline bool ConvertSettingToString(std::wstring_view raw, std::wstring_view type
         return false;
     }
     if (type == L"integer") {
+        if (raw.empty() || raw.front() == L'"' || raw == L"true" ||
+            raw == L"false" || raw == L"null" ||
+            raw.find(L'.') != std::wstring_view::npos ||
+            raw.find(L'e') != std::wstring_view::npos ||
+            raw.find(L'E') != std::wstring_view::npos ||
+            SkipJsonValue(raw, 0) != raw.size()) return false;
         int parsed = 0;
         if (!ParseSettingInt(raw, parsed)) return false;
         output.assign(raw);
