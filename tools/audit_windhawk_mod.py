@@ -18,7 +18,7 @@ IGNORED_PARTS = {
     ".git", ".vs", "build", "dist", "node_modules", "out", "target", "vendor",
 }
 IGNORED_FILENAMES = {
-    "mods_api.h", "mods_api_internal.h", "windhawk_nonhook_compat.h",
+    "mods_api.h", "mods_api_internal.h", "windhawk_nonhook_compat.h", "windhawk_symbol_compat.h",
 }
 
 SUPPORTED = {
