@@ -142,7 +142,10 @@ int wmain() {
     CHECK(Wh_GetStringValue(L"::wh_select_option::dynamicSetting::static",
         dynamicLabel, _countof(dynamicLabel)) == 20);
     CHECK(std::wcscmp(dynamicLabel, L"Runtime static label") == 0);
-    CHECK(Wh_SetDynamicSelectOption(L"choice", L"ignored", L"No dynamic flag") == FALSE);
+    // Source-level fallback stores options by key; the settings UI ignores
+    // them unless the manifest actually declares dynamicSelect for that field.
+    CHECK(Wh_SetDynamicSelectOption(L"choice", L"ignored", L"No dynamic flag") == TRUE);
+    CHECK(Wh_DeleteDynamicSelectOption(L"choice", L"ignored") == TRUE);
     CHECK(Wh_SetDynamicSelectOption(L"dynamicSetting", L"bad", L"bad\r\nlabel") == FALSE);
     CHECK(Wh_SetDynamicSelectOption(L"dynamicSetting", L"", L"No device") == TRUE);
     CHECK(Wh_GetStringValue(L"::wh_select_option::dynamicSetting::", dynamicLabel,
