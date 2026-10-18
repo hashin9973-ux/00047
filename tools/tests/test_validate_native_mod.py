@@ -132,7 +132,7 @@ class NativeModValidatorTests(unittest.TestCase):
             ("assets", b"file"),
             ("assets/icon.dll", b"nested"),
         ])
-        with self.assertRaisesRegex(ValidationError, "file used as a parent"):
+        with self.assertRaisesRegex(ValidationError, "conflicts with a directory path"):
             validate_package(path)
 
     def test_rejects_invalid_manifest_id(self):
@@ -198,7 +198,7 @@ class NativeModValidatorTests(unittest.TestCase):
         with zipfile.ZipFile(output1) as archive:
             self.assertEqual(set(archive.namelist()), {"manifest.json", "bin/test.dll"})
 
-    def test_builder_refuses_to_overwrite_input(self):
+    def test_builder_rejects_non_zip_output(self):
         root = self.temp_dir.name
         manifest_path = os.path.join(root, "manifest.json")
         dll_path = os.path.join(root, "test.dll")
@@ -206,8 +206,8 @@ class NativeModValidatorTests(unittest.TestCase):
             json.dump(base_manifest(), handle)
         with open(dll_path, "wb") as handle:
             handle.write(make_test_pe())
-        with self.assertRaisesRegex(ValidationError, "must not overwrite"):
-            build_package(manifest_path, dll_path, manifest_path)
+        with self.assertRaisesRegex(ValidationError, "must end with .zip"):
+            build_package(manifest_path, dll_path, os.path.join(root, "bad.output"))
 
 
 if __name__ == "__main__":
