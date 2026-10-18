@@ -21,7 +21,7 @@ class WindhawkAuditTests(unittest.TestCase):
         findings = {item["name"]: item for item in audit_text("mod.cpp", source)}
         self.assertEqual(findings["Wh_GetIntSetting"]["category"], "supported-with-limitations")
         self.assertEqual(findings["Wh_SetFunctionHook"]["category"], "unsupported")
-        self.assertEqual(findings["Wh_ModInit"]["category"], "manual-lifecycle-adaptation")
+        self.assertEqual(findings["Wh_ModInit"]["category"], "adapter-available-lifecycle")
         self.assertEqual(findings["Wh_MadeUpThing"]["category"], "unknown-api")
         self.assertNotIn("Wh_Disasm", findings)
 
@@ -51,7 +51,7 @@ class WindhawkAuditTests(unittest.TestCase):
 
     def test_finds_lifecycle_callbacks_without_call_syntax(self):
         report = audit_text("mod.cpp", "BOOL Wh_ModInit() { return TRUE; }")
-        self.assertEqual(report[0]["category"], "manual-lifecycle-adaptation")
+        self.assertEqual(report[0]["category"], "adapter-available-lifecycle")
 
     def test_supported_matrix_matches_sdk_header(self):
         root = Path(__file__).resolve().parents[2]
