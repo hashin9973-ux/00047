@@ -159,7 +159,7 @@ impl NativeModuleManager {
                     Ok(m) => m,
                     Err(e) => { errors.push(format!("{}: invalid metadata: {e}", path.display())); continue; }
                 };
-                if !valid_id(&meta.id) || path != self.root.join(format!("{}.json", meta.id)) {
+                if !valid_id(&meta.id) || meta.file_name != format!("{}.dll", meta.id) || path != self.root.join(format!("{}.json", meta.id)) {
                     errors.push(format!("{}: metadata id/path mismatch", path.display()));
                     continue;
                 }
@@ -335,6 +335,9 @@ impl NativeModuleManager {
         metadata.auto_start = enabled;
         fs::write(&path, serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string())?)
             .map_err(|e| format!("write native module settings: {e}"))?;
+        if enabled {
+            let _ = fs::remove_file(self.disabled_path(id)?);
+        }
         let status = {
             let mut states = self.state.lock().unwrap();
             if let Some(record) = states.get_mut(id) {
