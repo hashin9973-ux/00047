@@ -971,6 +971,36 @@ mod tests {
         assert!(truncated);
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn one_shot_commands_are_limited_concurrently() {
+        let root = std::env::temp_dir().join(format!(
+            "00047-extension-concurrency-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let package = root.join("packages").join("com.example.concurrent-test");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("manifest.json"), r#"{
+          "manifestVersion":1,"id":"com.example.concurrent-test","name":"Concurrency test","version":"1.0.0",
+          "components":[{"id":"probe","name":"Slow probe","kind":"command",
+            "runtime":{"command":"powershell.exe","args":["-NoProfile","-NonInteractive","-Command","Start-Sleep -Seconds 5"],"timeoutMs":1000}}]
+        }"#).unwrap();
+
+        let manager = std::sync::Arc::new(ExtensionManager::new(root.clone()));
+        let runs = (0..(MAX_CONCURRENT_COMMANDS + 1)).map(|_| {
+            let manager = manager.clone();
+            async move { manager.run_command("com.example.concurrent-test", "probe").await }
+        }).collect::<Vec<_>>();
+        let results = futures::future::join_all(runs).await;
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert_eq!(manager.active_commands.load(Ordering::Acquire), 0);
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn manifest_rejects_unknown_placeholders() {
         let manifest: Manifest = serde_json::from_str(r#"{
