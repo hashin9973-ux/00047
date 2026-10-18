@@ -1,9 +1,11 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
 import zipfile
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from validate_native_mod import ValidationError, inspect_pe_exports, validate_package
 
 
@@ -42,10 +44,7 @@ class NativeModValidatorTests(unittest.TestCase):
             validate_package(path)
 
     def test_rejects_case_insensitive_duplicate_paths(self):
-        path = self.package([
-            ("manifest.json", "{}"),
-            ("MANIFEST.JSON", "{}"),
-        ])
+        path = self.package([("manifest.json", "{}"), ("MANIFEST.JSON", "{}")])
         with self.assertRaisesRegex(ValidationError, "duplicate archive path"):
             validate_package(path)
 
