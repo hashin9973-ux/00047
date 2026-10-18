@@ -80,7 +80,7 @@ int wmain() {
     // the first settings.json file.
     CHECK(Wh_GetIntSetting(L"intSetting") == 42);
     CHECK(Wh_GetIntSetting(L"boolSetting") == 1);
-    CHECK(Wh_GetIntSetting(L"int%s", L"Setting") == 42);
+    CHECK(Wh_GetIntSetting(L"int%ls", L"Setting") == 42);
 
     PCWSTR defaultText = Wh_GetStringSetting(L"stringSetting");
     CHECK(defaultText != nullptr);
