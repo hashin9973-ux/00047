@@ -171,7 +171,7 @@ private:
         const HANDLE ready = self->readyEvent_;
         bool signaledReady = false;
 
-        std::array<BYTE, kWatchBufferBytes> buffer{};
+        alignas(FILE_NOTIFY_INFORMATION) std::array<BYTE, kWatchBufferBytes> buffer{};
         while (true) {
             OVERLAPPED overlapped{};
             overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -218,9 +218,18 @@ private:
                 directory, &overlapped, &transferred, FALSE);
             CloseHandle(overlapped.hEvent);
             if (!completed) {
-                if (GetLastError() == ERROR_OPERATION_ABORTED &&
+                const DWORD error = GetLastError();
+                if (error == ERROR_OPERATION_ABORTED &&
                     WaitForSingleObject(stop, 0) == WAIT_OBJECT_0) {
                     return 0;
+                }
+                if (error == ERROR_NOTIFY_ENUM_DIR) {
+                    // Notification overflow means individual changes were lost.
+                    // Prompt the mod to reread its settings from disk.
+                    const Callback callback = self->callback_;
+                    if (callback) {
+                        try { callback(); } catch (...) {}
+                    }
                 }
                 continue;
             }
