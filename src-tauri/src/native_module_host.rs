@@ -351,6 +351,9 @@ impl NativeModuleManager {
         let path = self.metadata_path(id)?;
         let mut metadata: NativeModuleMetadata = serde_json::from_slice(&fs::read(&path).map_err(|e| e.to_string())?)
             .map_err(|e| format!("invalid native module metadata: {e}"))?;
+        if metadata.id != id || metadata.file_name != format!("{id}.dll") || !self.dll_path(id)?.is_file() {
+            return Err("native module metadata does not match an installed DLL".into());
+        }
         metadata.auto_start = enabled;
         fs::write(&path, serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string())?)
             .map_err(|e| format!("write native module settings: {e}"))?;
