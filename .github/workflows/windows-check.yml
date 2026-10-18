@@ -36,6 +36,16 @@ jobs:
           node -e "JSON.parse(require('fs').readFileSync('src-tauri/capabilities/default.json', 'utf8'))"
           node -e "JSON.parse(require('fs').readFileSync('docs/examples/runtime-extension/extension.json', 'utf8'))"
 
+      - name: Set up MSVC compiler
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Compile native extension ABI example
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .tmp/native-example | Out-Null
+          cl.exe /nologo /LD /I docs/extension_sdk docs/examples/native-module/native_hello.cpp /link /OUT:.tmp/native-example/native_hello.dll
+          if ($LASTEXITCODE -ne 0) { throw "Native extension example did not compile." }
+
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
         with:
