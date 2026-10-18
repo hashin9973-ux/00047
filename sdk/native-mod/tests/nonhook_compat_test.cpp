@@ -9,6 +9,7 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <cstdint>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -88,6 +89,44 @@ bool StartLocalHttpResponse(std::string response, unsigned short& port, SOCKET& 
 }
 }
 
+bool TestWindhawkLifecycleAdapter(const std::filesystem::path& directory) {
+    const auto dllPath = directory / L"00047_windhawk_nonhook_adapter_smoke.dll";
+    HMODULE module = LoadLibraryW(dllPath.c_str());
+    if (!module) return false;
+
+    using GetApiVersion = std::uint32_t (WINAPI*)();
+    using Initialize = BOOL (WINAPI*)();
+    using Shutdown = void (WINAPI*)();
+    using GetLifecycleStep = int (WINAPI*)();
+
+    const auto getApiVersion = reinterpret_cast<GetApiVersion>(
+        GetProcAddress(module, "WmodGetApiVersion"));
+    const auto initialize = reinterpret_cast<Initialize>(
+        GetProcAddress(module, "WmodInitializeV1"));
+    const auto shutdown = reinterpret_cast<Shutdown>(
+        GetProcAddress(module, "WmodShutdownV1"));
+    const auto getLifecycleStep = reinterpret_cast<GetLifecycleStep>(
+        GetProcAddress(module, "AdapterSmokeLifecycleStep"));
+
+    if (!getApiVersion || !initialize || !shutdown || !getLifecycleStep) {
+        FreeLibrary(module);
+        return false;
+    }
+    if (getApiVersion() != WMOD_00047_ABI_VERSION || getLifecycleStep() != 0) {
+        FreeLibrary(module);
+        return false;
+    }
+    if (!initialize()) {
+        FreeLibrary(module);
+        return false;
+    }
+    bool ok = getLifecycleStep() == 2; // init callback then after-init callback
+    shutdown();
+    ok = ok && getLifecycleStep() == 4; // before-uninit then uninit callback
+    FreeLibrary(module);
+    return ok;
+}
+
 #define CHECK(condition) do { \
     if (!(condition)) { \
         std::wcerr << L"FAILED check at line " << __LINE__ << L"\n"; \
@@ -100,6 +139,7 @@ int wmain() {
     CHECK(WSAStartup(MAKEWORD(2, 2), &wsaData) == 0);
     const auto directory = ExecutableDirectory();
     CHECK(!directory.empty());
+    CHECK(TestWindhawkLifecycleAdapter(directory));
 
     const auto manifest = directory / L"manifest.json";
     const auto settings = directory / L"settings.json";
