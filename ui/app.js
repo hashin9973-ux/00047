@@ -613,13 +613,163 @@ async function loadBlockSpecs() {
 }
 
 async function renderPlugins() {
- const host=$('#view-plugins');
- host.innerHTML='<div class="plugins-head"><div><h2>Plugins</h2><p class="mu">Install and manage trusted 00047 block packs.</p></div><div class="plugins-actions"><button class="btn" data-plugin-action="folder">Open plugins folder</button><button class="btn" data-plugin-action="reload">Reload plugins</button><button class="btn primary" data-plugin-action="install">+ Install plugin</button></div></div><div class="plugin-grid"><article class="card glass plugin-card"><div class="plugin-icon">▦</div><div><h3>Block packs</h3><p class="mu">Add custom conditions and actions to the automation editor using a JSON block pack.</p></div></article><article class="card glass plugin-card"><div class="plugin-icon">⚠</div><div><h3>Trust and permissions</h3><p class="mu">Installed blocks can run programs and scripts with your Windows account permissions. Review commands before installing.</p></div></article></div><div class="card glass plugin-list"><div class="sec"><h3>Installed plugins</h3><span class="mu" id="plugin-count">Loading…</span></div><div id="plugin-items" class="plugin-items"><p class="mu">Loading installed block packs…</p></div><div id="plugin-errors"></div></div>';
- host.querySelectorAll('[data-plugin-action]').forEach(b=>b.addEventListener('click',async()=>{const a=b.dataset.pluginAction;if(a==='folder'){try{await invoke('open_blocks_folder')}catch(e){toast('Could not open plugins folder: '+e,'err')}}else if(a==='install')await installPack();else if(a==='reload')await reloadBlocks()}));
- try{const info=await invoke('list_block_specs');if(S.view!=='plugins')return;const custom=info.specs.filter(x=>x.origin==='custom');$('#plugin-count').textContent=`${custom.length} installed`;
- $('#plugin-items').innerHTML=custom.length?custom.map(x=>`<div class="plugin-item"><div class="plugin-icon small">▦</div><div class="plugin-info"><b>${esc(x.title)}</b><small>${esc(x.category)} · ${esc(x.kind)}</small></div><span class="plugin-status">Installed</span></div>`).join(''):'<div class="plugin-empty"><div class="plugin-icon">＋</div><b>No plugins installed</b><p class="mu">Install a trusted JSON block pack to add custom blocks.</p><button class="btn primary" data-plugin-action="install">Install your first plugin</button></div>';
- const b=$('#plugin-items [data-plugin-action="install"]');if(b)b.addEventListener('click',installPack);$('#plugin-errors').innerHTML=info.errors.length?`<div class="plugin-errors"><b>Plugin loading warnings</b><ul>${info.errors.map(e=>`<li>${esc(e)}</li>`).join('')}</ul></div>`:'';
- }catch(e){$('#plugin-count').textContent='Unavailable';$('#plugin-items').innerHTML=`<p class="er">Could not load plugins: ${esc(e)}</p><button class="btn" data-plugin-action="retry">Retry</button>`;}
+  const host = $('#view-plugins');
+  host.innerHTML = `
+    <div class="plugins-head">
+      <div><h2>Extensions & Runtime Host</h2><p class="mu">Run long-lived helpers, native executables, and scripts through their own runtimes — independently of automation blocks.</p></div>
+      <div class="plugins-actions">
+        <button class="btn" data-plugin-action="open-extension-folder">Open extensions folder</button>
+        <button class="btn" data-plugin-action="refresh">Refresh</button>
+        <button class="btn primary" data-plugin-action="install-extension">+ Install extension</button>
+      </div>
+    </div>
+    <div class="plugin-grid">
+      <article class="card glass plugin-card"><div class="plugin-icon">⌘</div><div><h3>Language-agnostic runtime</h3><p class="mu">Use any executable or interpreter installed on Windows, or package your own runtime and entrypoint. Extensions can remain running instead of being limited to one automation action.</p></div></article>
+      <article class="card glass plugin-card"><div class="plugin-icon">⚠</div><div><h3>Full user permissions</h3><p class="mu">Extensions are ordinary processes, not sandboxes. They can access files, network resources, and Windows APIs with your account's permissions. Only install code you trust.</p></div></article>
+    </div>
+    <div class="card glass plugin-list">
+      <div class="sec"><h3>Installed runtime extensions</h3><span class="mu" id="extension-count">Loading…</span></div>
+      <div id="extension-items" class="plugin-items"><p class="mu">Loading extensions…</p></div>
+      <div id="extension-errors"></div>
+    </div>
+    <div class="plugins-head plugin-section-head">
+      <div><h2>Automation block packs</h2><p class="mu">The original custom conditions and actions remain supported separately.</p></div>
+      <div class="plugins-actions">
+        <button class="btn" data-plugin-action="open-block-folder">Open block folder</button>
+        <button class="btn" data-plugin-action="reload-blocks">Reload blocks</button>
+        <button class="btn" data-plugin-action="install-block-pack">+ Install block pack</button>
+      </div>
+    </div>
+    <div class="card glass plugin-list">
+      <div class="sec"><h3>Installed custom blocks</h3><span class="mu" id="plugin-count">Loading…</span></div>
+      <div id="plugin-items" class="plugin-items"><p class="mu">Loading custom blocks…</p></div>
+      <div id="plugin-errors"></div>
+    </div>`;
+  if (!host.dataset.actionsBound) {
+    host.dataset.actionsBound = '1';
+    host.addEventListener('click', async e => {
+      const b = e.target.closest('[data-plugin-action], [data-extension-action]');
+      if (!b) return;
+      if (b.dataset.extensionAction) {
+        await runExtensionAction(b.dataset.extensionAction, b.dataset.id);
+        return;
+      }
+      const action = b.dataset.pluginAction;
+      if (action === 'open-extension-folder') {
+        try { await invoke('extension_open_folder'); } catch (err) { toast('Could not open extensions folder: ' + err, 'err'); }
+      } else if (action === 'open-block-folder') {
+        try { await invoke('open_blocks_folder'); } catch (err) { toast('Could not open block folder: ' + err, 'err'); }
+      } else if (action === 'install-extension') {
+        await installExtension();
+      } else if (action === 'install-block-pack') {
+        await installPack();
+      } else if (action === 'reload-blocks') {
+        await reloadBlocks();
+      } else if (action === 'refresh' || action === 'retry') {
+        await refreshPluginLists();
+      }
+    });
+    host.addEventListener('change', async e => {
+      const box = e.target.closest('[data-extension-autostart]');
+      if (!box) return;
+      try {
+        await invoke('extension_set_autostart', { id: box.dataset.extensionAutostart, enabled: box.checked });
+        toast(box.checked ? 'Extension will start with 00047' : 'Extension autostart disabled');
+      } catch (err) {
+        box.checked = !box.checked;
+        toast('Could not change autostart: ' + err, 'err');
+      }
+    });
+  }
+  await refreshPluginLists();
+}
+
+async function refreshPluginLists() {
+  const host = $('#view-plugins');
+  try {
+    const [info, ext] = await Promise.all([invoke('list_block_specs'), invoke('list_extensions')]);
+    if (S.view !== 'plugins') return;
+
+    const custom = info.specs.filter(x => x.origin === 'custom');
+    $('#plugin-count').textContent = `${custom.length} installed`;
+    $('#plugin-items').innerHTML = custom.length
+      ? custom.map(x => `<div class="plugin-item"><div class="plugin-icon small">▦</div><div class="plugin-info"><b>${esc(x.title)}</b><small>${esc(x.category)} · ${esc(x.kind)}</small></div><span class="plugin-status">Loaded</span></div>`).join('')
+      : '<div class="plugin-empty"><div class="plugin-icon">＋</div><b>No custom blocks installed</b><p class="mu">Install a ZIP block pack to add conditions and actions to the automation editor.</p><button class="btn primary" data-plugin-action="install-block-pack">Install block pack</button></div>';
+    $('#plugin-errors').innerHTML = info.errors.length
+      ? `<div class="plugin-errors"><b>Block loading warnings</b><ul>${info.errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>` : '';
+
+    $('#extension-count').textContent = `${ext.extensions.length} installed`;
+    $('#extension-items').innerHTML = ext.extensions.length
+      ? ext.extensions.map(x => {
+        const id = esc(x.id), running = x.state === 'running' || x.state === 'stopping';
+        const status = x.state === 'running' && x.pid ? `Running · PID ${x.pid}` : x.state;
+        return `<div class="plugin-item extension-item">
+          <div class="plugin-icon small">⌘</div>
+          <div class="plugin-info">
+            <b>${esc(x.name)} <small>v${esc(x.version)}</small></b>
+            <small>${esc(x.id)} · ${esc(x.runtime)}</small>
+            ${x.description ? `<small>${esc(x.description)}</small>` : ''}
+            ${x.lastError ? `<small class="er">${esc(x.lastError)}</small>` : ''}
+            <label class="chk extension-autostart"><input type="checkbox" data-extension-autostart="${id}" ${x.autoStart ? 'checked' : ''}> Start with 00047</label>
+          </div>
+          <span class="plugin-status">${esc(status)}</span>
+          <div class="extension-actions">
+            <button class="btn" data-extension-action="start" data-id="${id}" ${running ? 'disabled' : ''}>Start</button>
+            <button class="btn" data-extension-action="stop" data-id="${id}" ${x.state !== 'running' ? 'disabled' : ''}>Stop</button>
+            <button class="btn" data-extension-action="restart" data-id="${id}" ${!running ? 'disabled' : ''}>Restart</button>
+            <button class="btn danger" data-extension-action="uninstall" data-id="${id}" ${running ? 'disabled' : ''}>Uninstall</button>
+          </div>
+        </div>`;
+      }).join('')
+      : '<div class="plugin-empty"><div class="plugin-icon">＋</div><b>No runtime extensions installed</b><p class="mu">Install an extension ZIP containing extension.json and its entrypoint.</p><button class="btn primary" data-plugin-action="install-extension">Install your first extension</button></div>';
+    $('#extension-errors').innerHTML = ext.errors.length
+      ? `<div class="plugin-errors"><b>Extension loading warnings</b><ul>${ext.errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>` : '';
+  } catch (e) {
+    $('#extension-count').textContent = 'Unavailable';
+    $('#extension-items').innerHTML = `<p class="er">Could not load extension list: ${esc(e)}</p><button class="btn" data-plugin-action="retry">Retry</button>`;
+    $('#plugin-count').textContent = 'Unavailable';
+    $('#plugin-items').innerHTML = `<p class="er">Could not load custom blocks: ${esc(e)}</p>`;
+  }
+}
+
+async function installExtension() {
+  try {
+    const pv = await invoke('extension_pack_preview');
+    if (!pv) return;
+    const args = pv.args.map(a => esc(a)).join(' ');
+    const requested = pv.autoStart ? '<p class="er">This package requests starting automatically with 00047. You can disable that after installation.</p>' : '';
+    const c = await htmlModal(`Install extension "${pv.name}"?`,
+      `<p><b>${esc(pv.name)}</b> v${esc(pv.version)} · <code>${esc(pv.id)}</code></p>
+       <p>${esc(pv.description || 'No description provided.')}</p>
+       <p>Entrypoint: <code>${esc(pv.entrypoint)}</code></p>
+       <p>Runtime command (executed without a shell):</p><pre>${esc(pv.command)} ${args}</pre>
+       ${requested}
+       <p class="er">This installer does not sandbox or security-scan extensions. Their code runs with your Windows account permissions and may access files, network resources, and system APIs. Review the package source before installing.</p>`,
+      [['cancel', 'Cancel'], ['go', 'Install extension', 'primary']]);
+    if (c !== 'go') return;
+    await invoke('extension_pack_install', { path: pv.path });
+    toast('Extension installed');
+    await refreshPluginLists();
+  } catch (e) { toast('Extension installation failed: ' + String(e?.message || e), 'err'); }
+}
+
+async function runExtensionAction(action, id) {
+  if (!id) return;
+  try {
+    if (action === 'uninstall') {
+      const c = await modal({ title: 'Uninstall extension?', body: `Remove "${id}" and its packaged files? This does not remove any files or changes the extension made elsewhere.`, buttons: [['cancel', 'Cancel'], ['go', 'Uninstall', 'danger']] });
+      if (c !== 'go') return;
+      await invoke('extension_uninstall', { id });
+    } else if (action === 'start') {
+      await invoke('extension_start', { id });
+    } else if (action === 'stop') {
+      await invoke('extension_stop', { id });
+    } else if (action === 'restart') {
+      await invoke('extension_restart', { id });
+    }
+    await refreshPluginLists();
+    if (action !== 'uninstall') toast(`Extension ${action} completed`);
+  } catch (e) { toast(`Extension ${action} failed: ` + String(e?.message || e), 'err'); await refreshPluginLists(); }
 }
 
 async function openBlocksManager() {
