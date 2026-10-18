@@ -107,16 +107,20 @@ public:
 private:
     static bool ContainsSettingsChange(
         const BYTE* bytes, DWORD byteCount) noexcept {
-        if (!bytes || byteCount == 0) {
-            // Windows reports a zero-byte completion if the notification
-            // buffer overflowed. Reloading is safer than silently missing it.
-            return true;
-        }
-        DWORD offset = 0;
-        while (offset + sizeof(FILE_NOTIFY_INFORMATION) <= byteCount) {
-            const auto* entry = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(
-                bytes + offset);
-            if ((entry->FileNameLength % sizeof(wchar_t)) == 0) {
+        try {
+            if (!bytes || byteCount == 0) {
+                // Windows reports a zero-byte completion if the notification
+                // buffer overflowed. Reloading is safer than silently missing it.
+                return true;
+            }
+            DWORD offset = 0;
+            while (offset + offsetof(FILE_NOTIFY_INFORMATION, FileName) <= byteCount) {
+                const auto* entry = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(
+                    bytes + offset);
+                const DWORD headerBytes = static_cast<DWORD>(
+                    offsetof(FILE_NOTIFY_INFORMATION, FileName));
+                if (entry->FileNameLength > byteCount - offset - headerBytes ||
+                    (entry->FileNameLength % sizeof(wchar_t)) != 0) break;
                 const std::wstring name(
                     entry->FileName,
                     entry->FileNameLength / sizeof(wchar_t));
@@ -125,12 +129,12 @@ private:
                         L"settings.json", -1, TRUE) == CSTR_EQUAL) {
                     return true;
                 }
+                if (entry->NextEntryOffset == 0) break;
+                if (entry->NextEntryOffset < headerBytes ||
+                    entry->NextEntryOffset > byteCount - offset) break;
+                offset += entry->NextEntryOffset;
             }
-            if (entry->NextEntryOffset == 0) break;
-            if (entry->NextEntryOffset < sizeof(FILE_NOTIFY_INFORMATION) ||
-                entry->NextEntryOffset > byteCount - offset) break;
-            offset += entry->NextEntryOffset;
-        }
+        } catch (...) {}
         return false;
     }
 
