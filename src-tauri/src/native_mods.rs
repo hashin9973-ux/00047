@@ -305,8 +305,8 @@ impl NativeModManager {
                 Ok(status)
             }
             Err(e) => {
-                self.set_status(id, format!("Enabled, but load failed: {e}"));
-                Err(e)
+                self.disable_after_load_failure(id, &e);
+                Err(format!("{e}. The mod was disabled and any partial loads were rolled back where possible."))
             }
         }
     }
@@ -359,9 +359,34 @@ impl NativeModManager {
         for id in enabled {
             match self.apply_one(&id) {
                 Ok(status) => self.set_status(&id, status),
-                Err(e) => self.set_status(&id, format!("Enabled, load error: {e}")),
+                Err(e) => self.disable_after_load_failure(&id, &e),
             }
         }
+    }
+
+    fn disable_after_load_failure(&self, id: &str, reason: &str) {
+        let mut persistence_warning = None;
+        if let Ok(mut state) = self.state.lock() {
+            state.enabled.remove(id);
+            if let Err(e) = self.persist_state(&state) {
+                persistence_warning = Some(format!("could not persist disabled state: {e}"));
+            }
+        } else {
+            persistence_warning = Some("native mod state lock is unavailable".into());
+        }
+
+        let cleanup_warning = load_manifest(&self.package_dir(id).unwrap_or_default())
+            .ok()
+            .and_then(|manifest| unload_from_targets(&manifest.targets, &self.package_dir(id).ok()?.join(&manifest.module)).err());
+
+        let mut status = format!("Disabled after load failure: {reason}");
+        if let Some(warning) = cleanup_warning {
+            status.push_str(&format!("; rollback warning: {warning}"));
+        }
+        if let Some(warning) = persistence_warning {
+            status.push_str(&format!("; {warning}"));
+        }
+        self.set_status(id, status);
     }
 
     fn apply_one(&self, id: &str) -> Result<String, String> {
