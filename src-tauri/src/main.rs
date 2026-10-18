@@ -2,6 +2,7 @@
 
 mod blocks;
 mod custom;
+mod extension_host;
 mod spec;
 mod engine;
 mod logstore;
@@ -10,6 +11,7 @@ mod store;
 mod sys;
 
 use engine::{Engine, Runtime};
+use extension_host::{ExtensionCatalog, ExtensionManager, ExtensionPreview};
 use model::{Automation, LogEntry, RunRecord};
 use std::sync::{Arc, Mutex};
 use store::Store;
@@ -264,10 +266,15 @@ fn hide_to_tray(app: AppHandle, eng: State<'_, Arc<Engine>>) {
 }
 
 #[tauri::command]
-async fn exit_app(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Result<(), String> {
+async fn exit_app(
+    app: AppHandle,
+    eng: State<'_, Arc<Engine>>,
+    extensions: State<'_, Arc<ExtensionManager>>,
+) -> Result<(), String> {
     save_window(&app);
     let e = eng.inner().clone();
     e.shutdown().await;
+    extensions.shutdown().await;
     app.exit(0);
     Ok(())
 }
@@ -358,6 +365,80 @@ fn list_block_specs() -> serde_json::Value {
 }
 
 #[tauri::command]
+fn list_extensions(extensions: State<'_, Arc<ExtensionManager>>) -> ExtensionCatalog {
+    extensions.catalog()
+}
+
+#[tauri::command]
+async fn extension_pack_preview(
+    app: AppHandle,
+    extensions: State<'_, Arc<ExtensionManager>>,
+) -> Result<Option<ExtensionPreview>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().add_filter("00047 extension package", &["zip"])
+        .pick_file(move |p| { let _ = tx.send(p); });
+    let Some(p) = rx.await.map_err(|e| e.to_string())? else { return Ok(None) };
+    let path = p.into_path().map_err(|e| e.to_string())?;
+    extensions.preview_zip(&path).map(Some)
+}
+
+#[tauri::command]
+fn extension_pack_install(
+    extensions: State<'_, Arc<ExtensionManager>>,
+    path: String,
+) -> Result<String, String> {
+    extensions.install_zip(std::path::Path::new(&path))
+}
+
+#[tauri::command]
+async fn extension_start(
+    extensions: State<'_, Arc<ExtensionManager>>,
+    id: String,
+) -> Result<(), String> {
+    extensions.inner().start(&id).await
+}
+
+#[tauri::command]
+async fn extension_stop(
+    extensions: State<'_, Arc<ExtensionManager>>,
+    id: String,
+) -> Result<(), String> {
+    extensions.stop_and_wait(&id).await
+}
+
+#[tauri::command]
+async fn extension_restart(
+    extensions: State<'_, Arc<ExtensionManager>>,
+    id: String,
+) -> Result<(), String> {
+    extensions.inner().restart(&id).await
+}
+
+#[tauri::command]
+fn extension_uninstall(
+    extensions: State<'_, Arc<ExtensionManager>>,
+    id: String,
+) -> Result<(), String> {
+    extensions.uninstall(&id)
+}
+
+#[tauri::command]
+fn extension_set_autostart(
+    extensions: State<'_, Arc<ExtensionManager>>,
+    id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    extensions.set_auto_start(&id, enabled)
+}
+
+#[tauri::command]
+fn extension_open_folder(extensions: State<'_, Arc<ExtensionManager>>) -> Result<(), String> {
+    std::fs::create_dir_all(extensions.root()).map_err(|e| e.to_string())?;
+    let _ = sys::start_file(&extensions.root().to_string_lossy(), "");
+    Ok(())
+}
+
+#[tauri::command]
 async fn block_pack_preview(app: AppHandle) -> Result<Option<custom::PackPreview>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog().file().add_filter("00047 script plugin pack", &["zip"]).pick_file(move |p| {
@@ -381,10 +462,15 @@ fn open_blocks_folder() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn restart_app(app: AppHandle, eng: State<'_, Arc<Engine>>) -> Result<(), String> {
+async fn restart_app(
+    app: AppHandle,
+    eng: State<'_, Arc<Engine>>,
+    extensions: State<'_, Arc<ExtensionManager>>,
+) -> Result<(), String> {
     save_window(&app);
     let e = eng.inner().clone();
     e.shutdown().await;
+    extensions.shutdown().await;
     app.restart()
 }
 
@@ -452,6 +538,15 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             update_windhawk_blur,
+            list_extensions,
+            extension_pack_preview,
+            extension_pack_install,
+            extension_start,
+            extension_stop,
+            extension_restart,
+            extension_uninstall,
+            extension_set_autostart,
+            extension_open_folder,
             list_automations,
             save_automation,
             delete_automation,
@@ -483,6 +578,8 @@ fn main() {
             std::fs::create_dir_all(&dir)?;
             custom::init(dir.join("blocks"));
             let _ = std::fs::create_dir_all(dir.join("blocks"));
+            let extensions = Arc::new(ExtensionManager::new(dir.join("extensions"), app.handle().clone()));
+            app.manage(extensions.clone());
             let (store, warn) = Store::load(&dir);
             let engine = Arc::new(Engine::new(app.handle().clone(), Arc::new(store), &dir));
             app.manage(engine.clone());
@@ -516,6 +613,7 @@ fn main() {
                 show_main(app.handle());
             }
             engine.start_autostart();
+            extensions.start_autostart();
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -530,6 +628,9 @@ fn main() {
             if let Some(e) = handle.try_state::<Arc<Engine>>() {
                 let e = e.inner().clone();
                 tauri::async_runtime::block_on(e.shutdown());
+            }
+            if let Some(extensions) = handle.try_state::<Arc<ExtensionManager>>() {
+                tauri::async_runtime::block_on(extensions.shutdown());
             }
         }
     });
