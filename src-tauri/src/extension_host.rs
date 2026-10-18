@@ -639,6 +639,8 @@ where
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::Write;
+    use zip::write::FileOptions;
 
     fn sample() -> ExtensionManifest {
         serde_json::from_value(json!({
@@ -684,5 +686,39 @@ mod tests {
         let mut manifest = sample();
         manifest.manifest_version = 2;
         assert!(validate_manifest(&manifest, None, None).is_err());
+    }
+
+    #[test]
+    fn reads_a_zip_with_root_manifest_and_entrypoint() {
+        let path = std::env::temp_dir().join(format!("00047-extension-test-{}.zip", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let file = File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let manifest = serde_json::to_vec(&sample()).unwrap();
+        zip.start_file("extension.json", FileOptions::default()).unwrap();
+        zip.write_all(&manifest).unwrap();
+        zip.start_file("scripts/main.py", FileOptions::default()).unwrap();
+        zip.write_all(b"print('ok')").unwrap();
+        zip.finish().unwrap();
+
+        let archive = read_archive(&path).unwrap();
+        assert_eq!(archive.manifest.id, "org.example.hello");
+        assert!(archive.files.contains("scripts/main.py"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_a_zip_when_its_entrypoint_is_missing() {
+        let path = std::env::temp_dir().join(format!("00047-extension-invalid-{}.zip", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let file = File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let manifest = serde_json::to_vec(&sample()).unwrap();
+        zip.start_file("extension.json", FileOptions::default()).unwrap();
+        zip.write_all(&manifest).unwrap();
+        zip.finish().unwrap();
+
+        assert!(read_archive(&path).is_err());
+        let _ = fs::remove_file(path);
     }
 }
