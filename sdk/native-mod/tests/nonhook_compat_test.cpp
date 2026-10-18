@@ -144,6 +144,12 @@ int wmain() {
     CHECK(std::wcscmp(dynamicLabel, L"Runtime static label") == 0);
     CHECK(Wh_SetDynamicSelectOption(L"choice", L"ignored", L"No dynamic flag") == FALSE);
     CHECK(Wh_SetDynamicSelectOption(L"dynamicSetting", L"bad", L"bad\r\nlabel") == FALSE);
+    CHECK(Wh_SetDynamicSelectOption(L"dynamicSetting", L"", L"No device") == TRUE);
+    CHECK(Wh_GetStringValue(L"::wh_select_option::dynamicSetting::", dynamicLabel,
+        _countof(dynamicLabel)) == 9);
+    CHECK(std::wcscmp(dynamicLabel, L"No device") == 0);
+    CHECK(Wh_DeleteDynamicSelectOption(L"dynamicSetting", L"not-present") == TRUE);
+    CHECK(Wh_DeleteDynamicSelectOption(L"dynamicSetting", L"") == TRUE);
     CHECK(Wh_DeleteDynamicSelectOption(L"dynamicSetting", L"speaker-id") == TRUE);
     CHECK(Wh_GetStringValue(kDynamicKey, dynamicLabel, _countof(dynamicLabel)) == 0);
     CHECK(Wh_SetDynamicSelectOption(L"dynamicSetting", L"speaker-id", L"Speakers") == TRUE);
