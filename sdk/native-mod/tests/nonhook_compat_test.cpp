@@ -129,6 +129,45 @@ int wmain() {
     CHECK(tinyBuffer[0] == L'\0');
     CHECK(Wh_SetStringValue(L"invalid\r\nkey", L"blocked") == FALSE);
 
+    // Binary values preserve arbitrary bytes and do not partially copy when
+    // caller capacity is insufficient.
+    const BYTE binaryInput[] = {0x00, 0x01, 0x7F, 0x80, 0xFF};
+    CHECK(Wh_SetBinaryValue(L"binaryBlob", binaryInput, _countof(binaryInput)) == TRUE);
+    BYTE binaryOutput[_countof(binaryInput)]{};
+    CHECK(Wh_GetBinaryValue(L"binaryBlob", binaryOutput, _countof(binaryOutput)) == _countof(binaryInput));
+    for (size_t i = 0; i < _countof(binaryInput); ++i) CHECK(binaryOutput[i] == binaryInput[i]);
+    BYTE tooSmall[] = {0xAA, 0xBB};
+    CHECK(Wh_GetBinaryValue(L"binaryBlob", tooSmall, _countof(tooSmall)) == 0);
+    CHECK(tooSmall[0] == 0xAA && tooSmall[1] == 0xBB);
+    CHECK(Wh_SetBinaryValue(L"invalid\r\nkey", binaryInput, _countof(binaryInput)) == FALSE);
+    std::vector<BYTE> oversized(wmod::windhawk_compat::kMaxStorageBinaryBytes + 1, 0x5A);
+    CHECK(Wh_SetBinaryValue(L"tooLarge", oversized.data(), oversized.size()) == FALSE);
+
+    std::vector<BYTE> maximumInput(wmod::windhawk_compat::kMaxStorageBinaryBytes);
+    for (size_t i = 0; i < maximumInput.size(); ++i)
+        maximumInput[i] = static_cast<BYTE>((i * 37) & 0xFF);
+    std::vector<BYTE> maximumOutput(maximumInput.size(), 0);
+    CHECK(Wh_SetBinaryValue(L"maxBlob", maximumInput.data(), maximumInput.size()) == TRUE);
+    CHECK(Wh_GetBinaryValue(L"maxBlob", maximumOutput.data(), maximumOutput.size()) == maximumOutput.size());
+    for (size_t i = 0; i < maximumInput.size(); ++i) CHECK(maximumOutput[i] == maximumInput[i]);
+
+    // Delete removes keys from either storage section.
+    CHECK(Wh_DeleteValue(L"counter") == TRUE);
+    CHECK(Wh_GetIntValue(L"counter", 17) == 17);
+    CHECK(Wh_DeleteValue(L"binaryBlob") == TRUE);
+    CHECK(Wh_GetBinaryValue(L"binaryBlob", binaryOutput, _countof(binaryOutput)) == 0);
+
+    // Storage path API returns a usable package-scoped directory and fails
+    // cleanly when the caller cannot fit the path plus terminator.
+    std::vector<wchar_t> storageBuffer(32768, L'\0');
+    const size_t storageLength = Wh_GetModStoragePath(storageBuffer.data(), storageBuffer.size());
+    CHECK(storageLength > 0);
+    CHECK(storageBuffer[storageLength] == L'\0');
+    CHECK(std::filesystem::is_directory(std::filesystem::path(storageBuffer.data())));
+    wchar_t tinyPath[2]{L'x', L'x'};
+    CHECK(Wh_GetModStoragePath(tinyPath, _countof(tinyPath)) == 0);
+    CHECK(tinyPath[0] == L'\0');
+
     Wh_Log(L"non-hook compatibility smoke test: %d", 123);
     CHECK(Exists(log));
 
@@ -136,6 +175,9 @@ int wmain() {
     DeleteFileW(values.c_str());
     DeleteFileW(log.c_str());
     DeleteFileW(manifest.c_str());
+    std::error_code cleanupError;
+    std::filesystem::remove_all(directory / L"storage", cleanupError);
+    CHECK(!cleanupError);
     std::wcout << L"Non-hook compatibility tests passed.\n";
     return 0;
 }

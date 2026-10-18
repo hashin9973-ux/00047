@@ -27,6 +27,7 @@ namespace wmod::windhawk_compat {
 inline constexpr size_t kMaxJsonBytes = 256 * 1024;
 inline constexpr size_t kMaxSettingNameChars = 256;
 inline constexpr size_t kMaxStorageStringChars = 32 * 1024;
+inline constexpr size_t kMaxStorageBinaryBytes = 16 * 1024 - 1;
 inline constexpr size_t kMaxLogChars = 8192;
 
 inline bool ReadUtf8File(const std::filesystem::path& path, std::wstring& output) noexcept {
@@ -329,6 +330,50 @@ inline std::filesystem::path ValuesPath() {
     return folder.empty() ? std::filesystem::path{} : folder / L"wh_values.ini";
 }
 
+inline std::filesystem::path StoragePath() {
+    const auto folder = wmod::PackageDirectory();
+    return folder.empty() ? std::filesystem::path{} : folder / L"storage";
+}
+
+inline wchar_t HexDigit(unsigned int value) noexcept {
+    return value < 10 ? static_cast<wchar_t>(L'0' + value)
+                      : static_cast<wchar_t>(L'A' + value - 10);
+}
+
+inline int HexValue(wchar_t value) noexcept {
+    if (value >= L'0' && value <= L'9') return static_cast<int>(value - L'0');
+    if (value >= L'a' && value <= L'f') return static_cast<int>(value - L'a' + 10);
+    if (value >= L'A' && value <= L'F') return static_cast<int>(value - L'A' + 10);
+    return -1;
+}
+
+inline bool EncodeBinary(const BYTE* bytes, size_t count, std::wstring& output) {
+    output.clear();
+    if (count > kMaxStorageBinaryBytes || (count > 0 && !bytes)) return false;
+    output.resize(count * 2);
+    for (size_t i = 0; i < count; ++i) {
+        output[i * 2] = HexDigit(bytes[i] >> 4);
+        output[i * 2 + 1] = HexDigit(bytes[i] & 0x0F);
+    }
+    return true;
+}
+
+inline bool DecodeBinary(std::wstring_view encoded, std::vector<BYTE>& output) {
+    output.clear();
+    if (encoded.size() % 2 != 0 || encoded.size() > kMaxStorageBinaryBytes * 2) return false;
+    output.reserve(encoded.size() / 2);
+    for (size_t i = 0; i < encoded.size(); i += 2) {
+        const int high = HexValue(encoded[i]);
+        const int low = HexValue(encoded[i + 1]);
+        if (high < 0 || low < 0) {
+            output.clear();
+            return false;
+        }
+        output.push_back(static_cast<BYTE>((high << 4) | low));
+    }
+    return true;
+}
+
 inline bool FormatKey(PCWSTR format, va_list args, std::wstring& output) noexcept {
     output.clear();
     if (!format) return false;
@@ -488,6 +533,80 @@ inline BOOL Wh_SetStringValue(PCWSTR valueName, PCWSTR value) {
     const auto path = ::wmod::windhawk_compat::ValuesPath();
     if (path.empty()) return FALSE;
     return WritePrivateProfileStringW(L"values", valueName, value, path.c_str());
+}
+
+// Binary values are stored separately from strings and integers in the package-scoped
+// INI file. A zero return means missing, malformed, or insufficient capacity.
+inline size_t Wh_GetBinaryValue(PCWSTR valueName, void* buffer, size_t bufferSize) {
+    if (!::wmod::windhawk_compat::ValidStorageKey(valueName) || (!buffer && bufferSize != 0))
+        return 0;
+    try {
+        const auto path = ::wmod::windhawk_compat::ValuesPath();
+        if (path.empty()) return 0;
+
+        std::vector<wchar_t> encoded(::wmod::windhawk_compat::kMaxStorageBinaryBytes * 2 + 2, L'\0');
+        const DWORD copied = GetPrivateProfileStringW(
+            L"binary", valueName, L"", encoded.data(), static_cast<DWORD>(encoded.size()), path.c_str());
+        if (copied == 0 || copied >= encoded.size() - 1) return 0;
+
+        std::vector<BYTE> decoded;
+        if (!::wmod::windhawk_compat::DecodeBinary(
+                std::wstring_view(encoded.data(), static_cast<size_t>(copied)), decoded) ||
+            decoded.size() > bufferSize || (decoded.size() > 0 && !buffer)) {
+            return 0;
+        }
+        if (!decoded.empty()) std::copy(decoded.begin(), decoded.end(), static_cast<BYTE*>(buffer));
+        return decoded.size();
+    } catch (...) {
+        return 0;
+    }
+}
+
+inline BOOL Wh_SetBinaryValue(PCWSTR valueName, const void* buffer, size_t bufferSize) {
+    if (!::wmod::windhawk_compat::ValidStorageKey(valueName) ||
+        bufferSize > ::wmod::windhawk_compat::kMaxStorageBinaryBytes ||
+        (bufferSize > 0 && !buffer)) return FALSE;
+    try {
+        const auto path = ::wmod::windhawk_compat::ValuesPath();
+        if (path.empty()) return FALSE;
+        std::wstring encoded;
+        if (!::wmod::windhawk_compat::EncodeBinary(static_cast<const BYTE*>(buffer), bufferSize, encoded)) return FALSE;
+        return WritePrivateProfileStringW(L"binary", valueName, encoded.c_str(), path.c_str());
+    } catch (...) {
+        return FALSE;
+    }
+}
+
+inline BOOL Wh_DeleteValue(PCWSTR valueName) {
+    if (!::wmod::windhawk_compat::ValidStorageKey(valueName)) return FALSE;
+    const auto path = ::wmod::windhawk_compat::ValuesPath();
+    if (path.empty()) return FALSE;
+    const BOOL integerOrString = WritePrivateProfileStringW(L"values", valueName, nullptr, path.c_str());
+    const BOOL binary = WritePrivateProfileStringW(L"binary", valueName, nullptr, path.c_str());
+    return integerOrString && binary;
+}
+
+// Returns the number of characters copied, excluding the null terminator.
+// The path is package-scoped and created on first request. The buffer is empty
+// on failure, including when there is insufficient room for the terminator.
+inline size_t Wh_GetModStoragePath(PWSTR pathBuffer, size_t bufferChars) {
+    if (!pathBuffer || bufferChars == 0) return 0;
+    pathBuffer[0] = L'\0';
+    try {
+        auto path = ::wmod::windhawk_compat::StoragePath();
+        if (path.empty()) return 0;
+        std::error_code ec;
+        std::filesystem::create_directories(path, ec);
+        if (ec || !std::filesystem::is_directory(path, ec) || ec) return 0;
+        const std::wstring text = path.wstring();
+        if (text.empty() || text.size() >= bufferChars) return 0;
+        std::copy(text.begin(), text.end(), pathBuffer);
+        pathBuffer[text.size()] = L'\0';
+        return text.size();
+    } catch (...) {
+        pathBuffer[0] = L'\0';
+        return 0;
+    }
 }
 
 #endif // WMOD_00047_WINDHAWK_NONHOOK_COMPAT_H
