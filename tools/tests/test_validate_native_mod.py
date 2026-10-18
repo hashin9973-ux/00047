@@ -227,8 +227,8 @@ class NativeModValidatorTests(unittest.TestCase):
         self.assertEqual(manifest["targets"], ["explorer.exe"])
         with open(os.path.join(destination, "CMakeLists.txt"), encoding="utf-8") as handle:
             cmake = handle.read()
-        self.assertIn("\${WMOD_SDK_DIR}", cmake)
-        self.assertNotIn("\\\${WMOD_SDK_DIR}", cmake)
+        self.assertIn("$" + "{WMOD_SDK_DIR}", cmake)
+        self.assertNotIn("\\" + "$" + "{WMOD_SDK_DIR}", cmake)
         with open(os.path.join(destination, "mod.cpp"), encoding="utf-8") as handle:
             source = handle.read()
         for symbol in EXPORTS:
