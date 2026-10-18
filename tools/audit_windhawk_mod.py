@@ -51,13 +51,13 @@ UNSUPPORTED = {
 }
 CALLBACK_PREFIX = "Wh_Mod"
 IDENTIFIER = re.compile(r"\bWh_[A-Za-z0-9_]+\b")
-VALID_CALLBACKS = {
+ADAPTER_CALLBACKS = {
     "Wh_ModInit",
     "Wh_ModAfterInit",
     "Wh_ModBeforeUninit",
     "Wh_ModUninit",
-    "Wh_ModSettingsChanged",
 }
+MANUAL_CALLBACKS = {"Wh_ModSettingsChanged"}
 
 
 def mask_cpp_noncode(source: str) -> str:
@@ -169,9 +169,12 @@ def audit_text(path: str, source: str) -> list[dict]:
             category, reason = "supported-with-limitations", SUPPORTED[name]
         elif name in UNSUPPORTED:
             category, reason = "unsupported", UNSUPPORTED[name]
-        elif name in VALID_CALLBACKS or name.startswith(CALLBACK_PREFIX):
+        elif name in ADAPTER_CALLBACKS:
+            category = "adapter-available-lifecycle"
+            reason = "The opt-in windhawk_nonhook_adapter.h maps this lifecycle callback onto the Wmod ABI; callback ordering must be reviewed."
+        elif name in MANUAL_CALLBACKS or name.startswith(CALLBACK_PREFIX):
             category = "manual-lifecycle-adaptation"
-            reason = "Windhawk callbacks do not match the 00047 WmodInitializeV1/WmodShutdownV1 ABI."
+            reason = "This callback is not delivered automatically by 00047; settings-change/runtime semantics require manual adaptation."
         else:
             category = "unknown-api"
             reason = "Not in the audit tool's supported API matrix; inspect and port manually."
