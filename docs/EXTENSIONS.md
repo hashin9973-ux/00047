@@ -35,7 +35,8 @@ Example manifest:
       "LOG_LEVEL": "info"
     }
   },
-  "autoStart": false
+  "autoStart": false,
+  "protocol": "stdio-jsonl-v1"
 }
 ```
 
@@ -63,6 +64,17 @@ Every process receives `EXTENSION_ID`, `EXTENSION_DIR`, and `EXTENSION_ENTRYPOIN
 A runtime can be an interpreter available on PATH (`python`, `node`, `pwsh`, `ruby`, etc.), a compiled program, or a runtime packaged inside the ZIP. For a bundled executable, set `runtime.command` to a path such as `{extensionDir}/runtime/runner.exe`. The package author is responsible for bundling the correct runtime for the target OS/architecture and for all required libraries.
 
 The extension host captures standard output and standard error and displays process lifecycle status. Start, stop, restart, install, and uninstall operate on the managed process/package, not on arbitrary unrelated processes.
+
+### Optional lifecycle control protocol
+
+For long-running extensions, set `protocol` to `stdio-jsonl-v1` to opt into a line-delimited JSON control channel over standard input. The host sends one JSON object per line:
+
+- On start: `{"type":"host.started","protocolVersion":1,"extensionId":"org.example.hello"}`
+- On stop: `{"type":"host.shutdown","protocolVersion":1,"extensionId":"org.example.hello"}`
+
+An extension using this protocol should read stdin line-by-line, handle `host.shutdown` by unregistering hooks/subscriptions and restoring any temporary system state, then exit normally. The host waits up to three seconds before forcing termination. Without this property, stdin remains closed and stop terminates the child immediately. Standard output and standard error are reserved for log text in this protocol version.
+
+This protocol controls an external process; it is not an in-process ABI and does not itself provide DLL injection, native hooks, or direct access to Explorer internals.
 
 ## Package limits and validation
 
