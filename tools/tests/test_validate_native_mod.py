@@ -8,6 +8,7 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from package_native_mod import build_package
+from new_native_mod import create_project
 from validate_native_mod import ValidationError, inspect_pe_exports, validate_package
 
 EXPORTS = ["WmodGetApiVersion", "WmodInitializeV1", "WmodShutdownV1"]
@@ -208,6 +209,48 @@ class NativeModValidatorTests(unittest.TestCase):
             handle.write(make_test_pe())
         with self.assertRaisesRegex(ValidationError, "must end with .zip"):
             build_package(manifest_path, dll_path, os.path.join(root, "bad.output"))
+
+
+    def test_scaffold_creates_expected_project_files(self):
+        destination = create_project(
+            "com.example.generated",
+            "Generated Mod",
+            self.temp_dir.name,
+            target="explorer.exe",
+        )
+        expected = {"manifest.json", "mod.cpp", "CMakeLists.txt", "README.md"}
+        self.assertEqual({name for name in os.listdir(destination)}, expected)
+        with open(os.path.join(destination, "manifest.json"), encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        self.assertEqual(manifest["id"], "com.example.generated")
+        self.assertEqual(manifest["module"], "bin/com_example_generated.dll")
+        self.assertEqual(manifest["targets"], ["explorer.exe"])
+        with open(os.path.join(destination, "CMakeLists.txt"), encoding="utf-8") as handle:
+            cmake = handle.read()
+        self.assertIn("\${WMOD_SDK_DIR}", cmake)
+        self.assertNotIn("\\\${WMOD_SDK_DIR}", cmake)
+        with open(os.path.join(destination, "mod.cpp"), encoding="utf-8") as handle:
+            source = handle.read()
+        for symbol in EXPORTS:
+            self.assertIn(symbol, source)
+
+    def test_scaffold_refuses_invalid_id(self):
+        with self.assertRaisesRegex(ValidationError, "id must"):
+            create_project("../bad", "Bad", self.temp_dir.name)
+
+    def test_scaffold_refuses_unsupported_process(self):
+        with self.assertRaisesRegex(ValidationError, "allow-list"):
+            create_project("com.example.bad", "Bad", self.temp_dir.name, target="notepad.exe")
+
+    def test_scaffold_does_not_overwrite_existing_project(self):
+        destination = create_project("com.example.existing", "Existing", self.temp_dir.name)
+        sentinel = os.path.join(destination, "keep.txt")
+        with open(sentinel, "w", encoding="utf-8") as handle:
+            handle.write("preserve")
+        with self.assertRaisesRegex(ValidationError, "refusing to overwrite"):
+            create_project("com.example.existing", "Replacement", self.temp_dir.name)
+        with open(sentinel, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "preserve")
 
 
 if __name__ == "__main__":
