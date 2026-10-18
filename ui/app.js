@@ -646,6 +646,7 @@ function promptPluginConfig(title, fields = [], defaults = {}) {
       const cfg = {};
       for (const input of form.querySelectorAll('[data-plugin-field]')) {
         const key = input.dataset.pluginField;
+        if (input.type === 'number' && input.value.trim() === '') continue;
         cfg[key] = input.type === 'checkbox' ? input.checked
           : input.type === 'number' ? Number(input.value) : input.value;
       }
@@ -707,7 +708,7 @@ async function renderPlugins() {
       const commands = (plugin.commands || []).map(command =>
         `<div class="plugin-item"><div class="plugin-icon small">▶</div><div class="plugin-info"><b>${esc(command.title)}</b><small>Command · ${esc(command.id)} · ${esc(command.runtime?.command || '')}</small></div><button class="btn" data-plugin-run="${esc(plugin.id)}" data-command-id="${esc(command.id)}">Run</button></div>`).join('');
       const services = (plugin.services || []).map(service =>
-        `<div class="plugin-item"><div class="plugin-icon small">◉</div><div class="plugin-info"><b>${esc(service.title)}</b><small>Service · ${esc(service.id)} · ${service.running ? 'Running' : 'Stopped'}${service.pid ? ' · PID ' + esc(service.pid) : ''}</small></div><button class="btn ${service.running ? '' : 'primary'}" data-plugin-service="${esc(plugin.id)}" data-service-id="${esc(service.id)}" data-running="${service.running ? 'true' : 'false'}">${service.running ? 'Stop' : 'Start'}</button></div>`).join('');
+        `<div class="plugin-item"><div class="plugin-icon small">◉</div><div class="plugin-info"><b>${esc(service.title)}</b><small>Service · ${esc(service.id)} · ${service.running ? 'Running' : 'Stopped'}${service.autoStart ? ' · Auto-start' : ''}${service.pid ? ' · PID ' + esc(service.pid) : ''}</small></div><button class="btn ${service.running ? '' : 'primary'}" data-plugin-service="${esc(plugin.id)}" data-service-id="${esc(service.id)}" data-running="${service.running ? 'true' : 'false'}">${service.running ? 'Stop' : 'Start'}</button></div>`).join('');
       const blocks = plugin.blockCount ? `<p class="mu">${plugin.blockCount} automation block(s)</p>` : '';
       const about = plugin.description ? `<p class="mu">${esc(plugin.description)}</p>` : '';
       return `<article class="plugin-package card glass"><div class="sec"><div><h3>${esc(plugin.name)}</h3><small class="mu">${esc(plugin.id)} · v${esc(plugin.version)}</small></div><span class="plugin-status">Installed</span></div>${about}${blocks}${commands || services ? `<div class="plugin-items">${commands}${services}</div>` : '<p class="mu">No app-level commands or services. This package may contribute automation blocks only.</p>'}</article>`;
@@ -761,11 +762,11 @@ async function installPack() {
     const pv = await invoke('block_pack_preview');
     if (!pv) return;
     const blocks = (pv.blocks || []).map(b => `<li><b>${esc(b.title)}</b> <small>${esc(b.category)} · ${esc(b.kind)}</small><pre>${esc(b.command)}</pre></li>`).join('');
-    const extensions = (pv.extensions || []).map(x => `<li><b>${esc(x.title)}</b> <small>${esc(x.extension_type)} · ${esc(x.id)}</small><pre>${esc(x.command)}</pre></li>`).join('');
+    const extensions = (pv.extensions || []).map(x => `<li><b>${esc(x.title)}</b> <small>${esc(x.extension_type)} · ${esc(x.id)}${x.auto_start ? ' · AUTO-STARTS WITH 00047' : ''}</small><pre>${esc(x.command)}</pre></li>`).join('');
     const components = (blocks || extensions) ? `<ul class="bp">${blocks}${extensions}</ul>` : '<p>No executable components were declared.</p>';
     const errs = (pv.errors || []).length ? `<p class="er">Skipped: ${pv.errors.map(esc).join('<br>')}</p>` : '';
     const c = await htmlModal(`Install "${pv.file}"?`,
-      `<p>This package may register automation blocks, app-level commands, and long-running services. Runtime code runs with your Windows account permissions; install only source you trust.</p>${components}${errs}`,
+      `<p>This package may register automation blocks, app-level commands, and long-running services. Services labeled AUTO-STARTS WITH 00047 launch when the app starts. Runtime code runs with your Windows account permissions; install only source you trust.</p>${components}${errs}`,
       [['cancel', 'Cancel'], ['go', 'Install', 'primary']]);
     if (c !== 'go') return;
     await invoke('block_pack_install', { path: pv.path });

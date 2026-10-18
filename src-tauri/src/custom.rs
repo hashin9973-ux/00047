@@ -661,6 +661,7 @@ pub struct ExtensionPreview {
     pub title: String,
     pub entrypoint: String,
     pub command: String,
+    pub auto_start: bool,
 }
 #[derive(Serialize)]
 pub struct PackPreview {
@@ -739,6 +740,7 @@ fn preview_plugin(path: &Path) -> Result<PackPreview, String> {
                     title: ext["title"].as_str().unwrap_or("").into(),
                     entrypoint: entrypoint.into(),
                     command: describe_runtime(ext),
+                    auto_start: extension_type == "service" && ext["autoStart"].as_bool() == Some(true),
                 });
             }
         }
