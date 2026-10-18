@@ -360,7 +360,7 @@ mod tests {
     fn log_reader_returns_only_the_most_recent_bounded_lines() {
         let temp = TestRoot::new();
         let package = temp.path.join("packages").join("com.example.test-mod");
-        let content = (0..250).map(|n| format!("log-{n:03}\\n")).collect::<String>();
+        let content = (0..250).map(|n| format!("log-{n:03}\n")).collect::<String>();
         fs::write(package.join("mod.log"), content).unwrap();
 
         let lines = read_logs(&temp.path, "com.example.test-mod").unwrap();
