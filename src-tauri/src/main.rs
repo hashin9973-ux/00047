@@ -78,7 +78,7 @@ fn suspend_native_webview(window: &tauri::WebviewWindow) {
             return;
         };
         let callback = TrySuspendCompletedHandler::create(Box::new(|_result, _success| Ok(())));
-        let _ = core3.TrySuspend(callback);
+        let _ = core3.TrySuspend(&callback);
     });
 }
 
