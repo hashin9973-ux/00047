@@ -226,6 +226,9 @@ fn validate_value(s: &SettingSpec, v: &Value) -> Result<(), String> {
             } else {
                 let max = s.max_length.unwrap_or(1024);
                 if text.chars().count() > max { return Err(format!("text exceeds {max} characters")); }
+                if !s.options.is_empty() && !s.options.iter().any(|option| option.value == text) {
+                    return Err("value is not one of the declared options".into());
+                }
             }
         }
         "stringArray" => {
