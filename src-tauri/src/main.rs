@@ -689,7 +689,10 @@ fn main() {
             }
             engine.start_autostart();
             extensions.start_autostart();
-            native_modules.start_autostart();
+            // Native module entrypoints are arbitrary in-process code; keep their
+            // startup work off the setup/UI thread.
+            let native_modules_for_autostart = native_modules.clone();
+            let _ = tauri::async_runtime::spawn_blocking(move || native_modules_for_autostart.start_autostart());
             Ok(())
         })
         .build(tauri::generate_context!())
