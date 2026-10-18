@@ -16,7 +16,7 @@ The scanner reads C/C++ source/header files, masks comments and ordinary/raw str
 
 ## Supported subset
 
-The current source-level helpers cover `Wh_Log`, `Wh_GetIntSetting`, `Wh_GetStringSetting`, `Wh_FreeStringSetting`, scalar/string/binary local-storage APIs, `Wh_DeleteValue`, `Wh_GetModStoragePath`, dynamic-select option management, and bounded HTTP(S) retrieval through `Wh_GetUrlContent` / `Wh_FreeUrlContent`.
+The current source-level helpers cover `Wh_Log`, `Wh_GetIntSetting`, `Wh_GetStringSetting`, `Wh_FreeStringSetting`, scalar/string/binary local-storage APIs, `Wh_DeleteValue`, `Wh_GetModStoragePath`, dynamic-select option management, and bounded HTTP(S) retrieval through `Wh_GetUrlContent` / `Wh_FreeUrlContent`, and bounded `Wh_FindFirstSymbol` / `Wh_FindNextSymbol` / `Wh_FindCloseSymbol` enumeration using Windows DbgHelp.
 
 “Supported with limitations” deliberately does not mean binary compatibility. Storage is package-scoped; URL retrieval is bounded and rejects credential-bearing URLs; settings use 00047's manifest/settings files; and runtime callbacks are different. Review the implementation notes in [NATIVE_MODS.md](NATIVE_MODS.md) before porting.
 
@@ -25,7 +25,6 @@ The current source-level helpers cover `Wh_Log`, `Wh_GetIntSetting`, `Wh_GetStri
 The current SDK does not implement these Windhawk runtime operations:
 
 - `Wh_SetFunctionHook`, `Wh_RemoveFunctionHook`, and `Wh_ApplyHookOperations`.
-- `Wh_FindFirstSymbol`, `Wh_FindNextSymbol`, and `Wh_FindCloseSymbol` for private/PDB symbol enumeration.
 - `Wh_Disasm`.
 
 A detected call to one of these APIs is a blocker, not a warning that can be ignored. Rewrite the mod around public Windows APIs or an independently supported alternative, or use an actual compatible Windhawk runtime. The auditor intentionally does not replace missing runtime implementations with no-op stubs.
