@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include <atomic>
+#include <fstream>
 #include "windhawk_settings_changed_adapter.h"
 
 namespace {
@@ -12,7 +13,17 @@ BOOL Wh_ModInit(void) {
 void Wh_ModAfterInit(void) {}
 
 void Wh_ModSettingsChanged(void) {
-    g_settings_changed_count.fetch_add(1, std::memory_order_relaxed);
+    const unsigned long previous =
+        g_settings_changed_count.fetch_add(1, std::memory_order_relaxed);
+    if (previous == 0) {
+        // Exercise the case where settings change while the callback itself is
+        // running. The watcher must already have re-armed its directory request.
+        const auto path = wmod::SettingsPath();
+        if (!path.empty()) {
+            std::ofstream file(path, std::ios::binary | std::ios::trunc);
+            file << R"json({"intSetting":103})json";
+        }
+    }
 }
 
 void Wh_ModBeforeUninit(void) {}
