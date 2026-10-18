@@ -38,15 +38,25 @@ Include sdk/native-mod/00047_mod_api.h when building a native x64 DLL. The exact
 
 A no-op C++ sample is in samples/native-mod. It writes debug output only, so it is safe as a loader-lifecycle example without modifying the desktop.
 
-## Author-side package validation
+## Package authoring tools
 
-Before sharing a mod ZIP, run the standard-library-only validator from the repository root:
+The repository includes a standard-library-only package builder and validator, so mod authors do not need to manually zip files together. Build the DLL with the x64 Visual Studio C++ toolchain, then run from the repository root:
 
-    python tools/validate_native_mod.py path/to/mod.zip
+    python tools/package_native_mod.py --manifest path/to/manifest.json --dll path/to/mod.dll --output dist/my-mod.zip
 
-It checks ZIP size and entry limits, path traversal and duplicate paths, symlinks and encryption, manifest fields, allowed target process names, the x64 PE32+ machine type, and the three required lifecycle exports. The validator is author tooling only; 00047 still performs its own checks at installation time. Its regression tests run in Windows CI:
+The builder puts the manifest at the ZIP root and places the DLL at the exact path specified by manifest.module. It writes a deterministic archive and validates it before replacing the requested output file. The same manifest and DLL inputs should produce byte-identical ZIPs with the same Python version.
+
+Validate a package independently at any time:
+
+    python tools/validate_native_mod.py dist/my-mod.zip
+
+Validation checks archive and decompression limits, path traversal, case-collisions, Windows-reserved names and file/directory conflicts, symbolic links and encryption, manifest fields, allowed target process names, the x64 PE32+ machine type, export-table bounds and the three required lifecycle exports. All archive entries are read to verify their CRCs. Invalid packages fail before an output package is committed.
+
+The author tools do not replace the application's independent validation at installation time, and they do not provide a security sandbox or certify that a DLL is safe. They confirm the package structure and ABI prerequisites only. Regression tests include a synthetic PE32+ export-table fixture, invalid package cases, and deterministic packaging:
 
     python -m unittest discover -s tools/tests -v
+
+Windows CI runs those tests and builds/validates the real no-op sample package.
 
 ## Settings and logs
 
