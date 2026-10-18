@@ -27,12 +27,14 @@ jobs:
           node --check ui/blocks.js
           node --check ui/editor.js
           node --check ui/app.js
+          node --check docs/examples/runtime-extension/scripts/main.js
 
       - name: Validate Tauri JSON configuration
         shell: pwsh
         run: |
           node -e "JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json', 'utf8'))"
           node -e "JSON.parse(require('fs').readFileSync('src-tauri/capabilities/default.json', 'utf8'))"
+          node -e "JSON.parse(require('fs').readFileSync('docs/examples/runtime-extension/extension.json', 'utf8'))"
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
