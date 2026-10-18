@@ -217,10 +217,26 @@ impl ExtensionManager {
         let backup = packages.join(format!(".backup-{}-{}", archive.manifest.id, std::process::id()));
         if stage.exists() { fs::remove_dir_all(&stage).map_err(|e| e.to_string())?; }
         if backup.exists() { fs::remove_dir_all(&backup).map_err(|e| e.to_string())?; }
-        extract_archive(path, &stage)?;
+        if let Err(e) = extract_archive(path, &stage) {
+            let _ = fs::remove_dir_all(&stage);
+            return Err(e);
+        }
         let manifest_path = stage.join("extension.json");
-        let extracted = read_manifest(&manifest_path)?;
-        validate_manifest(&extracted, Some(&stage), None)?;
+        let extracted = match read_manifest(&manifest_path) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = fs::remove_dir_all(&stage);
+                return Err(e);
+            }
+        };
+        if extracted.id != archive.manifest.id {
+            let _ = fs::remove_dir_all(&stage);
+            return Err("extension manifest changed during installation".into());
+        }
+        if let Err(e) = validate_manifest(&extracted, Some(&stage), None) {
+            let _ = fs::remove_dir_all(&stage);
+            return Err(e);
+        }
         if target.exists() {
             if self.is_running(&extracted.id) {
                 let _ = fs::remove_dir_all(&stage);
