@@ -92,7 +92,13 @@ The Native Mods view validates this schema and edits `settings.json` in the inst
 
 The same SDK header provides `wmod::Log(level, message)`, which appends structured JSON Lines to the package's `mod.log`. Select **View logs** on a mod card to inspect the most recent lines in 00047. Log output is bounded when read by the UI; mods should avoid recording secrets.
 
-The SDK provides loaded-module export lookup through `wmod::ModuleHandle` and `wmod::ResolveSymbol`. These helpers only resolve exports from modules already loaded in the current process; they do not load arbitrary DLLs or resolve private/PDB symbols. The sample verifies lookup of `kernel32!GetCurrentProcessId` without calling it or changing desktop behavior. This is not Windhawk API compatibility: the SDK still does not provide Windhawk's `Wh_*` API or a built-in function-hook framework. Mods can use Windows APIs and their own third-party hook frameworks today, subject to the target allow-list and architecture.
+The SDK provides loaded-module export lookup through `wmod::ModuleHandle` and `wmod::ResolveSymbol`. These helpers only resolve exports from modules already loaded in the current process; they do not load arbitrary DLLs or resolve private/PDB symbols. The sample verifies lookup of `kernel32!GetCurrentProcessId` without calling it or changing desktop behavior.
+
+### Limited non-hook Windhawk-style helpers
+
+`sdk/native-mod/windhawk_nonhook_compat.h` provides a deliberately limited source-level subset for mods that only need logging, settings, and simple local values: `Wh_Log`, `Wh_GetIntSetting`, `Wh_GetStringSetting`, `Wh_FreeStringSetting`, `Wh_GetIntValue`, `Wh_SetIntValue`, `Wh_GetStringValue`, and `Wh_SetStringValue`. The setting helpers read `settings.json` and fall back to scalar defaults in `manifest.json`; the local value helpers use a per-package INI file. This header helps with small, non-hook portions of a port but is not ABI-compatible with the Windhawk engine.
+
+The compatibility header intentionally does **not** provide `Wh_SetFunctionHook`, `Wh_RemoveFunctionHook`, `Wh_ApplyHookOperations`, `Wh_FindFirstSymbol`, binary value APIs, callback dispatch, or the Windhawk runtime. It does not include a function-hook framework or private/PDB symbol resolution. Do not treat a mod as portable merely because it compiles against the helper header. Mods that need those omitted APIs must be adapted to available functionality or run under a compatible runtime. Native mods can also use Windows APIs and their own third-party hook frameworks today, subject to the target allow-list and architecture; the app does not bundle or support such frameworks.
 
 ## Safety and recovery
 
