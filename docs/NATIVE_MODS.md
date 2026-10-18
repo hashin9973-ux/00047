@@ -75,7 +75,7 @@ Windows CI runs those tests and builds/validates the real no-op sample package.
 
 ## Settings and logs
 
-A mod may declare an optional `settings` array in `manifest.json`. Each setting has a unique `id`, a `label`, a `type`, and a `default`. Supported types are `boolean`, `string`, `integer`, `number`, and `select`. Numeric settings can declare `min`, `max`, and `step`; string settings can declare `maxLength`; select settings declare `options` with unique `value` and `label` properties.
+A mod may declare an optional `settings` array in `manifest.json`. Each setting has a unique `id`, a `label`, a `type`, and a `default`. Supported types are `boolean`, `string`, `stringArray`, `integer`, `number`, and `select`. Numeric settings can declare `min`, `max`, and `step`; string settings can declare `maxLength`; select and string-array settings can declare `options` with unique `value` and `label` properties. A string-array setting stores a JSON array of strings; without `options` it is edited as a list of text values, and with `dynamicSelect: true` each element uses the same runtime option list.
 
 ```json
 {
