@@ -1,4 +1,4 @@
-# Extension host (first milestone)
+# External extension packages and runtime
 
 00047 distinguishes workflow block packs from independent extension packages. Block packs add conditions and actions to automation workflows. Extension packages are managed from the Extensions view and can launch applications, long-running services, or one-shot commands without requiring an automation node.
 
@@ -72,6 +72,22 @@ The importer enforces a 20 MB compressed ZIP limit, a 50 MB expanded limit, at m
 ## Security model
 
 Extension code is not sandboxed. It runs under the current Windows user and can access files, network resources, launch programs, and change user-level settings the account can access. Review source, manifests, and commands before installation. This is a developer/extensibility system, not a trust boundary.
+
+## Authoring tools
+
+The repository includes a standard-library-only scaffold, deterministic packager, and validator for extension authors. From the repository root:
+
+    python tools/new_extension.py com.example.status-check "Status Check" --kind command --out extensions
+    python tools/package_extension.py extensions/com.example.status-check dist/status-check.zip
+    python tools/validate_extension.py dist/status-check.zip
+
+Use `--kind service` to scaffold a persistent helper instead. The command template uses a 15-second timeout and exits after printing its result; the service template is a minimal long-running loop. The packager sorts files and fixes ZIP metadata so the same project produces reproducible package bytes, then validates the generated ZIP before replacing the destination file. The validator checks archive size/paths/CRC, Windows path collisions and file-directory conflicts, manifest fields, placeholders, entrypoints, and command timeout bounds.
+
+Run author-tool regression tests with:
+
+    python -m unittest discover -s tools/tests -v
+
+These tools complement the install-time validator; they do not replace it or make extension code trusted.
 
 ## Capability boundary
 
