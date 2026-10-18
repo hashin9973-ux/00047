@@ -160,8 +160,10 @@ bool TestSettingsChangeAdapter(const std::filesystem::path& directory) {
     bool ok = true;
     const auto settings = directory / L"settings.json";
     ok = WriteUtf8(settings, R"json({"intSetting":101})json");
-    for (int i = 0; ok && i < 100 && getCount() == 0; ++i) Sleep(50);
-    ok = ok && getCount() > 0;
+    // The callback writes settings.json once while it is executing; wait
+    // for a second callback to prove the watcher remained armed during it.
+    for (int i = 0; ok && i < 100 && getCount() < 2; ++i) Sleep(50);
+    ok = ok && getCount() >= 2;
 
     shutdown();
     const auto countAfterShutdown = getCount();
