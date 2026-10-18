@@ -240,11 +240,11 @@ impl ExtensionManager {
 
     pub fn set_auto_start(&self, id: &str, enabled: bool) -> Result<(), String> {
         let dir = self.package_dir(id)?;
-        if self.is_running(id) && !enabled {
-            // Disabling launch-at-start is safe while running; it only changes the next app start.
-        }
         let path = dir.join("extension.json");
         let mut manifest = read_manifest(&path)?;
+        if manifest.id != id {
+            return Err("extension directory id does not match extension.json".into());
+        }
         validate_manifest(&manifest, Some(&dir), None)?;
         manifest.auto_start = enabled;
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
