@@ -419,8 +419,16 @@ fn valid_relative_path(value: &str) -> bool {
         && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-fn windows_zip_path_key(path: &str) -> String {
-    path.trim_end_matches('/').to_lowercase()
+fn register_windows_zip_path(seen: &mut HashSet<String>, path: &str) -> Result<(), String> {
+    let normalized = path.trim_end_matches('/');
+    if !normalized.is_empty() && !valid_relative_path(normalized) {
+        return Err(format!("unsafe ZIP path: {path}"));
+    }
+    let key = normalized.to_lowercase();
+    if !seen.insert(key) {
+        return Err(format!("ZIP entries collide on Windows (case-insensitive path): {path}"));
+    }
+    Ok(())
 }
 
 fn placeholders(text: &str) -> Vec<String> {
@@ -557,16 +565,9 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
             return Err(format!("unsafe ZIP path: {name}"));
         }
         if !files.insert(name.clone()) { return Err(format!("duplicate ZIP entry: {name}")); }
-        let normalized = name.trim_end_matches('/');
-        if !normalized.is_empty() && !valid_relative_path(normalized) {
-            return Err(format!("unsafe ZIP path: {name}"));
-        }
         // Windows filesystems are case-insensitive by default. Reject archives whose
         // entries would alias when extracted, including "folder" vs "folder/".
-        let windows_key = windows_zip_path_key(normalized);
-        if !windows_path_keys.insert(windows_key) {
-            return Err(format!("ZIP entries collide on Windows (case-insensitive path): {name}"));
-        }
+        register_windows_zip_path(&mut windows_path_keys, &name)?;
         if let Some(mode) = entry.unix_mode() {
             if mode & 0o170000 == 0o120000 { return Err(format!("symbolic links are not allowed: {name}")); }
         }
@@ -632,18 +633,18 @@ mod tests {
 
     #[test]
     fn extension_zip_paths_that_alias_on_windows_are_rejected() {
-        assert_eq!(
-            windows_zip_path_key("scripts/worker.py"),
-            windows_zip_path_key("Scripts/Worker.py")
-        );
-        assert_eq!(
-            windows_zip_path_key("assets"),
-            windows_zip_path_key("assets/")
-        );
-        assert_ne!(
-            windows_zip_path_key("Scripts/Worker.py"),
-            windows_zip_path_key("Scripts/Another.py")
-        );
+        let mut seen = HashSet::new();
+        assert!(register_windows_zip_path(&mut seen, "scripts/worker.py").is_ok());
+        assert!(register_windows_zip_path(&mut seen, "Scripts/Worker.py")
+            .unwrap_err().contains("collide on Windows"));
+
+        let mut seen_dirs = HashSet::new();
+        assert!(register_windows_zip_path(&mut seen_dirs, "assets").is_ok());
+        assert!(register_windows_zip_path(&mut seen_dirs, "assets/")
+            .unwrap_err().contains("collide on Windows"));
+
+        assert!(register_windows_zip_path(&mut HashSet::new(), "../escape")
+            .unwrap_err().contains("unsafe ZIP path"));
     }
 
     #[test]
