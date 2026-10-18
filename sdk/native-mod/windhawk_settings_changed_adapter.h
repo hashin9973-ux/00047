@@ -172,6 +172,7 @@ private:
         bool signaledReady = false;
 
         alignas(FILE_NOTIFY_INFORMATION) std::array<BYTE, kWatchBufferBytes> buffer{};
+        bool notifyPending = false;
         while (true) {
             OVERLAPPED overlapped{};
             overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -187,7 +188,12 @@ private:
                 &overlapped,
                 nullptr);
             if (!submitted && GetLastError() != ERROR_IO_PENDING) {
+                const DWORD error = GetLastError();
                 CloseHandle(overlapped.hEvent);
+                if (error == ERROR_NOTIFY_ENUM_DIR) {
+                    notifyPending = true;
+                    continue;
+                }
                 if (WaitForSingleObject(stop, 250) == WAIT_OBJECT_0) return 0;
                 continue;
             }
@@ -196,6 +202,20 @@ private:
                 SetEvent(ready);
                 signaledReady = true;
             }
+
+            // Arm the next directory request before invoking mod code. That way
+            // edits made while Wh_ModSettingsChanged runs are not lost because
+            // this worker temporarily stopped listening for directory events.
+            if (notifyPending) {
+                notifyPending = false;
+                const Callback callback = self->callback_;
+                if (callback) {
+                    try { callback(); } catch (...) {
+                        // No C++ exception may escape a Windows thread entrypoint.
+                    }
+                }
+            }
+
             HANDLE waitHandles[2] = {stop, overlapped.hEvent};
             const DWORD wait = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
             if (wait == WAIT_OBJECT_0) {
@@ -225,24 +245,13 @@ private:
                 }
                 if (error == ERROR_NOTIFY_ENUM_DIR) {
                     // Notification overflow means individual changes were lost.
-                    // Prompt the mod to reread its settings from disk.
-                    const Callback callback = self->callback_;
-                    if (callback) {
-                        try { callback(); } catch (...) {}
-                    }
+                    notifyPending = true;
                 }
                 continue;
             }
 
             if (ContainsSettingsChange(buffer.data(), transferred)) {
-                const Callback callback = self->callback_;
-                if (callback) {
-                    try {
-                        callback();
-                    } catch (...) {
-                        // No C++ exception may escape a Windows thread entrypoint.
-                    }
-                }
+                notifyPending = true;
             }
         }
     }
