@@ -3,9 +3,11 @@
 
 namespace {
 int g_lifecycle_step = 0;
+BOOL g_init_allowed = TRUE;
 }
 
 BOOL Wh_ModInit(void) {
+    if (!g_init_allowed) return FALSE;
     g_lifecycle_step = 1;
     return TRUE;
 }
@@ -24,6 +26,10 @@ void Wh_ModUninit(void) {
 
 extern "C" __declspec(dllexport) int WINAPI AdapterSmokeLifecycleStep(void) {
     return g_lifecycle_step;
+}
+
+extern "C" __declspec(dllexport) void WINAPI AdapterSmokeSetInitAllowed(BOOL allowed) {
+    g_init_allowed = allowed;
 }
 
 WMOD_DEFINE_WINDHAWK_LIFECYCLE(
