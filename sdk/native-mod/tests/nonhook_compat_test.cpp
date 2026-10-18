@@ -71,7 +71,9 @@ int wmain() {
         {"id":"boolSetting","label":"Boolean","type":"boolean","default":true},
         {"id":"stringSetting","label":"String","type":"string","default":"Hello \u263A"},
         {"id":"choice","label":"Choice","type":"select","default":"mica",
-         "options":[{"value":"mica","label":"Mica"}]}
+         "options":[{"value":"mica","label":"Mica"}]},
+        {"id":"dynamicSetting","label":"Dynamic choice","type":"select","default":"missing",
+         "dynamicSelect":true,"options":[{"value":"static","label":"Static"}]}
       ]
     })json";
     CHECK(WriteUtf8(manifest, manifestJson));
@@ -128,6 +130,27 @@ int wmain() {
     CHECK(Wh_GetStringValue(L"greeting", tinyBuffer, _countof(tinyBuffer)) == 0);
     CHECK(tinyBuffer[0] == L'\0');
     CHECK(Wh_SetStringValue(L"invalid\r\nkey", L"blocked") == FALSE);
+
+    // Runtime dynamic-select options use the documented value-storage namespace.
+    CHECK(Wh_ClearDynamicSelectOptions(L"dynamicSetting") == TRUE);
+    CHECK(Wh_SetDynamicSelectOption(L"dynamicSetting", L"speaker-id", L"Speakers") == TRUE);
+    wchar_t dynamicLabel[128]{};
+    constexpr PCWSTR kDynamicKey = L"::wh_select_option::dynamicSetting::speaker-id";
+    CHECK(Wh_GetStringValue(kDynamicKey, dynamicLabel, _countof(dynamicLabel)) == 8);
+    CHECK(std::wcscmp(dynamicLabel, L"Speakers") == 0);
+    CHECK(Wh_SetDynamicSelectOption(L"dynamicSetting", L"static", L"Runtime static label") == TRUE);
+    CHECK(Wh_GetStringValue(L"::wh_select_option::dynamicSetting::static",
+        dynamicLabel, _countof(dynamicLabel)) == 20);
+    CHECK(std::wcscmp(dynamicLabel, L"Runtime static label") == 0);
+    CHECK(Wh_SetDynamicSelectOption(L"choice", L"ignored", L"No dynamic flag") == FALSE);
+    CHECK(Wh_SetDynamicSelectOption(L"dynamicSetting", L"bad", L"bad\r\nlabel") == FALSE);
+    CHECK(Wh_DeleteDynamicSelectOption(L"dynamicSetting", L"speaker-id") == TRUE);
+    CHECK(Wh_GetStringValue(kDynamicKey, dynamicLabel, _countof(dynamicLabel)) == 0);
+    CHECK(Wh_SetDynamicSelectOption(L"dynamicSetting", L"speaker-id", L"Speakers") == TRUE);
+    CHECK(Wh_ClearDynamicSelectOptions(L"dynamicSetting") == TRUE);
+    CHECK(Wh_GetStringValue(kDynamicKey, dynamicLabel, _countof(dynamicLabel)) == 0);
+    CHECK(Wh_GetStringValue(L"::wh_select_option::dynamicSetting::static",
+        dynamicLabel, _countof(dynamicLabel)) == 0);
 
     // Binary values preserve arbitrary bytes and do not partially copy when
     // caller capacity is insufficient.
