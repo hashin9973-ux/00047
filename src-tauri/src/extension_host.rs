@@ -56,6 +56,9 @@ pub struct ExtensionManifest {
     pub runtime: RuntimeSpec,
     #[serde(default)]
     pub auto_start: bool,
+    /// Optional process-control protocol. Currently only "stdio-jsonl-v1" is supported.
+    #[serde(default)]
+    pub protocol: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -68,6 +71,7 @@ pub struct ExtensionStatus {
     pub runtime: String,
     pub entrypoint: String,
     pub auto_start: bool,
+    pub protocol: Option<String>,
     pub state: String,
     pub pid: Option<u32>,
     pub started_at: Option<u64>,
@@ -95,11 +99,13 @@ pub struct ExtensionPreview {
     pub command: String,
     pub args: Vec<String>,
     pub auto_start: bool,
+    pub protocol: Option<String>,
 }
 
 struct RuntimeRecord {
     status: ExtensionStatus,
     cancel: Option<CancellationToken>,
+    control: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 struct PluginArchive {
