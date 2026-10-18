@@ -19,6 +19,7 @@
 #include <new>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace wmod::windhawk_compat {
@@ -70,6 +71,7 @@ inline bool ReadUtf8File(const std::filesystem::path& path, std::wstring& output
             output.clear();
             return false;
         }
+        if (!output.empty() && output.front() == L'\uFEFF') output.erase(output.begin());
         return true;
     } catch (...) {
         output.clear();
@@ -261,7 +263,7 @@ inline bool DefaultFromManifest(std::wstring_view manifest, std::wstring_view se
         size_t id_end = 0;
         if (ExtractJsonProperty(spec, L"id", raw_id) &&
             ParseStringToken(TrimJson(raw_id), 0, id_end, &id) &&
-            id == setting_id) {
+            std::wstring_view(id) == setting_id) {
             return ExtractJsonProperty(spec, L"default", raw_value);
         }
         i = SkipWhitespace(settings, end);
@@ -336,33 +338,41 @@ inline bool FormatKey(PCWSTR format, va_list args, std::wstring& output) noexcep
 }
 
 inline int SettingInt(PCWSTR key) noexcept {
-    std::wstring raw;
-    if (!ReadRawSetting(key, raw)) return 0;
-    const auto value = TrimJson(raw);
-    if (value.empty() || value.front() == L'"') return 0;
-    if (value == L"true") return 1;
-    if (value == L"false" || value == L"null") return 0;
-    std::wstring number(value);
-    wchar_t* end = nullptr;
-    errno = 0;
-    const long long parsed = _wcstoi64(number.c_str(), &end, 10);
-    if (errno != 0 || end == number.c_str() ||
-        static_cast<size_t>(end - number.c_str()) != number.size() ||
-        parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max()) return 0;
-    return static_cast<int>(parsed);
+    try {
+        std::wstring raw;
+        if (!ReadRawSetting(key, raw)) return 0;
+        const auto value = TrimJson(raw);
+        if (value.empty() || value.front() == L'"') return 0;
+        if (value == L"true") return 1;
+        if (value == L"false" || value == L"null") return 0;
+        std::wstring number(value);
+        wchar_t* end = nullptr;
+        errno = 0;
+        const long long parsed = _wcstoi64(number.c_str(), &end, 10);
+        if (errno != 0 || end == number.c_str() ||
+            static_cast<size_t>(end - number.c_str()) != number.size() ||
+            parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max()) return 0;
+        return static_cast<int>(parsed);
+    } catch (...) {
+        return 0;
+    }
 }
 
 inline PCWSTR SettingString(PCWSTR key) noexcept {
-    std::wstring raw, decoded;
-    if (!ReadRawSetting(key, raw) || !DecodeJsonString(raw, decoded) ||
-        decoded.size() > kMaxStorageStringChars) {
-        decoded.clear();
+    try {
+        std::wstring raw, decoded;
+        if (!ReadRawSetting(key, raw) || !DecodeJsonString(raw, decoded) ||
+            decoded.size() > kMaxStorageStringChars) {
+            decoded.clear();
+        }
+        auto* result = new (std::nothrow) wchar_t[decoded.size() + 1];
+        if (!result) return nullptr;
+        std::copy(decoded.begin(), decoded.end(), result);
+        result[decoded.size()] = L'\0';
+        return result;
+    } catch (...) {
+        return nullptr;
     }
-    auto* result = new (std::nothrow) wchar_t[decoded.size() + 1];
-    if (!result) return nullptr;
-    std::copy(decoded.begin(), decoded.end(), result);
-    result[decoded.size()] = L'\0';
-    return result;
 }
 
 inline void Logf(PCWSTR format, ...) noexcept {
@@ -445,7 +455,8 @@ inline BOOL Wh_SetStringValue(PCWSTR valueName, PCWSTR value) {
     if (!::wmod::windhawk_compat::ValidStorageKey(valueName) || !value) return FALSE;
     size_t length = 0;
     while (value[length]) {
-        if (++length > ::wmod::windhawk_compat::kMaxStorageStringChars) return FALSE;
+        if (++length > ::wmod::windhawk_compat::kMaxStorageStringChars ||
+            value[length - 1] == L'\r' || value[length - 1] == L'\n') return FALSE;
     }
     const auto path = ::wmod::windhawk_compat::ValuesPath();
     if (path.empty()) return FALSE;
