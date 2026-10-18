@@ -850,6 +850,88 @@ mod tests {
     }
 
     #[test]
+    fn manifest_accepts_one_shot_commands_with_bounded_timeout() {
+        let manifest: Manifest = serde_json::from_str(r#"{
+          "manifestVersion":1,"id":"com.example.command-test","name":"Command test","version":"1.0.0",
+          "components":[{"id":"probe","name":"Probe","kind":"command",
+            "runtime":{"command":"cmd.exe","args":["/D","/C","echo","hello"],"timeoutMs":5000}}]
+        }"#).unwrap();
+        assert!(validate_manifest(&manifest, None).is_ok());
+        assert_eq!(manifest.components[0].runtime.timeout_ms, Some(5000));
+    }
+
+    #[test]
+    fn manifest_rejects_unsafe_command_timeouts() {
+        let too_short: Manifest = serde_json::from_str(r#"{
+          "manifestVersion":1,"id":"com.example.command-test","name":"Command test","version":"1.0.0",
+          "components":[{"id":"probe","name":"Probe","kind":"command",
+            "runtime":{"command":"cmd.exe","timeoutMs":50}}]
+        }"#).unwrap();
+        assert!(validate_manifest(&too_short, None).unwrap_err().contains("timeoutMs"));
+
+        let timeout_on_service: Manifest = serde_json::from_str(r#"{
+          "manifestVersion":1,"id":"com.example.service-test","name":"Service test","version":"1.0.0",
+          "components":[{"id":"probe","name":"Probe","kind":"service",
+            "runtime":{"command":"cmd.exe","timeoutMs":5000}}]
+        }"#).unwrap();
+        assert!(validate_manifest(&timeout_on_service, None).unwrap_err().contains("only valid for command"));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn one_shot_command_captures_output_and_exit_status() {
+        let root = std::env::temp_dir().join(format!(
+            "00047-extension-command-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let package = root.join("packages").join("com.example.command-test");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("manifest.json"), r#"{
+          "manifestVersion":1,"id":"com.example.command-test","name":"Command test","version":"1.0.0",
+          "components":[{"id":"probe","name":"Probe","kind":"command",
+            "runtime":{"command":"cmd.exe","args":["/D","/C","echo","command-output"],"timeoutMs":5000}}]
+        }"#).unwrap();
+
+        let manager = ExtensionManager::new(root.clone());
+        let result = manager.run_command("com.example.command-test", "probe").await.unwrap();
+        assert!(result.success, "command result: {result:?}");
+        assert!(!result.timed_out);
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.stdout.to_lowercase().contains("command-output"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn one_shot_command_times_out_and_is_reaped() {
+        let root = std::env::temp_dir().join(format!(
+            "00047-extension-timeout-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let package = root.join("packages").join("com.example.timeout-test");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("manifest.json"), r#"{
+          "manifestVersion":1,"id":"com.example.timeout-test","name":"Timeout test","version":"1.0.0",
+          "components":[{"id":"probe","name":"Slow probe","kind":"command",
+            "runtime":{"command":"powershell.exe","args":["-NoProfile","-NonInteractive","-Command","Start-Sleep -Seconds 10"],"timeoutMs":100}}]
+        }"#).unwrap();
+
+        let manager = ExtensionManager::new(root.clone());
+        let result = manager.run_command("com.example.timeout-test", "probe").await.unwrap();
+        assert!(result.timed_out, "command result: {result:?}");
+        assert!(!result.success);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn manifest_rejects_unknown_placeholders() {
         let manifest: Manifest = serde_json::from_str(r#"{
           "manifestVersion":1,"id":"com.example.bad","name":"Bad","version":"1.0.0",
