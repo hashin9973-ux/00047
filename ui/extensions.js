@@ -84,7 +84,7 @@ export function createExtensionsPage({ invoke, esc, toast, modal, htmlModal, get
             : `Failed (exit code ${result.exitCode ?? 'unknown'})`;
         const clipForDisplay = (value) => {
           const text = String(value || '');
-          return text.length > 12000 ? `${text.slice(0, 12000)}\\n[display clipped; full capture was bounded by 00047]` : (text || '(no output)');
+          return text.length > 12000 ? `${text.slice(0, 12000)}\n[display clipped by UI]` : (text || '(no output)');
         };
         await htmlModal(
           `Command result: ${componentId}`,
