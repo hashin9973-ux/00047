@@ -74,6 +74,20 @@ jobs:
           python tools/validate_native_mod.py $zip
           if (-not (Test-Path $zip)) { throw "Native mod sample package was not created." }
 
+          # Exercise the public project generator all the way through compilation,
+          # packaging, and ABI validation using the actual Windows x64 toolchain.
+          $generatedRoot = Join-Path $env:RUNNER_TEMP "00047-generated-mods"
+          python tools/new_native_mod.py --id com.example.ci-generated --name "CI Generated Mod" --output-dir $generatedRoot
+          $project = Join-Path $generatedRoot "com.example.ci-generated"
+          $generatedBuild = Join-Path $project "build"
+          $sdk = (Resolve-Path "sdk/native-mod").Path
+          cmake -S $project -B $generatedBuild -A x64 "-DWMOD_SDK_DIR=$sdk"
+          cmake --build $generatedBuild --config Release
+          $generatedDll = Join-Path $generatedBuild "bin/Release/com_example_ci_generated.dll"
+          $generatedZip = Join-Path $env:RUNNER_TEMP "00047-generated-native-mod.zip"
+          python tools/package_native_mod.py --manifest (Join-Path $project "manifest.json") --dll $generatedDll --output $generatedZip
+          python tools/validate_native_mod.py $generatedZip
+
       - name: Install prebuilt Tauri CLI
         run: npm install --no-save @tauri-apps/cli@^2
 
