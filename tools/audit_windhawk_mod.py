@@ -169,7 +169,7 @@ def audit_text(path: str, source: str) -> list[dict]:
         settings_reload_variant = (
             name == "Wh_ModSettingsChanged"
             and re.search(
-                r"\\b(?:BOOL|bool)\\s+Wh_ModSettingsChanged\\s*\\(\\s*(?:BOOL|bool)\\s*\\*",
+                r"\b(?:BOOL|bool)\s+Wh_ModSettingsChanged\s*\(\s*(?:BOOL|bool)\s*\*",
                 callback_context,
             )
         )
