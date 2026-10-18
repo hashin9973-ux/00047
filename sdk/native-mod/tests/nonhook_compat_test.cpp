@@ -98,6 +98,7 @@ bool TestWindhawkLifecycleAdapter(const std::filesystem::path& directory) {
     using Initialize = BOOL (WINAPI*)();
     using Shutdown = void (WINAPI*)();
     using GetLifecycleStep = int (WINAPI*)();
+    using SetInitAllowed = void (WINAPI*)(BOOL);
 
     const auto getApiVersion = reinterpret_cast<GetApiVersion>(
         GetProcAddress(module, "WmodGetApiVersion"));
@@ -107,8 +108,10 @@ bool TestWindhawkLifecycleAdapter(const std::filesystem::path& directory) {
         GetProcAddress(module, "WmodShutdownV1"));
     const auto getLifecycleStep = reinterpret_cast<GetLifecycleStep>(
         GetProcAddress(module, "AdapterSmokeLifecycleStep"));
+    const auto setInitAllowed = reinterpret_cast<SetInitAllowed>(
+        GetProcAddress(module, "AdapterSmokeSetInitAllowed"));
 
-    if (!getApiVersion || !initialize || !shutdown || !getLifecycleStep) {
+    if (!getApiVersion || !initialize || !shutdown || !getLifecycleStep || !setInitAllowed) {
         FreeLibrary(module);
         return false;
     }
@@ -116,13 +119,21 @@ bool TestWindhawkLifecycleAdapter(const std::filesystem::path& directory) {
         FreeLibrary(module);
         return false;
     }
-    if (!initialize()) {
-        FreeLibrary(module);
-        return false;
-    }
-    bool ok = getLifecycleStep() == 2; // init callback then after-init callback
+
+    // A failed init must not invoke after-init or run uninit callbacks on shutdown.
+    setInitAllowed(FALSE);
+    bool ok = initialize() == FALSE && getLifecycleStep() == 0;
     shutdown();
-    ok = ok && getLifecycleStep() == 4; // before-uninit then uninit callback
+    ok = ok && getLifecycleStep() == 0;
+
+    // Successful init runs its two startup callbacks once.
+    setInitAllowed(TRUE);
+    ok = ok && initialize() != FALSE && getLifecycleStep() == 2;
+    shutdown();
+    ok = ok && getLifecycleStep() == 4;
+    shutdown(); // repeated shutdown is ignored
+    ok = ok && getLifecycleStep() == 4;
+
     FreeLibrary(module);
     return ok;
 }
