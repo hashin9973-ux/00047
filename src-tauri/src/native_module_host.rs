@@ -11,7 +11,7 @@ use std::{
     ffi::{c_char, CStr},
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
@@ -141,7 +141,10 @@ impl NativeModuleManager {
     fn record_error(&self, message: String) {
         let mut errors = self.errors.lock().unwrap();
         errors.push(message);
-        if errors.len() > 100 { errors.drain(0..errors.len() - 100); }
+        if errors.len() > 100 {
+            let excess = errors.len() - 100;
+            errors.drain(0..excess);
+        }
     }
 
     pub fn catalog(&self) -> NativeModuleCatalog {
@@ -246,7 +249,7 @@ impl NativeModuleManager {
         // Initial installation has no sidecar yet, so inspect the DLL to obtain metadata.
         let probe = inspect_module(&path)?;
         if probe.id != id { return Err("native module id does not match installed filename".into()); }
-        let mut metadata = metadata.unwrap_or(probe);
+        let mut metadata = metadata.unwrap_or_else(|| probe.clone());
         if metadata.file_name.is_empty() {
             // First load: the descriptor does not yet have a sidecar manifest.
             metadata.file_name = format!("{id}.dll");
