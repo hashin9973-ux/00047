@@ -56,7 +56,6 @@ ADAPTER_CALLBACKS = {
     "Wh_ModAfterInit",
     "Wh_ModBeforeUninit",
     "Wh_ModUninit",
-    "Wh_ModSettingsChanged",
 }
 MANUAL_CALLBACKS = set()
 
@@ -170,6 +169,9 @@ def audit_text(path: str, source: str) -> list[dict]:
             category, reason = "supported-with-limitations", SUPPORTED[name]
         elif name in UNSUPPORTED:
             category, reason = "unsupported", UNSUPPORTED[name]
+        elif name == "Wh_ModSettingsChanged":
+            category = "adapter-available-lifecycle"
+            reason = "The opt-in windhawk_settings_changed_adapter.h watches settings.json and invokes this callback on a worker thread; thread affinity differs from Windhawk."
         elif name in ADAPTER_CALLBACKS:
             category = "adapter-available-lifecycle"
             reason = "The opt-in windhawk_nonhook_adapter.h maps this lifecycle callback onto the Wmod ABI; callback ordering must be reviewed."
