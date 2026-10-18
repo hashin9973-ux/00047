@@ -100,7 +100,15 @@ In addition to external process extensions, the **In-process native modules** se
 
 The DLL exports `extension_00047_get_api_v1`, returning an ABI v1 descriptor with an ID, display metadata, and `start`/`stop` callbacks. The host passes a small versioned host API table with a logging callback. The host calls `stop` before unloading and during normal app shutdown; a nonzero stop result prevents normal unload because the module may still have active code.
 
-The C++ example is in [`docs/examples/native-module/native_hello.cpp`](examples/native-module/native_hello.cpp). Build it as a DLL with the supplied header, then use the Extensions view to load it. Loaded modules are copied into the app's managed native-module folder. Auto-start is opt-in.
+The C++ example is in [`docs/examples/native-module/native_hello.cpp`](examples/native-module/native_hello.cpp). From an **x64 Native Tools Command Prompt for Visual Studio**, build the example with:
+
+```powershell
+cl.exe /nologo /LD /I docs/extension_sdk docs/examples/native-module/native_hello.cpp /link /OUT:native_hello.dll
+```
+
+The output DLL architecture must match 00047's process architecture. Use the Extensions view to load it; loaded modules are copied into the app's managed native-module folder. Auto-start is opt-in.
+
+A native module must keep its callbacks quick and non-blocking. The host table and opaque callback context remain at stable addresses while the module is loaded. The module must not retain or call either after `stop` returns. The `stop` callback should stop/join all module-owned threads and reverse any side effects before returning `0`. Returning a nonzero value prevents a normal manual unload because active module code may still be executing.
 
 **Native DLLs execute inside the 00047 process. They are not sandboxed and can crash or corrupt 00047.** The host must load a DLL to inspect its ABI, so even the initial inspection executes its DLL entrypoint. Only load modules whose source you trust.
 
