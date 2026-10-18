@@ -5,6 +5,7 @@
 // No function hooking, sandboxing, or Windhawk API compatibility is provided here.
 #include <Windows.h>
 #include <cstdio>
+#include <cwchar>
 #include <filesystem>
 #include <string>
 #include <system_error>
