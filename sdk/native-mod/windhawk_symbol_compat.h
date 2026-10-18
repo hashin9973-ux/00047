@@ -313,7 +313,16 @@ inline HANDLE FindFirst(HMODULE module, const WH_FIND_SYMBOL_OPTIONS* options,
 // valid until the next Wh_FindNextSymbol call on that handle or close.
 inline HANDLE Wh_FindFirstSymbol(HMODULE module,
     const WH_FIND_SYMBOL_OPTIONS* options, WH_FIND_SYMBOL* findData) {
-    return ::wmod::windhawk_symbol_compat::FindFirst(module, options, findData);
+    try {
+        return ::wmod::windhawk_symbol_compat::FindFirst(module, options, findData);
+    } catch (...) {
+        if (findData) {
+            findData->address = nullptr;
+            findData->symbol = nullptr;
+            findData->symbolDecorated = nullptr;
+        }
+        return nullptr;
+    }
 }
 
 inline BOOL Wh_FindNextSymbol(HANDLE symSearch, WH_FIND_SYMBOL* findData) {
