@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.21)
+project(00047_native_mod_compat_tests LANGUAGES CXX)
+
+set(WMOD_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/..")
+add_executable(00047_native_mod_compat_test nonhook_compat_test.cpp)
+target_compile_features(00047_native_mod_compat_test PRIVATE cxx_std_17)
+target_compile_definitions(00047_native_mod_compat_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_include_directories(00047_native_mod_compat_test PRIVATE "${WMOD_SDK_DIR}")
