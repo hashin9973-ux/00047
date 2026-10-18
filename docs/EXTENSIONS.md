@@ -1,6 +1,6 @@
 # Extension host (first milestone)
 
-00047 distinguishes workflow block packs from independent extension packages. Block packs add conditions and actions to automation workflows. Extension packages are managed from the Extensions view and can launch applications or long-running services without requiring an automation node.
+00047 distinguishes workflow block packs from independent extension packages. Block packs add conditions and actions to automation workflows. Extension packages are managed from the Extensions view and can launch applications, long-running services, or one-shot commands without requiring an automation node.
 
 ## Package layout
 
@@ -38,7 +38,9 @@ The manifest is version 1:
       ]
     }
 
-Component kind is currently app or service. Both are launched and tracked by 00047; the distinction is whether the component is intended as a user-facing application or a long-running helper. Use any executable or interpreter available on PATH, or bundle an executable in the ZIP and refer to it through the extensionDir placeholder. For script runtimes, use the entrypoint placeholder. Arguments are passed as separate OS arguments; they are not concatenated into a shell command.
+Component kind is `app`, `service`, or `command`. Apps and services are launched and tracked as persistent processes; the distinction is whether the component is intended as a user-facing application or a long-running helper. A `command` component runs only when the user presses **Run** and returns the exit status, standard output, standard error, elapsed time, and timeout status to 00047. It does not stay in the process list and cannot be started or restarted as a service.
+
+Use any executable or interpreter available on PATH, or bundle an executable in the ZIP and refer to it through the extensionDir placeholder. For script runtimes, use the entrypoint placeholder. Arguments are passed as separate OS arguments; they are not concatenated into a shell command. Commands have a 15-second default timeout. Set `runtime.timeoutMs` to a value from 100 to 120000 for a command component; it is rejected on apps/services. Standard output and standard error are each capped at 256 KiB, with excess drained but not stored, and the UI further limits displayed output to 12000 characters per stream.
 
 Supported placeholders are {extensionDir}, {entrypoint}, and {componentId}. The process also receives EXTENSION_DIR, EXTENSION_ENTRYPOINT, and EXTENSION_COMPONENT_ID, plus any variables declared in runtime.environment.
 
@@ -47,7 +49,7 @@ Supported placeholders are {extensionDir}, {entrypoint}, and {componentId}. The 
 1. Open 00047 → Extensions → Install ZIP extension….
 2. Inspect the package and displayed runtime command.
 3. Install the ZIP.
-4. Use Start, Stop, or Restart in the Extensions view to control components.
+4. Use Start, Stop, or Restart for apps/services. Use Run for a one-shot command and review its status/output dialog.
 
 The importer enforces a 20 MB compressed ZIP limit, a 50 MB expanded limit, at most 500 ZIP entries, and a 1 MB manifest limit. It rejects absolute/traversal paths, duplicate entries, and symbolic links. Reinstalling a package ID replaces that package after staging a validated copy. Stop running components before updating a package.
 
@@ -55,8 +57,8 @@ The importer enforces a 20 MB compressed ZIP limit, a 50 MB expanded limit, at m
 
 Extension code is not sandboxed. It runs under the current Windows user and can access files, network resources, launch programs, and change user-level settings the account can access. Review source, manifests, and commands before installation. This is a developer/extensibility system, not a trust boundary.
 
-## Capability boundary and roadmap
+## Capability boundary
 
-This milestone adds independently managed external applications and services. It does not claim native process modification or Windhawk-equivalent DLL injection. Those capabilities require a separate Windows-specific mod engine with process targeting, architecture-aware native modules, a mod SDK/API, crash recovery, and compatibility handling across Windows updates.
+The external extension host is separate from the Windows **Native Mods** subsystem. It does not load DLLs into Explorer or other shell processes. See [NATIVE_MODS.md](NATIVE_MODS.md) for the native-mod package contract, fixed target allow-list, SDK, settings, logs, and recovery limitations. The runtime can launch any language for which an executable/interpreter is available or packaged.
 
-The runtime can launch any language for which an executable/interpreter is available or packaged. In-process native extensions and mods that alter Explorer, Start, the taskbar, or notification processes remain a follow-on engine milestone rather than a pretend feature in this package manager.
+External commands and services are not sandboxed: timeouts and bounded output prevent some resource-exhaustion cases, but they do not restrict file, network, or process access under the current user's permissions.
