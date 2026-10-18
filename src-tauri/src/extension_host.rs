@@ -17,8 +17,9 @@ use std::{
 };
 use tauri::{AppHandle, Emitter};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::Command,
+    sync::mpsc::UnboundedReceiver,
 };
 use tokio_util::sync::CancellationToken;
 use zip::ZipArchive;
@@ -634,6 +635,29 @@ fn extract_archive(path: &Path, destination: &Path) -> Result<(), String> {
         if copied != entry.size() { return Err(format!("ZIP entry size mismatch: {}", output.display())); }
     }
     Ok(())
+}
+
+fn spawn_control_writer<W>(app: AppHandle, id: String, mut writer: W, mut messages: UnboundedReceiver<String>)
+where
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        while let Some(message) = messages.recv().await {
+            if let Err(e) = writer.write_all(message.as_bytes()).await {
+                let _ = app.emit("extension-log", serde_json::json!({
+                    "id": id, "stream": "host", "message": format!("could not send lifecycle message: {e}"), "ts": now_ms()
+                }));
+                break;
+            }
+            if let Err(e) = writer.write_all(b"\n").await {
+                let _ = app.emit("extension-log", serde_json::json!({
+                    "id": id, "stream": "host", "message": format!("could not finish lifecycle message: {e}"), "ts": now_ms()
+                }));
+                break;
+            }
+            let _ = writer.flush().await;
+        }
+    });
 }
 
 fn spawn_log_reader<R>(app: AppHandle, id: String, stream: &'static str, reader: R)
