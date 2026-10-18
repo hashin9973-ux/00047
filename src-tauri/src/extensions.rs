@@ -544,6 +544,7 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
         return Err(format!("extension ZIP must contain between 1 and {MAX_FILES} entries"));
     }
     let mut files = HashSet::new();
+    let mut windows_path_keys = HashSet::new();
     let mut total = 0u64;
     for i in 0..archive.len() {
         let entry = archive.by_index(i).map_err(|e| format!("cannot read ZIP entry: {e}"))?;
@@ -552,17 +553,23 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
             return Err(format!("unsafe ZIP path: {name}"));
         }
         if !files.insert(name.clone()) { return Err(format!("duplicate ZIP entry: {name}")); }
+        let normalized = name.trim_end_matches('/');
+        if !normalized.is_empty() && !valid_relative_path(normalized) {
+            return Err(format!("unsafe ZIP path: {name}"));
+        }
+        // Windows filesystems are case-insensitive by default. Reject archives whose
+        // entries would alias when extracted, including "folder" vs "folder/".
+        let windows_key = normalized.to_lowercase();
+        if !windows_path_keys.insert(windows_key) {
+            return Err(format!("ZIP entries collide on Windows (case-insensitive path): {name}"));
+        }
         if let Some(mode) = entry.unix_mode() {
             if mode & 0o170000 == 0o120000 { return Err(format!("symbolic links are not allowed: {name}")); }
         }
         total = total.saturating_add(entry.size());
         if total > MAX_UNPACKED_BYTES { return Err("extension ZIP expands beyond the 50 MB unpacked-size limit".into()); }
-        if name == "manifest.json" && entry.size() > MAX_MANIFEST_BYTES {
+        if name.eq_ignore_ascii_case("manifest.json") && entry.size() > MAX_MANIFEST_BYTES {
             return Err("manifest.json exceeds the 1 MB limit".into());
-        }
-        let normalized = name.trim_end_matches('/');
-        if !normalized.is_empty() && !valid_relative_path(normalized) {
-            return Err(format!("unsafe ZIP path: {name}"));
         }
     }
     if !files.contains("manifest.json") { return Err("extension ZIP must contain manifest.json at its root".into()); }
@@ -617,6 +624,21 @@ mod tests {
         assert!(!valid_relative_path("../start.py"));
         assert!(!valid_relative_path("C:/start.py"));
         assert!(!valid_relative_path("scripts\\start.py"));
+    }
+
+    #[test]
+    fn extension_zip_paths_that_alias_on_windows_are_rejected() {
+        let mut seen = HashSet::new();
+        for path in ["scripts/worker.py", "Scripts/Worker.py"] {
+            let normalized = path.trim_end_matches('/').to_lowercase();
+            assert!(seen.insert(normalized), "case-insensitive path alias should be rejected");
+        }
+
+        let mut seen_dirs = HashSet::new();
+        for path in ["assets", "assets/"] {
+            let normalized = path.trim_end_matches('/').to_lowercase();
+            assert!(seen_dirs.insert(normalized), "file/directory path alias should be rejected");
+        }
     }
 
     #[test]
