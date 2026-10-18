@@ -15,6 +15,8 @@ class WindhawkAuditTests(unittest.TestCase):
         const wchar_t* example = L"Wh_SetFunctionHook(target, hook, &original)";
         int value = Wh_GetIntSetting(L"style[%d]", 2);
         Wh_SetFunctionHook(target, hook, &original);
+        HANDLE symbols = Wh_FindFirstSymbol(module, nullptr, &symbolInfo);
+        Wh_FindCloseSymbol(symbols);
         Wh_ModInit();
         Wh_MadeUpThing();
         '''
