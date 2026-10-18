@@ -56,8 +56,9 @@ ADAPTER_CALLBACKS = {
     "Wh_ModAfterInit",
     "Wh_ModBeforeUninit",
     "Wh_ModUninit",
+    "Wh_ModSettingsChanged",
 }
-MANUAL_CALLBACKS = {"Wh_ModSettingsChanged"}
+MANUAL_CALLBACKS = set()
 
 
 def mask_cpp_noncode(source: str) -> str:
