@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cwchar>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -243,7 +244,7 @@ inline void FillFindData(const SearchContext& state, WH_FIND_SYMBOL* findData) n
 }
 
 inline HANDLE FindFirst(HMODULE module, const WH_FIND_SYMBOL_OPTIONS* options,
-    WH_FIND_SYMBOL* findData) noexcept {
+    WH_FIND_SYMBOL* findData) {
     if (!findData) return nullptr;
     findData->address = nullptr;
     findData->symbol = nullptr;
