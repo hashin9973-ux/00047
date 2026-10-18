@@ -274,6 +274,21 @@ inline bool DefaultFromManifest(std::wstring_view manifest, std::wstring_view se
     return false;
 }
 
+inline bool ReadManifestDefault(PCWSTR key, std::wstring& raw_value) noexcept {
+    raw_value.clear();
+    if (!key || !*key) return false;
+    try {
+        const auto folder = wmod::PackageDirectory();
+        if (folder.empty()) return false;
+        std::wstring manifest;
+        return ReadUtf8File(folder / L"manifest.json", manifest) &&
+            DefaultFromManifest(manifest, key, raw_value);
+    } catch (...) {
+        raw_value.clear();
+        return false;
+    }
+}
+
 inline bool ReadRawSetting(const wchar_t* key, std::wstring& raw_value) noexcept {
     raw_value.clear();
     if (!key || !*key) return false;
@@ -285,8 +300,7 @@ inline bool ReadRawSetting(const wchar_t* key, std::wstring& raw_value) noexcept
             ExtractJsonProperty(contents, key, raw_value)) {
             return true;
         }
-        if (!ReadUtf8File(folder / L"manifest.json", contents)) return false;
-        return DefaultFromManifest(contents, key, raw_value);
+        return ReadManifestDefault(key, raw_value);
     } catch (...) {
         raw_value.clear();
         return false;
@@ -337,22 +351,29 @@ inline bool FormatKey(PCWSTR format, va_list args, std::wstring& output) noexcep
     }
 }
 
+inline bool ParseSettingInt(std::wstring_view raw, int& result) {
+    const auto value = TrimJson(raw);
+    if (value.empty() || value.front() == L'"') return false;
+    if (value == L"true") { result = 1; return true; }
+    if (value == L"false" || value == L"null") { result = 0; return true; }
+    std::wstring number(value);
+    wchar_t* end = nullptr;
+    errno = 0;
+    const long long parsed = _wcstoi64(number.c_str(), &end, 10);
+    if (errno != 0 || end == number.c_str() ||
+        static_cast<size_t>(end - number.c_str()) != number.size() ||
+        parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max()) return false;
+    result = static_cast<int>(parsed);
+    return true;
+}
+
 inline int SettingInt(PCWSTR key) noexcept {
     try {
         std::wstring raw;
-        if (!ReadRawSetting(key, raw)) return 0;
-        const auto value = TrimJson(raw);
-        if (value.empty() || value.front() == L'"') return 0;
-        if (value == L"true") return 1;
-        if (value == L"false" || value == L"null") return 0;
-        std::wstring number(value);
-        wchar_t* end = nullptr;
-        errno = 0;
-        const long long parsed = _wcstoi64(number.c_str(), &end, 10);
-        if (errno != 0 || end == number.c_str() ||
-            static_cast<size_t>(end - number.c_str()) != number.size() ||
-            parsed < std::numeric_limits<int>::min() || parsed > std::numeric_limits<int>::max()) return 0;
-        return static_cast<int>(parsed);
+        int value = 0;
+        if (ReadRawSetting(key, raw) && ParseSettingInt(raw, value)) return value;
+        if (ReadManifestDefault(key, raw) && ParseSettingInt(raw, value)) return value;
+        return 0;
     } catch (...) {
         return 0;
     }
@@ -361,10 +382,16 @@ inline int SettingInt(PCWSTR key) noexcept {
 inline PCWSTR SettingString(PCWSTR key) noexcept {
     try {
         std::wstring raw, decoded;
-        if (!ReadRawSetting(key, raw) || !DecodeJsonString(raw, decoded) ||
-            decoded.size() > kMaxStorageStringChars) {
+        bool valid = ReadRawSetting(key, raw) && DecodeJsonString(raw, decoded) &&
+            decoded.size() <= kMaxStorageStringChars;
+        if (!valid) {
             decoded.clear();
+            if (ReadManifestDefault(key, raw) && DecodeJsonString(raw, decoded) &&
+                decoded.size() <= kMaxStorageStringChars) {
+                valid = true;
+            }
         }
+        if (!valid) decoded.clear();
         auto* result = new (std::nothrow) wchar_t[decoded.size() + 1];
         if (!result) return nullptr;
         std::copy(decoded.begin(), decoded.end(), result);
