@@ -197,31 +197,30 @@ impl NativeModuleManager {
             return Err("select a Windows .dll native module".into());
         }
         let size = fs::metadata(&source).map_err(|e| e.to_string())?.len();
-        if size == 0 || size > 100 * 1024 * 1024 { return Err("native module must be between 1 byte and 100 MB".into()); }
+        if size == 0 || size > 100 * 1024 * 1024 {
+            return Err("native module must be between 1 byte and 100 MB".into());
+        }
 
-        let probe = inspect_module(&source)?;
+        fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
+        let stage = self.root.join(format!(".incoming-{}-{}.dll", std::process::id(), now_ms()));
+        fs::copy(&source, &stage).map_err(|e| format!("copy native module: {e}"))?;
+        let probe = match inspect_module(&stage) {
+            Ok(m) => m,
+            Err(e) => { let _ = fs::remove_file(&stage); return Err(e); }
+        };
         if self.state.lock().unwrap().contains_key(&probe.id) {
+            let _ = fs::remove_file(&stage);
             return Err("this native module is already loaded".into());
         }
         let target = self.dll_path(&probe.id)?;
         if target.exists() {
-            return Err("a module with this id is already installed; start it from the manager or uninstall it first".into());
-        }
-        fs::create_dir_all(&self.root).map_err(|e| e.to_string())?;
-        let stage = self.root.join(format!(".incoming-{}-{}.dll", std::process::id(), now_ms()));
-        fs::copy(&source, &stage).map_err(|e| format!("copy native module: {e}"))?;
-        let staged_metadata = match inspect_module(&stage) {
-            Ok(m) => m,
-            Err(e) => { let _ = fs::remove_file(&stage); return Err(e); }
-        };
-        if staged_metadata.id != probe.id {
             let _ = fs::remove_file(&stage);
-            return Err("native module identity changed while copying".into());
+            return Err("a module with this id is already installed; load it from the manager or uninstall it first".into());
         }
-        fs::rename(&stage, &target).map_err(|e| {
+        if let Err(e) = fs::rename(&stage, &target) {
             let _ = fs::remove_file(&stage);
-            format!("could not install native module: {e}")
-        })?;
+            return Err(format!("could not install native module: {e}"));
+        }
 
         match self.load_installed_module(&probe.id) {
             Ok(status) => Ok(status),
