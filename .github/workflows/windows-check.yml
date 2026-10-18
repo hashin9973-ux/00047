@@ -88,6 +88,16 @@ jobs:
           python tools/package_native_mod.py --manifest (Join-Path $project "manifest.json") --dll $generatedDll --output $generatedZip
           python tools/validate_native_mod.py $generatedZip
 
+      - name: Compile and run non-hook Windhawk-style compatibility tests
+        shell: pwsh
+        run: |
+          $build = Join-Path $env:RUNNER_TEMP "00047-nonhook-compat-tests"
+          cmake -S sdk/native-mod/tests -B $build -A x64
+          cmake --build $build --config Release
+          $testExe = Join-Path $build "Release/00047_native_mod_compat_test.exe"
+          if (-not (Test-Path $testExe)) { throw "Native SDK compatibility test executable was not created." }
+          & $testExe
+
       - name: Install prebuilt Tauri CLI
         run: npm install --no-save @tauri-apps/cli@^2
 
