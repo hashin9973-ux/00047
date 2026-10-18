@@ -244,9 +244,10 @@ inline std::wstring_view TrimJson(std::wstring_view value) noexcept {
     return value.substr(start, end - start);
 }
 
-inline bool DefaultFromManifest(std::wstring_view manifest, std::wstring_view setting_id,
-    std::wstring& raw_value) {
-    raw_value.clear();
+inline bool SettingSpecFromManifest(std::wstring_view manifest, std::wstring_view setting_id,
+    std::wstring& type, std::wstring& raw_default) {
+    type.clear();
+    raw_default.clear();
     std::wstring settings_raw;
     if (!ExtractJsonProperty(manifest, L"settings", settings_raw)) return false;
     const auto settings = TrimJson(settings_raw);
@@ -258,13 +259,22 @@ inline bool DefaultFromManifest(std::wstring_view manifest, std::wstring_view se
         const size_t end = SkipJsonValue(settings, i);
         if (end == std::wstring_view::npos) return false;
         const auto spec = settings.substr(i, end - i);
-        std::wstring raw_id;
-        std::wstring id;
+        std::wstring raw_id, id;
         size_t id_end = 0;
         if (ExtractJsonProperty(spec, L"id", raw_id) &&
             ParseStringToken(TrimJson(raw_id), 0, id_end, &id) &&
             std::wstring_view(id) == setting_id) {
-            return ExtractJsonProperty(spec, L"default", raw_value);
+            std::wstring raw_type;
+            size_t type_end = 0;
+            if (!ExtractJsonProperty(spec, L"type", raw_type) ||
+                !ParseStringToken(TrimJson(raw_type), 0, type_end, &type) ||
+                type_end != TrimJson(raw_type).size() ||
+                !ExtractJsonProperty(spec, L"default", raw_default)) {
+                type.clear();
+                raw_default.clear();
+                return false;
+            }
+            return true;
         }
         i = SkipWhitespace(settings, end);
         if (i >= settings.size() || settings[i] == L']') return false;
@@ -272,6 +282,12 @@ inline bool DefaultFromManifest(std::wstring_view manifest, std::wstring_view se
         i = SkipWhitespace(settings, i + 1);
     }
     return false;
+}
+
+inline bool DefaultFromManifest(std::wstring_view manifest, std::wstring_view setting_id,
+    std::wstring& raw_value) {
+    std::wstring type;
+    return SettingSpecFromManifest(manifest, setting_id, type, raw_value);
 }
 
 inline bool ReadManifestDefault(PCWSTR key, std::wstring& raw_value) noexcept {
@@ -351,6 +367,57 @@ inline bool FormatKey(PCWSTR format, va_list args, std::wstring& output) noexcep
     }
 }
 
+inline bool ReadManifestSettingSpec(PCWSTR key, std::wstring& type,
+    std::wstring& raw_default) noexcept {
+    type.clear();
+    raw_default.clear();
+    if (!key || !*key) return false;
+    try {
+        const auto folder = wmod::PackageDirectory();
+        if (folder.empty()) return false;
+        std::wstring manifest;
+        return ReadUtf8File(folder / L"manifest.json", manifest) &&
+            SettingSpecFromManifest(manifest, key, type, raw_default);
+    } catch (...) {
+        type.clear();
+        raw_default.clear();
+        return false;
+    }
+}
+
+inline bool ConvertSettingToString(std::wstring_view raw, std::wstring_view type,
+    std::wstring& output) {
+    output.clear();
+    raw = TrimJson(raw);
+    if (type == L"string" || type == L"select") {
+        return DecodeJsonString(raw, output);
+    }
+    if (type == L"boolean") {
+        if (raw == L"true" || raw == L"false") {
+            output.assign(raw);
+            return true;
+        }
+        return false;
+    }
+    if (type == L"integer") {
+        int parsed = 0;
+        if (!ParseSettingInt(raw, parsed)) return false;
+        output.assign(raw);
+        return true;
+    }
+    if (type == L"number") {
+        const size_t end = SkipJsonValue(raw, 0);
+        if (end == std::wstring_view::npos || end != raw.size() ||
+            raw.empty() || raw.front() == L'"' || raw.front() == L'{' ||
+            raw.front() == L'[' || raw == L"true" || raw == L"false" || raw == L"null") {
+            return false;
+        }
+        output.assign(raw);
+        return true;
+    }
+    return DecodeJsonString(raw, output);
+}
+
 inline bool ParseSettingInt(std::wstring_view raw, int& result) {
     const auto value = TrimJson(raw);
     if (value.empty() || value.front() == L'"') return false;
@@ -381,15 +448,15 @@ inline int SettingInt(PCWSTR key) noexcept {
 
 inline PCWSTR SettingString(PCWSTR key) noexcept {
     try {
-        std::wstring raw, decoded;
-        bool valid = ReadRawSetting(key, raw) && DecodeJsonString(raw, decoded) &&
+        std::wstring type, default_raw, raw, decoded;
+        const bool has_spec = ReadManifestSettingSpec(key, type, default_raw);
+        bool valid = has_spec && ReadRawSetting(key, raw) &&
+            ConvertSettingToString(raw, type, decoded) &&
             decoded.size() <= kMaxStorageStringChars;
-        if (!valid) {
+        if (!valid && has_spec) {
             decoded.clear();
-            if (ReadManifestDefault(key, raw) && DecodeJsonString(raw, decoded) &&
-                decoded.size() <= kMaxStorageStringChars) {
-                valid = true;
-            }
+            valid = ConvertSettingToString(default_raw, type, decoded) &&
+                decoded.size() <= kMaxStorageStringChars;
         }
         if (!valid) decoded.clear();
         auto* result = new (std::nothrow) wchar_t[decoded.size() + 1];
