@@ -457,6 +457,72 @@ inline void Logf(PCWSTR format, ...) noexcept {
     (void)wmod::Log(L"info", buffer);
 }
 
+inline bool IsDynamicSelectSetting(PCWSTR setting_path) noexcept {
+    if (!setting_path || !*setting_path) return false;
+    size_t length = 0;
+    for (const wchar_t* p = setting_path; *p; ++p) {
+        if (++length > 64 || !((*p >= L'a' && *p <= L'z') ||
+            (*p >= L'A' && *p <= L'Z') || (*p >= L'0' && *p <= L'9') ||
+            *p == L'_' || *p == L'-' || *p == L'.')) return false;
+    }
+    if (!((*setting_path >= L'a' && *setting_path <= L'z') ||
+        (*setting_path >= L'A' && *setting_path <= L'Z') || *setting_path == L'_')) return false;
+    try {
+        const auto folder = wmod::PackageDirectory();
+        if (folder.empty()) return false;
+        std::wstring manifest;
+        if (!ReadUtf8File(folder / L"manifest.json", manifest)) return false;
+        std::wstring settings_raw;
+        if (!ExtractJsonProperty(manifest, L"settings", settings_raw)) return false;
+        const auto settings = TrimJson(settings_raw);
+        if (settings.empty() || settings.front() != L'[') return false;
+        size_t i = SkipWhitespace(settings, 1);
+        while (i < settings.size() && settings[i] != L']') {
+            const size_t end = SkipJsonValue(settings, i);
+            if (end == std::wstring_view::npos) return false;
+            const auto spec = settings.substr(i, end - i);
+            std::wstring raw_id, raw_type, raw_dynamic, id, type;
+            size_t token_end = 0;
+            const bool has_id = ExtractJsonProperty(spec, L"id", raw_id) &&
+                ParseStringToken(TrimJson(raw_id), 0, token_end, &id);
+            token_end = 0;
+            const bool has_type = ExtractJsonProperty(spec, L"type", raw_type) &&
+                ParseStringToken(TrimJson(raw_type), 0, token_end, &type);
+            const bool dynamic = ExtractJsonProperty(spec, L"dynamicSelect", raw_dynamic) &&
+                TrimJson(raw_dynamic) == L"true";
+            if (has_id && has_type && std::wstring_view(id) == setting_path)
+                return type == L"select" && dynamic;
+            i = SkipWhitespace(settings, end);
+            if (i >= settings.size() || settings[i] == L']') break;
+            if (settings[i] != L',') return false;
+            i = SkipWhitespace(settings, i + 1);
+        }
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+inline bool DynamicSelectStorageKey(PCWSTR setting_path, PCWSTR value,
+    std::wstring& key) noexcept {
+    key.clear();
+    if (!setting_path || !value || !IsDynamicSelectSetting(setting_path)) return false;
+    size_t value_length = 0;
+    for (const wchar_t* p = value; *p; ++p) {
+        if (++value_length > 100) return false;
+    }
+    try {
+        key = L"::wh_select_option::";
+        key += setting_path;
+        key += L"::";
+        key += value;
+        return ValidStorageKey(key.c_str());
+    } catch (...) {
+        key.clear();
+        return false;
+    }
+}
+
 } // namespace wmod::windhawk_compat
 
 // Windhawk-style logging syntax is source-compatible for ordinary wide-string
@@ -606,6 +672,61 @@ inline size_t Wh_GetModStoragePath(PWSTR pathBuffer, size_t bufferChars) {
     } catch (...) {
         pathBuffer[0] = L'\0';
         return 0;
+    }
+}
+
+// Dynamic select options are persisted in ordinary mod values using Windhawk's
+// legacy key naming scheme. Only manifest-declared dynamicSelect fields accept them.
+inline BOOL Wh_SetDynamicSelectOption(PCWSTR settingPath, PCWSTR value, PCWSTR label) {
+    if (!label) return FALSE;
+    size_t label_length = 0;
+    for (const wchar_t* p = label; *p; ++p) {
+        if (++label_length > 100 || *p == L'\r' || *p == L'\n') return FALSE;
+    }
+    std::wstring key;
+    if (!::wmod::windhawk_compat::DynamicSelectStorageKey(settingPath, value, key)) return FALSE;
+    return Wh_SetStringValue(key.c_str(), label);
+}
+
+inline BOOL Wh_DeleteDynamicSelectOption(PCWSTR settingPath, PCWSTR value) {
+    std::wstring key;
+    if (!::wmod::windhawk_compat::DynamicSelectStorageKey(settingPath, value, key)) return FALSE;
+    return Wh_DeleteValue(key.c_str());
+}
+
+inline BOOL Wh_ClearDynamicSelectOptions(PCWSTR settingPath) {
+    if (!::wmod::windhawk_compat::IsDynamicSelectSetting(settingPath)) return FALSE;
+    try {
+        const auto path = ::wmod::windhawk_compat::ValuesPath();
+        if (path.empty()) return FALSE;
+        const std::wstring prefix = std::wstring(L"::wh_select_option::") + settingPath + L"::";
+        std::vector<wchar_t> section(32768, L'\0');
+        const DWORD copied = GetPrivateProfileSectionW(
+            L"values", section.data(), static_cast<DWORD>(section.size()), path.c_str());
+        if (copied >= section.size() - 2) return FALSE;
+
+        std::vector<std::wstring> keys;
+        size_t offset = 0;
+        while (offset < copied) {
+            const wchar_t* entry = section.data() + offset;
+            const size_t length = std::wcslen(entry);
+            if (length == 0) break;
+            const wchar_t* equals = std::wcschr(entry, L'=');
+            if (equals) {
+                const std::wstring_view key(entry, static_cast<size_t>(equals - entry));
+                if (key.size() >= prefix.size() && key.substr(0, prefix.size()) == prefix)
+                    keys.emplace_back(key);
+            }
+            offset += length + 1;
+        }
+
+        BOOL ok = TRUE;
+        for (const auto& key : keys) {
+            if (!Wh_DeleteValue(key.c_str())) ok = FALSE;
+        }
+        return ok;
+    } catch (...) {
+        return FALSE;
     }
 }
 
