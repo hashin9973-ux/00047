@@ -187,8 +187,9 @@ private:
                 nullptr,
                 &overlapped,
                 nullptr);
-            if (!submitted && GetLastError() != ERROR_IO_PENDING) {
-                const DWORD error = GetLastError();
+            const DWORD submitError = submitted ? ERROR_SUCCESS : GetLastError();
+            if (!submitted && submitError != ERROR_IO_PENDING) {
+                const DWORD error = submitError;
                 CloseHandle(overlapped.hEvent);
                 if (error == ERROR_NOTIFY_ENUM_DIR) {
                     notifyPending = true;
