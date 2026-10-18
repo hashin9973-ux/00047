@@ -655,8 +655,10 @@ inline BOOL Wh_SetDynamicSelectOption(PCWSTR settingPath, PCWSTR value, PCWSTR l
     if (!::wmod::windhawk_compat::DynamicSelectStorageKey(settingPath, value, key)) return FALSE;
     if (!Wh_SetStringValue(key.c_str(), label)) return FALSE;
     const auto path = ::wmod::windhawk_compat::ValuesPath();
-    // Flush Win32 profile caching so the 00047 settings UI can immediately see options.
-    return !path.empty() && WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    // This API intentionally returns zero when flushing the profile cache, even
+    // when the flush succeeds. Do not misreport a successful write as failure.
+    if (!path.empty()) (void)WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    return TRUE;
 }
 
 inline BOOL Wh_DeleteDynamicSelectOption(PCWSTR settingPath, PCWSTR value) {
@@ -664,7 +666,8 @@ inline BOOL Wh_DeleteDynamicSelectOption(PCWSTR settingPath, PCWSTR value) {
     if (!::wmod::windhawk_compat::DynamicSelectStorageKey(settingPath, value, key)) return FALSE;
     if (!Wh_DeleteValue(key.c_str())) return FALSE;
     const auto path = ::wmod::windhawk_compat::ValuesPath();
-    return !path.empty() && WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    if (!path.empty()) (void)WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    return TRUE;
 }
 
 inline BOOL Wh_ClearDynamicSelectOptions(PCWSTR settingPath) {
@@ -704,8 +707,10 @@ inline BOOL Wh_ClearDynamicSelectOptions(PCWSTR settingPath) {
         for (const auto& key : keys) {
             if (!Wh_DeleteValue(key.c_str())) ok = FALSE;
         }
-        const BOOL flushed = WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
-        return ok && flushed;
+        // WritePrivateProfileStringW returns zero for the documented cache-flush
+        // operation; the return value is not an error signal in this case.
+        (void)WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+        return ok;
     } catch (...) {
         return FALSE;
     }
