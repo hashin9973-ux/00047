@@ -107,3 +107,8 @@ The compatibility header intentionally does **not** provide `Wh_SetFunctionHook`
 Native mods are arbitrary machine code and are not sandboxed. Loading them can crash or hang their target process. The UI requires a second confirmation before enabling a mod and states the target names before install. Test new DLLs in a VM or with a recoverable Windows user profile. If Explorer becomes unstable, use Task Manager to restart Windows Explorer or launch 00047 and disable the offending mod. Mods are not loaded into arbitrary user-selected processes.
 
 This engine does not yet have digital-signature trust enforcement, a stable cross-process host callback API, a compiler/build service, or guaranteed recovery from a DLL that crashes a target after successful initialization. The current x64 allow-list and explicit enable/disable flow are first-stage restrictions, not a sandbox.
+
+
+## Porting a Windhawk mod
+
+Use [WINDHAWK_COMPATIBILITY.md](WINDHAWK_COMPATIBILITY.md) and `tools/audit_windhawk_mod.py` to identify supported non-hook API calls, unsupported hook/symbol/disassembly calls, and lifecycle callbacks that require manual adaptation. The audit is static source analysis only and does not certify compatibility or safety.
