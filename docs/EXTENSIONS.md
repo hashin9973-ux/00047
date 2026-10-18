@@ -42,6 +42,22 @@ Component kind is `app`, `service`, or `command`. Apps and services are launched
 
 Use any executable or interpreter available on PATH, or bundle an executable in the ZIP and refer to it through the extensionDir placeholder. For script runtimes, use the entrypoint placeholder. Arguments are passed as separate OS arguments; they are not concatenated into a shell command. Commands have a 15-second default timeout. Set `runtime.timeoutMs` to a value from 100 to 120000 for a command component; it is rejected on apps/services. Standard output and standard error are each capped at 256 KiB, with excess drained but not stored, and the UI further limits displayed output to 12000 characters per stream.
 
+A one-shot command component can omit `entrypoint` and provide separate runtime arguments:
+
+    {
+      "id": "verify-config",
+      "name": "Verify configuration",
+      "kind": "command",
+      "runtime": {
+        "command": "python",
+        "args": ["-c", "print('configuration check passed')"],
+        "workingDirectory": "{extensionDir}",
+        "timeoutMs": 10000
+      }
+    }
+
+The default timeout is 15000 ms; a declared `timeoutMs` must be between 100 and 120000 ms. The standard-output and standard-error captures are each limited to 256 KiB. The app can terminate the direct command process at timeout but does not sandbox it or guarantee control over separately detached descendants.
+
 Supported placeholders are {extensionDir}, {entrypoint}, and {componentId}. The process also receives EXTENSION_DIR, EXTENSION_ENTRYPOINT, and EXTENSION_COMPONENT_ID, plus any variables declared in runtime.environment.
 
 ## Install and manage
