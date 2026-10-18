@@ -897,6 +897,7 @@ mod tests {
         }"#).unwrap();
 
         let manager = ExtensionManager::new(root.clone());
+        assert!(manager.start("com.example.command-test", "probe").await.is_err());
         let result = manager.run_command("com.example.command-test", "probe").await.unwrap();
         assert!(result.success, "command result: {result:?}");
         assert!(!result.timed_out);
@@ -929,6 +930,21 @@ mod tests {
         assert!(result.timed_out, "command result: {result:?}");
         assert!(!result.success);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn one_shot_command_output_capture_is_bounded_and_drains_excess() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut writer, reader) = tokio::io::duplex(64);
+        let writer_task = tokio::spawn(async move {
+            let payload = vec![b'A'; 4096];
+            writer.write_all(&payload).await.unwrap();
+        });
+        let (output, truncated) = read_bounded_output(reader, 128).await.unwrap();
+        writer_task.await.unwrap();
+        assert_eq!(output.len(), 128);
+        assert!(truncated);
     }
 
     #[test]
