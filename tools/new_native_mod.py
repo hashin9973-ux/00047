@@ -70,18 +70,18 @@ WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) {
 project({module_name} LANGUAGES CXX)
 
 set(WMOD_SDK_DIR "" CACHE PATH "Path to the 00047 repository sdk/native-mod directory")
-if(NOT EXISTS "\${{WMOD_SDK_DIR}}/00047_mod_api.h")
+if(NOT EXISTS "${{WMOD_SDK_DIR}}/00047_mod_api.h")
   message(FATAL_ERROR "Set WMOD_SDK_DIR to the 00047 sdk/native-mod directory")
 endif()
 
 add_library({module_name} SHARED mod.cpp)
 target_compile_features({module_name} PRIVATE cxx_std_17)
 target_compile_definitions({module_name} PRIVATE WMOD_BUILD_DLL WIN32_LEAN_AND_MEAN NOMINMAX)
-target_include_directories({module_name} PRIVATE "\${{WMOD_SDK_DIR}}")
+target_include_directories({module_name} PRIVATE "${{WMOD_SDK_DIR}}")
 set_target_properties({module_name} PROPERTIES
   PREFIX ""
   OUTPUT_NAME "{module_name}"
-  RUNTIME_OUTPUT_DIRECTORY "\${{CMAKE_BINARY_DIR}}/bin"
+  RUNTIME_OUTPUT_DIRECTORY "${{CMAKE_BINARY_DIR}}/bin"
 )
 ''',
         "README.md": f'''# {name.strip()}
