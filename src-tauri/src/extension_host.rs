@@ -210,6 +210,7 @@ impl ExtensionManager {
             command,
             args,
             auto_start: archive.manifest.auto_start,
+            protocol: archive.manifest.protocol.clone(),
         })
     }
 
@@ -383,7 +384,7 @@ impl ExtensionManager {
         let mut status = default_status(manifest);
         status.state = "failed".into();
         status.last_error = Some(error.clone());
-        self.state.lock().unwrap().insert(manifest.id.clone(), RuntimeRecord { status: status.clone(), cancel: None });
+        self.state.lock().unwrap().insert(manifest.id.clone(), RuntimeRecord { status: status.clone(), cancel: None, control: None });
         self.emit_status(&status);
         self.emit_log(&manifest.id, "host", &error);
     }
@@ -491,6 +492,7 @@ fn default_status(manifest: &ExtensionManifest) -> ExtensionStatus {
         runtime: manifest.runtime.command.clone(),
         entrypoint: manifest.entrypoint.clone(),
         auto_start: manifest.auto_start,
+        protocol: manifest.protocol.clone(),
         state: "stopped".into(),
         pid: None,
         started_at: None,
@@ -525,6 +527,9 @@ fn validate_manifest(manifest: &ExtensionManifest, dir: Option<&Path>, files: Op
         return Err("version is required (max 40 characters)".into());
     }
     if manifest.description.chars().count() > 1000 { return Err("description exceeds 1000 characters".into()); }
+    if manifest.protocol.as_deref().is_some_and(|p| p != "stdio-jsonl-v1") {
+        return Err("protocol must be omitted or set to \"stdio-jsonl-v1\"".into());
+    }
     if !valid_relative_path(&manifest.entrypoint) { return Err("entrypoint must be a safe relative path inside the package".into()); }
     if manifest.runtime.command.trim().is_empty() || manifest.runtime.command.len() > 2048 {
         return Err("runtime.command is required (max 2048 characters)".into());
