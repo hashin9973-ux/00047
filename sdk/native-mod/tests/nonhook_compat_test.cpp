@@ -108,6 +108,14 @@ int wmain() {
     CHECK(std::wcscmp(savedText, L"Saved value") == 0);
     Wh_FreeStringSetting(savedText);
 
+    // Invalid persisted types are ignored in favor of declared defaults.
+    CHECK(WriteUtf8(settings, R"json({"intSetting":"invalid","stringSetting":false})json"));
+    CHECK(Wh_GetIntSetting(L"intSetting") == 42);
+    PCWSTR fallbackText = Wh_GetStringSetting(L"stringSetting");
+    CHECK(fallbackText != nullptr);
+    CHECK(std::wcscmp(fallbackText, L"Hello \u263A") == 0);
+    Wh_FreeStringSetting(fallbackText);
+
     // Persistent simple values use the package-scoped INI storage file.
     CHECK(Wh_GetIntValue(L"counter", 17) == 17);
     CHECK(Wh_SetIntValue(L"counter", 19) == TRUE);
