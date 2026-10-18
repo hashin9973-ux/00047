@@ -544,7 +544,7 @@ inline size_t Wh_GetBinaryValue(PCWSTR valueName, BYTE* buffer, size_t bufferSiz
         const auto path = ::wmod::windhawk_compat::ValuesPath();
         if (path.empty()) return 0;
 
-        std::vector<wchar_t> encoded(::wmod::windhawk_compat::kMaxStorageBinaryBytes * 2 + 1, L'\0');
+        std::vector<wchar_t> encoded(::wmod::windhawk_compat::kMaxStorageBinaryBytes * 2 + 2, L'\0');
         const DWORD copied = GetPrivateProfileStringW(
             L"binary", valueName, L"", encoded.data(), static_cast<DWORD>(encoded.size()), path.c_str());
         if (copied == 0 || copied >= encoded.size() - 1) return 0;
