@@ -55,6 +55,23 @@ inline bool ReadSettingsJson(std::string& json_utf8) noexcept {
     } catch (...) { json_utf8.clear(); return false; }
 }
 
+// Resolve an export from a module that is already loaded in this process.
+// These helpers never load arbitrary DLLs or download symbols; the caller owns any
+// returned pointer's lifetime and must ensure the target module remains loaded.
+inline HMODULE ModuleHandle(const wchar_t* module_name) noexcept {
+    if (!module_name || !*module_name) return nullptr;
+    return GetModuleHandleW(module_name);
+}
+
+inline FARPROC ResolveSymbol(HMODULE module, const char* symbol_name) noexcept {
+    if (!module || !symbol_name || !*symbol_name) return nullptr;
+    return GetProcAddress(module, symbol_name);
+}
+
+inline FARPROC ResolveSymbol(const wchar_t* module_name, const char* symbol_name) noexcept {
+    return ResolveSymbol(ModuleHandle(module_name), symbol_name);
+}
+
 inline std::string Utf8(const std::wstring& text) {
     if (text.empty()) return {};
     const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);

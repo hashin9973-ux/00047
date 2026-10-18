@@ -14,6 +14,11 @@ BOOL WINAPI WmodInitializeV1(void) {
 
     OutputDebugStringW(L"[00047 sample native mod] WmodInitializeV1 entered Explorer.\n");
     wmod::Log(L"info", L"WmodInitializeV1 entered the target process.");
+    // Demonstrate safe export lookup without installing a hook or changing behavior.
+    const auto get_current_process_id = wmod::ResolveSymbol(L"kernel32.dll", "GetCurrentProcessId");
+    wmod::Log(L"info", get_current_process_id
+        ? L"SDK symbol resolver found kernel32!GetCurrentProcessId."
+        : L"SDK symbol resolver could not find kernel32!GetCurrentProcessId.");
     g_initialized = true;
     return TRUE;
 }

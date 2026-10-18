@@ -57,7 +57,7 @@ The Native Mods view validates this schema and edits `settings.json` in the inst
 
 The same SDK header provides `wmod::Log(level, message)`, which appends structured JSON Lines to the package's `mod.log`. Select **View logs** on a mod card to inspect the most recent lines in 00047. Log output is bounded when read by the UI; mods should avoid recording secrets.
 
-This is not Windhawk API compatibility. The SDK still does not provide Windhawk's `Wh_*` API, a built-in function-hook framework, symbol resolution, or guaranteed recovery from a target-process crash. Mods can use Windows APIs and their own third-party hook frameworks today, subject to the target allow-list and architecture.
+The SDK provides loaded-module export lookup through `wmod::ModuleHandle` and `wmod::ResolveSymbol`. These helpers only resolve exports from modules already loaded in the current process; they do not load arbitrary DLLs or resolve private/PDB symbols. The sample verifies lookup of `kernel32!GetCurrentProcessId` without calling it or changing desktop behavior. This is not Windhawk API compatibility: the SDK still does not provide Windhawk's `Wh_*` API or a built-in function-hook framework. Mods can use Windows APIs and their own third-party hook frameworks today, subject to the target allow-list and architecture.
 
 ## Safety and recovery
 
