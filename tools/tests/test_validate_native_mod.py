@@ -233,6 +233,9 @@ class NativeModValidatorTests(unittest.TestCase):
             source = handle.read()
         for symbol in EXPORTS:
             self.assertIn(symbol, source)
+        self.assertIn("windhawk_nonhook_compat.h", source)
+        self.assertIn("Wh_Log(", source)
+        self.assertIn("limited non-hook subset", open(os.path.join(destination, "README.md"), encoding="utf-8").read())
 
     def test_scaffold_refuses_invalid_id(self):
         with self.assertRaisesRegex(ValidationError, "id must"):
