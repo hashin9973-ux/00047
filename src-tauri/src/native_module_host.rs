@@ -299,7 +299,14 @@ impl NativeModuleManager {
         if !self.metadata_path(id)?.is_file() || !self.dll_path(id)?.is_file() {
             return Err("native module is not installed".into());
         }
-        self.load_installed_module(id)
+        match self.load_installed_module(id) {
+            Ok(status) => Ok(status),
+            Err(e) => {
+                self.record_error(format!("{id}: {e}"));
+                self.log(id, "error", &e);
+                Err(e)
+            }
+        }
     }
 
     pub fn unload(&self, id: &str) -> Result<(), String> {
