@@ -22,6 +22,8 @@ const fmtAgo = ts => {
 
 const LABEL = { running: 'Running', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
 const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
+const extensionOutput = [];
+let extensionRefreshTimer = 0;
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
 const isRun = id => ['running', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
@@ -560,6 +562,16 @@ async function bindEvents() {
     if (S.editId) for (const [nid, st] of Object.entries(S.rt.nodes[S.editId] || {})) editor.setNodeState(nid, st);
   });
   await listen('ui-hidden', () => { S.vis = false; });
+  await listen('extension-log', e => {
+    extensionOutput.push(e.payload);
+    if (extensionOutput.length > 1000) extensionOutput.splice(0, extensionOutput.length - 1000);
+    if (S.view === 'plugins') fillExtensionOutput();
+  });
+  await listen('extension-state', () => {
+    if (S.view !== 'plugins') return;
+    clearTimeout(extensionRefreshTimer);
+    extensionRefreshTimer = setTimeout(() => refreshPluginLists(), 200);
+  });
   await listen('close-requested', async () => {
     if (!$('#modal').hidden) return;
     const c = await modal({
@@ -631,6 +643,10 @@ async function renderPlugins() {
       <div class="sec"><h3>Installed runtime extensions</h3><span class="mu" id="extension-count">Loading…</span></div>
       <div id="extension-items" class="plugin-items"><p class="mu">Loading extensions…</p></div>
       <div id="extension-errors"></div>
+    </div>
+    <div class="card glass plugin-list extension-output-card">
+      <div class="sec"><h3>Recent runtime output</h3><span class="mu">stdout / stderr / host events</span></div>
+      <div id="extension-output" class="extension-output"><p class="mu">No extension output yet.</p></div>
     </div>
     <div class="plugins-head plugin-section-head">
       <div><h2>Automation block packs</h2><p class="mu">The original custom conditions and actions remain supported separately.</p></div>
@@ -724,12 +740,22 @@ async function refreshPluginLists() {
       : '<div class="plugin-empty"><div class="plugin-icon">＋</div><b>No runtime extensions installed</b><p class="mu">Install an extension ZIP containing extension.json and its entrypoint.</p><button class="btn primary" data-plugin-action="install-extension">Install your first extension</button></div>';
     $('#extension-errors').innerHTML = ext.errors.length
       ? `<div class="plugin-errors"><b>Extension loading warnings</b><ul>${ext.errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>` : '';
+    fillExtensionOutput();
   } catch (e) {
     $('#extension-count').textContent = 'Unavailable';
     $('#extension-items').innerHTML = `<p class="er">Could not load extension list: ${esc(e)}</p><button class="btn" data-plugin-action="retry">Retry</button>`;
     $('#plugin-count').textContent = 'Unavailable';
     $('#plugin-items').innerHTML = `<p class="er">Could not load custom blocks: ${esc(e)}</p>`;
   }
+}
+
+function fillExtensionOutput() {
+  const el = $('#extension-output');
+  if (!el) return;
+  const rows = extensionOutput.slice(-150).reverse();
+  el.innerHTML = rows.length
+    ? rows.map(x => `<div class="extension-log-row"><span class="t">${fmtTime(x.ts || Date.now())}</span><b>${esc(x.id || 'host')}</b><span class="extension-log-stream">${esc(x.stream || 'host')}</span><span class="extension-log-message">${esc(x.message || '')}</span></div>`).join('')
+    : '<p class="mu">No extension output yet.</p>';
 }
 
 async function installExtension() {
