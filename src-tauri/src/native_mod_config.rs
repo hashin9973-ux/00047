@@ -146,7 +146,9 @@ fn dynamic_select_entries(folder: &Path) -> Result<Vec<(String, String, String)>
 fn merge_dynamic_select_options(folder: &Path, specs: &mut [SettingSpec]) -> Result<(), String> {
     let entries = dynamic_select_entries(folder)?;
     for (setting_path, value, label) in entries {
-        let Some(spec) = specs.iter_mut().find(|s| s.id == setting_path && s.kind == "select" && s.dynamic_select) else {
+        let Some(spec) = specs.iter_mut().find(|s| {
+            s.id == setting_path && s.dynamic_select && matches!(s.kind.as_str(), "select" | "string")
+        }) else {
             continue;
         };
         if let Some(existing) = spec.options.iter_mut().find(|o| o.value == value) {
@@ -159,7 +161,7 @@ fn merge_dynamic_select_options(folder: &Path, specs: &mut [SettingSpec]) -> Res
 }
 
 fn append_stored_dynamic_select_values(specs: &mut [SettingSpec], values: &HashMap<String, Value>) {
-    for spec in specs.iter_mut().filter(|s| s.kind == "select" && s.dynamic_select) {
+    for spec in specs.iter_mut().filter(|s| s.dynamic_select && matches!(s.kind.as_str(), "select" | "string")) {
         let Some(selected) = values.get(&spec.id).and_then(Value::as_str) else {
             continue;
         };
@@ -186,21 +188,23 @@ fn validate_specs(specs: &[SettingSpec]) -> Result<(), String> {
         if s.step.is_some_and(|n| !n.is_finite() || n <= 0.0) { return Err(format!("Setting '{}': step must be positive and finite.", s.id)); }
         if s.max_length.is_some_and(|n| n > MAX_SETTING_TEXT) { return Err(format!("Setting '{}': maxLength may not exceed {MAX_SETTING_TEXT}.", s.id)); }
         if s.options.len() > MAX_OPTIONS { return Err(format!("Setting '{}': too many select options.", s.id)); }
-        if s.dynamic_select && s.kind != "select" {
-            return Err(format!("Setting '{}': dynamicSelect is only valid for select settings.", s.id));
+        if s.dynamic_select && !matches!(s.kind.as_str(), "select" | "string") {
+            return Err(format!("Setting '{}': dynamicSelect is only valid for string or select settings.", s.id));
         }
-        if s.kind == "select" {
+        let has_select_options = s.kind == "select" || (s.kind == "string" && s.dynamic_select);
+        if has_select_options {
             if s.options.is_empty() && !s.dynamic_select {
                 return Err(format!("Setting '{}': select settings need options or dynamicSelect:true.", s.id));
             }
             let mut choices = HashSet::new();
             for o in &s.options {
-                if o.value.len() > 100 || o.label.chars().count() > 100 || !choices.insert(o.value.clone()) {
+                if o.value.len() > 100 || o.label.trim().is_empty() || o.label.chars().count() > 100
+                    || !choices.insert(o.value.clone()) {
                     return Err(format!("Setting '{}': select option values must be unique and values/labels may not exceed 100 characters.", s.id));
                 }
             }
         } else if !s.options.is_empty() {
-            return Err(format!("Setting '{}': options are only valid for select settings.", s.id));
+            return Err(format!("Setting '{}': options are only valid for select settings or dynamic-select strings.", s.id));
         }
         validate_value(s, &s.default).map_err(|e| format!("Setting '{}': invalid default value: {e}", s.id))?;
     }
@@ -212,8 +216,12 @@ fn validate_value(s: &SettingSpec, v: &Value) -> Result<(), String> {
         "boolean" => if !v.is_boolean() { return Err("expected true or false".into()); },
         "string" => {
             let text = v.as_str().ok_or("expected text")?;
-            let max = s.max_length.unwrap_or(1024);
-            if text.chars().count() > max { return Err(format!("text exceeds {max} characters")); }
+            if s.dynamic_select {
+                if text.chars().count() > 100 { return Err("dynamic select value exceeds 100 characters".into()); }
+            } else {
+                let max = s.max_length.unwrap_or(1024);
+                if text.chars().count() > max { return Err(format!("text exceeds {max} characters")); }
+            }
         }
         "integer" => {
             let n = v.as_i64().ok_or("expected an integer")? as f64;
@@ -349,7 +357,7 @@ mod tests {
         manifest["settings"].as_array_mut().unwrap().push(serde_json::json!({
             "id": "device",
             "label": "Device",
-            "type": "select",
+            "type": "string",
             "dynamicSelect": true,
             "default": "",
             "options": [{ "value": "static", "label": "Static" }]
@@ -397,7 +405,7 @@ mod tests {
         let spec: SettingSpec = serde_json::from_value(serde_json::json!({
             "id": "device",
             "label": "Device",
-            "type": "select",
+            "type": "string",
             "dynamicSelect": true,
             "default": ""
         })).unwrap();
