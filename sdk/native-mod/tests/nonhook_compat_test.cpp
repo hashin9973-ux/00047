@@ -112,7 +112,7 @@ bool TestWindhawkLifecycleAdapter(const std::filesystem::path& directory) {
         FreeLibrary(module);
         return false;
     }
-    if (getApiVersion() != WMOD_00047_ABI_VERSION || getLifecycleStep() != 0) {
+    if (getApiVersion() != 1u || getLifecycleStep() != 0) {
         FreeLibrary(module);
         return false;
     }
