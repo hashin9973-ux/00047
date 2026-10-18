@@ -449,11 +449,28 @@ impl ExtensionManager {
             return Err("extension is not running".into());
         }
         let token = record.cancel.as_ref().ok_or("extension process is not controllable")?.clone();
+        let graceful = record.control.as_ref().map(|sender| {
+            sender.send(serde_json::json!({
+                "type": "host.shutdown",
+                "protocolVersion": 1,
+                "extensionId": id
+            }).to_string()).is_ok()
+        }).unwrap_or(false);
         record.status.state = "stopping".into();
         let status = record.status.clone();
-        token.cancel();
         drop(states);
         self.emit_status(&status);
+
+        if graceful {
+            // Give a cooperating extension a chance to undo temporary hooks and
+            // release handles. A stuck process is still forcibly stopped.
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                token.cancel();
+            });
+        } else {
+            token.cancel();
+        }
         Ok(())
     }
 
