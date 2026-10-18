@@ -6,6 +6,7 @@ mod spec;
 mod engine;
 mod extensions;
 mod native_mods;
+mod native_mod_config;
 mod logstore;
 mod model;
 mod store;
@@ -504,6 +505,31 @@ fn open_native_mods_folder(mods: State<'_, Arc<native_mods::NativeModManager>>) 
 }
 
 #[tauri::command]
+fn native_mod_settings_read(
+    mods: State<'_, Arc<native_mods::NativeModManager>>,
+    id: String,
+) -> Result<native_mod_config::NativeModSettings, String> {
+    native_mod_config::read_settings(mods.root_path(), &id)
+}
+
+#[tauri::command]
+fn native_mod_settings_write(
+    mods: State<'_, Arc<native_mods::NativeModManager>>,
+    id: String,
+    values: serde_json::Value,
+) -> Result<native_mod_config::NativeModSettings, String> {
+    native_mod_config::write_settings(mods.root_path(), &id, values)
+}
+
+#[tauri::command]
+fn native_mod_logs_read(
+    mods: State<'_, Arc<native_mods::NativeModManager>>,
+    id: String,
+) -> Result<Vec<String>, String> {
+    native_mod_config::read_logs(mods.root_path(), &id)
+}
+
+#[tauri::command]
 async fn restart_app(
     app: AppHandle,
     eng: State<'_, Arc<Engine>>,
@@ -620,6 +646,9 @@ fn main() {
             native_mod_uninstall,
             native_mod_refresh,
             open_native_mods_folder,
+            native_mod_settings_read,
+            native_mod_settings_write,
+            native_mod_logs_read,
             restart_app
         ])
         .setup(|app| {

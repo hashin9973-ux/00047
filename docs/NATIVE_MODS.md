@@ -38,7 +38,26 @@ Include sdk/native-mod/00047_mod_api.h when building a native x64 DLL. The exact
 
 A no-op C++ sample is in samples/native-mod. It writes debug output only, so it is safe as a loader-lifecycle example without modifying the desktop.
 
-The v1 API is a lifecycle ABI, not a broad host-services API. Mods that need settings UIs, host log routing, structured configuration, hot reload, or a shared cross-process hook framework will need additional SDK work. Mods can use Windows APIs and bundle their own hook libraries today.
+## Settings and logs
+
+A mod may declare an optional `settings` array in `manifest.json`. Each setting has a unique `id`, a `label`, a `type`, and a `default`. Supported types are `boolean`, `string`, `integer`, `number`, and `select`. Numeric settings can declare `min`, `max`, and `step`; string settings can declare `maxLength`; select settings declare `options` with unique `value` and `label` properties.
+
+```json
+{
+  "settings": [
+    { "id": "blurEnabled", "label": "Enable blur", "type": "boolean", "default": true },
+    { "id": "opacity", "label": "Opacity", "type": "number", "default": 0.65, "min": 0.1, "max": 1, "step": 0.05 },
+    { "id": "style", "label": "Style", "type": "select", "default": "mica",
+      "options": [{ "value": "mica", "label": "Mica" }, { "value": "acrylic", "label": "Acrylic" }] }
+  ]
+}
+```
+
+The Native Mods view validates this schema and edits `settings.json` in the installed package directory. The host validates values against the declared schema before saving. The DLL must opt in: include `sdk/native-mod/00047_mod_services.h`, call `wmod::SettingsPath()` or `wmod::ReadSettingsJson(...)`, parse the JSON with the parser of your choice, and reload it when your mod supports live changes. The settings editor does not force a mod to apply changes or mutate another process's memory.
+
+The same SDK header provides `wmod::Log(level, message)`, which appends structured JSON Lines to the package's `mod.log`. Select **View logs** on a mod card to inspect the most recent lines in 00047. Log output is bounded when read by the UI; mods should avoid recording secrets.
+
+This is not Windhawk API compatibility. The SDK still does not provide Windhawk's `Wh_*` API, a built-in function-hook framework, symbol resolution, or guaranteed recovery from a target-process crash. Mods can use Windows APIs and their own third-party hook frameworks today, subject to the target allow-list and architecture.
 
 ## Safety and recovery
 

@@ -47,7 +47,9 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
           (mod.enabled
             ? '<button class="btn danger" data-native-action="disable" data-mod-id="' + esc(mod.id) + '">Disable and unload</button>'
             : '<button class="btn primary" data-native-action="enable" data-mod-id="' + esc(mod.id) + '">Enable mod</button>') +
-          '<button class="btn" data-native-action="uninstall" data-mod-id="' + esc(mod.id) + '">Remove</button></div></article>'
+          '<button class="btn" data-native-action="uninstall" data-mod-id="' + esc(mod.id) + '">Remove</button>' +
+          '<button class="btn" data-native-action="settings" data-mod-id="' + esc(mod.id) + '">Settings</button>' +
+          '<button class="btn" data-native-action="logs" data-mod-id="' + esc(mod.id) + '">View logs</button></div></article>'
         ).join('') + '</div>';
       } else {
         mods = '<div class="card glass plugin-empty"><div class="plugin-icon">+</div><b>No native mods installed</b><p class="mu">Install an x64 native-mod ZIP containing manifest.json and the compiled DLL.</p><button class="btn primary" data-native-action="install">Install your first native mod</button></div>';
@@ -93,6 +95,21 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         if (answer !== 'go') return;
         const status = await invoke('native_mod_disable', { id });
         toast(String(status));
+      } else if (action === 'settings') {
+        await toggleSettings(button, id);
+        return;
+      } else if (action === 'settings-close') {
+        button.closest('.native-settings-panel')?.remove();
+        return;
+      } else if (action === 'settings-save') {
+        await saveSettings(button, id);
+        return;
+      } else if (action === 'logs') {
+        await toggleLogs(button, id);
+        return;
+      } else if (action === 'logs-close') {
+        button.closest('.native-log-panel')?.remove();
+        return;
       } else if (action === 'uninstall') {
         const answer = await modal({
           title: 'Remove native mod?',
@@ -107,6 +124,84 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       toast('Native mod operation failed: ' + error, 'err');
     }
     if (getView() === 'native-mods') await renderNativeMods();
+  }
+
+  function renderSettingField(setting, value) {
+    const id = esc(setting.id);
+    const label = esc(setting.label);
+    const description = setting.description ? '<small class="mu">' + esc(setting.description) + '</small>' : '';
+    const kind = setting.type;
+    let control = '';
+    if (kind === 'boolean') {
+      control = '<input type="checkbox" data-setting-id="' + id + '" data-setting-type="boolean" ' + (value === true ? 'checked' : '') + '>';
+    } else if (kind === 'select') {
+      control = '<select data-setting-id="' + id + '" data-setting-type="select">' +
+        (setting.options || []).map(option => '<option value="' + esc(option.value) + '" ' + (String(value) === String(option.value) ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('') +
+        '</select>';
+    } else if (kind === 'number' || kind === 'integer') {
+      const min = setting.min == null ? '' : ' min="' + esc(String(setting.min)) + '"';
+      const max = setting.max == null ? '' : ' max="' + esc(String(setting.max)) + '"';
+      const step = setting.step != null ? String(setting.step) : (kind === 'integer' ? '1' : 'any');
+      control = '<input type="number" data-setting-id="' + id + '" data-setting-type="' + kind + '"' + min + max + ' step="' + esc(step) + '" value="' + esc(String(value)) + '" required>';
+    } else {
+      const maxLength = setting.maxLength == null ? 1024 : setting.maxLength;
+      control = '<input type="text" data-setting-id="' + id + '" data-setting-type="string" maxlength="' + esc(String(maxLength)) + '" value="' + esc(String(value == null ? '' : value)) + '" required>';
+    }
+    return '<label class="native-setting-field"><span><b>' + label + '</b>' + description + '</span>' + control + '</label>';
+  }
+
+  async function toggleSettings(button, id) {
+    const card = button.closest('.native-mod-card');
+    if (!card) return;
+    const existing = card.querySelector('.native-settings-panel');
+    if (existing) { existing.remove(); return; }
+    const data = await invoke('native_mod_settings_read', { id });
+    const panel = document.createElement('div');
+    panel.className = 'native-settings-panel';
+    if (!data.settings.length) {
+      panel.innerHTML = '<h4>Mod settings</h4><p class="mu">This mod does not declare settings in manifest.json. Add a "settings" array to expose editable values.</p><button class="btn" type="button" data-native-action="settings-close" data-mod-id="' + esc(id) + '">Close</button>';
+    } else {
+      panel.innerHTML = '<h4>Mod settings</h4><form class="native-settings-form">' +
+        data.settings.map(setting => renderSettingField(setting, data.values[setting.id])).join('') +
+        '<div class="native-settings-actions"><button class="btn primary" type="button" data-native-action="settings-save" data-mod-id="' + esc(id) + '">Save settings</button><button class="btn" type="button" data-native-action="settings-close" data-mod-id="' + esc(id) + '">Close</button></div>' +
+        '<p class="mu">Values are saved to settings.json. A mod must read and reload this file for changes to affect its behavior.</p></form>';
+    }
+    card.append(panel);
+    bindActions(card);
+  }
+
+  async function saveSettings(button, id) {
+    const panel = button.closest('.native-settings-panel');
+    if (!panel) return;
+    const form = panel.querySelector('.native-settings-form');
+    const values = {};
+    for (const control of panel.querySelectorAll('[data-setting-id]')) {
+      const key = control.dataset.settingId;
+      const kind = control.dataset.settingType;
+      if (kind === 'boolean') values[key] = control.checked;
+      else if (kind === 'integer') values[key] = Number.parseInt(control.value, 10);
+      else if (kind === 'number') values[key] = Number(control.value);
+      else values[key] = control.value;
+    }
+    if (form && !form.reportValidity()) return;
+    await invoke('native_mod_settings_write', { id, values });
+    toast('Settings saved. The mod must reload settings.json to apply changes.');
+  }
+
+  async function toggleLogs(button, id) {
+    const card = button.closest('.native-mod-card');
+    if (!card) return;
+    const existing = card.querySelector('.native-log-panel');
+    if (existing) { existing.remove(); return; }
+    const lines = await invoke('native_mod_logs_read', { id });
+    const panel = document.createElement('div');
+    panel.className = 'native-log-panel';
+    panel.innerHTML = '<h4>Native mod log</h4>' +
+      (lines.length ? '<pre>' + lines.map(line => esc(line)).join('\n') + '</pre>' :
+        '<p class="mu">No mod.log output yet. Include the SDK helper and call wmod::Log(level, message) to write structured JSON Lines here.</p>') +
+      '<button class="btn" type="button" data-native-action="logs-close" data-mod-id="' + esc(id) + '">Close</button>';
+    card.append(panel);
+    bindActions(card);
   }
 
   async function installPackage() {
