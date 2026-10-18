@@ -375,9 +375,10 @@ impl NativeModManager {
             persistence_warning = Some("native mod state lock is unavailable".into());
         }
 
-        let cleanup_warning = load_manifest(&self.package_dir(id).unwrap_or_default())
-            .ok()
-            .and_then(|manifest| unload_from_targets(&manifest.targets, &self.package_dir(id).ok()?.join(&manifest.module)).err());
+        let cleanup_warning = self.package_dir(id)
+            .and_then(|folder| load_manifest(&folder).map(|manifest| (folder, manifest)))
+            .and_then(|(folder, manifest)| unload_from_targets(&manifest.targets, &folder.join(&manifest.module)).map(|_| ()))
+            .err();
 
         let mut status = format!("Disabled after load failure: {reason}");
         if let Some(warning) = cleanup_warning {
