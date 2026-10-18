@@ -1,4 +1,6 @@
 import { Editor } from './editor.js';
+import { createExtensionsPage } from './extensions.js';
+import { createNativeModsPage } from './native-mods.js';
 import { BLOCKS, registerSpecs } from './blocks.js';
 
 const { invoke } = window.__TAURI__.core;
@@ -389,7 +391,7 @@ document.addEventListener('click', e => {
 // ---------- views ----------
 function show(view) {
   S.view = view;
-  for (const v of ['overview', 'automations', 'logs', 'plugins', 'editor']) $('#view-' + v).hidden = v !== view;
+  for (const v of ['overview', 'automations', 'logs', 'plugins', 'extensions', 'native-mods', 'editor']) $('#view-' + v).hidden = v !== view;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? 'automations' : view)));
   editor.setActive(view === 'editor');
   render();
@@ -399,6 +401,8 @@ function render() {
   else if (S.view === 'automations') renderAutomations();
   else if (S.view === 'logs') renderLogs();
   else if (S.view === 'plugins') renderPlugins();
+  else if (S.view === 'extensions') renderExtensions();
+  else if (S.view === 'native-mods') renderNativeMods();
   else renderDock();
 }
 document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => { if (S.view === 'editor') flushSaves(); show(b.dataset.view); }));
@@ -606,6 +610,16 @@ function htmlModal(title, html, buttons) {
     };
   });
 }
+
+const renderExtensions = createExtensionsPage({
+  invoke, esc, toast, modal, htmlModal,
+  getView: () => S.view,
+});
+
+const renderNativeMods = createNativeModsPage({
+  invoke, esc, toast, modal, htmlModal,
+  getView: () => S.view,
+});
 
 async function loadBlockSpecs() {
   try { registerSpecs((await invoke('list_block_specs')).specs); }
