@@ -2,11 +2,11 @@
 #ifndef WMOD_00047_WINDHAWK_NONHOOK_COMPAT_H
 #define WMOD_00047_WINDHAWK_NONHOOK_COMPAT_H
 
-// Source-level helpers for the subset of Windhawk APIs that do not perform
-// function hooking or symbol discovery. This is deliberately not a Windhawk
-// runtime replacement. In particular, this header does not declare or emulate
-// Wh_SetFunctionHook, Wh_RemoveFunctionHook, Wh_ApplyHookOperations,
-// Wh_FindFirstSymbol, or other hooking/symbol APIs.
+// Source-level helpers for a limited subset of Windhawk APIs that do not
+// perform function hooking. The umbrella header also includes a separate,
+// bounded DbgHelp adapter for Wh_FindFirstSymbol/NextSymbol/CloseSymbol.
+// This is deliberately not a Windhawk runtime replacement. Function-hook
+// operations and instruction disassembly are not implemented.
 
 #include "00047_mod_services.h"
 
