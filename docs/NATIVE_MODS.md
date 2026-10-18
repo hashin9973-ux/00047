@@ -40,7 +40,22 @@ A no-op C++ sample is in samples/native-mod. It writes debug output only, so it 
 
 ## Package authoring tools
 
-The repository includes a standard-library-only package builder and validator, so mod authors do not need to manually zip files together. Build the DLL with the x64 Visual Studio C++ toolchain, then run from the repository root:
+The repository includes a standard-library-only project scaffold generator, package builder, and validator. Start by generating an example project (choose an ID and name appropriate for your mod):
+
+    python tools/new_native_mod.py --id com.example.my-mod --name "My Mod" --output-dir mods
+
+The generator creates a manifest, C++ lifecycle exports, CMake configuration, and build/package instructions. It will refuse to overwrite an existing project directory. This starter DLL only logs lifecycle messages; it does not patch Windows UI.
+
+Build the generated project with the x64 Visual Studio C++ toolchain, pointing CMake to the SDK headers:
+
+    cmake -S mods/com.example.my-mod -B mods/com.example.my-mod/build -A x64 -DWMOD_SDK_DIR=C:/path/to/00047/sdk/native-mod
+    cmake --build mods/com.example.my-mod/build --config Release
+
+Build the ZIP from the repository root (replace the DLL path with the filename recorded in that generated project's manifest):
+
+    python tools/package_native_mod.py --manifest mods/com.example.my-mod/manifest.json --dll mods/com.example.my-mod/build/bin/Release/com_example_my_mod.dll --output dist/my-mod.zip
+
+Run the package builder against any manifest/DLL pair from the repository root:
 
     python tools/package_native_mod.py --manifest path/to/manifest.json --dll path/to/mod.dll --output dist/my-mod.zip
 
