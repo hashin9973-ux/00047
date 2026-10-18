@@ -36,17 +36,28 @@ inline std::atomic<int>& LifecycleState() noexcept {
         int expected = 0; \
         auto& state = ::wmod::windhawk_adapter::LifecycleState(); \
         if (!state.compare_exchange_strong(expected, 1)) return expected == 2 ? TRUE : FALSE; \
-        if (!(init_callback)()) { state.store(0); return FALSE; } \
-        (after_init_callback)(); \
-        state.store(2); \
-        return TRUE; \
+        bool init_succeeded = false; \
+        try { \
+            if (!(init_callback)()) { state.store(0); return FALSE; } \
+            init_succeeded = true; \
+            (after_init_callback)(); \
+            state.store(2); \
+            return TRUE; \
+        } catch (...) { \
+            if (init_succeeded) { \
+                try { (before_uninit_callback)(); } catch (...) {} \
+                try { (uninit_callback)(); } catch (...) {} \
+            } \
+            state.store(0); \
+            return FALSE; \
+        } \
     } \
     WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) { \
         int expected = 2; \
         auto& state = ::wmod::windhawk_adapter::LifecycleState(); \
         if (!state.compare_exchange_strong(expected, 3)) return; \
-        (before_uninit_callback)(); \
-        (uninit_callback)(); \
+        try { (before_uninit_callback)(); } catch (...) {} \
+        try { (uninit_callback)(); } catch (...) {} \
         state.store(0); \
     }
 
