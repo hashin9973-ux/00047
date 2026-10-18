@@ -382,7 +382,7 @@ fn open_blocks_folder() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn list_extensions(ext: State<'_, extensions::ExtensionManager>) -> extensions::ExtensionList {
+fn list_extensions(ext: State<'_, extensions::ExtensionManager>) -> extensions::ExtensionList {
     ext.list()
 }
 
