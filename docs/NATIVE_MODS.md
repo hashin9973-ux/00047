@@ -112,3 +112,10 @@ This engine does not yet have digital-signature trust enforcement, a stable cros
 ## Porting a Windhawk mod
 
 Use [WINDHAWK_COMPATIBILITY.md](WINDHAWK_COMPATIBILITY.md) and `tools/audit_windhawk_mod.py` to identify supported non-hook API calls, unsupported hook/symbol/disassembly calls, and lifecycle callbacks that require manual adaptation. The audit is static source analysis only and does not certify compatibility or safety.
+
+
+## Non-hook Windhawk lifecycle adapter
+
+For source ports that use only the supported non-hook API subset, `sdk/native-mod/windhawk_nonhook_adapter.h` offers an opt-in mapping from the common `Wh_ModInit`, `Wh_ModAfterInit`, `Wh_ModBeforeUninit`, and `Wh_ModUninit` callbacks to the versioned `Wmod*` ABI. See [WINDHAWK_COMPATIBILITY.md](WINDHAWK_COMPATIBILITY.md) for the contract and usage example. Windows CI builds a smoke-test DLL and verifies its version export and callback ordering.
+
+This does **not** implement Windhawk hook operations, symbol lookup, disassembly, settings-change notifications, or full runtime compatibility. Use `tools/audit_windhawk_mod.py` to find known porting blockers before compiling; review all unknown API calls manually. Never treat a successful static audit as proof that a mod is safe or behaviorally equivalent.
