@@ -1,5 +1,6 @@
 #include "windhawk_nonhook_compat.h"
 
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -128,6 +129,18 @@ int wmain() {
     CHECK(Wh_GetStringValue(L"greeting", tinyBuffer, _countof(tinyBuffer)) == 0);
     CHECK(tinyBuffer[0] == L'\0');
     CHECK(Wh_SetStringValue(L"invalid\r\nkey", L"blocked") == FALSE);
+
+    // Binary values preserve arbitrary bytes and return zero without copying
+    // if the supplied buffer is too small.
+    const BYTE binaryInput[] = {0x00, 0x01, 0x7F, 0x80, 0xFF, 0x42};
+    CHECK(Wh_SetBinaryValue(L"binaryPayload", binaryInput, sizeof(binaryInput)) == TRUE);
+    BYTE binaryOutput[sizeof(binaryInput)]{};
+    CHECK(Wh_GetBinaryValue(L"binaryPayload", binaryOutput, sizeof(binaryOutput)) == sizeof(binaryInput));
+    CHECK(std::memcmp(binaryInput, binaryOutput, sizeof(binaryInput)) == 0);
+    BYTE tinyBinary[2]{0xAA, 0xBB};
+    CHECK(Wh_GetBinaryValue(L"binaryPayload", tinyBinary, sizeof(tinyBinary)) == 0);
+    CHECK(tinyBinary[0] == 0xAA && tinyBinary[1] == 0xBB);
+    CHECK(Wh_SetBinaryValue(L"emptyBinary", binaryInput, 0) == FALSE);
 
     Wh_Log(L"non-hook compatibility smoke test: %d", 123);
     CHECK(Exists(log));
