@@ -289,9 +289,12 @@ impl NativeModManager {
 
         {
             let mut state = self.state.lock().map_err(|_| "Native mod state is unavailable.")?;
+            let was_enabled = state.enabled.contains(id);
             state.enabled.insert(id.to_string());
             if let Err(e) = self.persist_state(&state) {
-                state.enabled.remove(id);
+                if !was_enabled {
+                    state.enabled.remove(id);
+                }
                 return Err(e);
             }
         }
@@ -313,8 +316,13 @@ impl NativeModManager {
         let manifest = load_manifest(&folder)?;
         {
             let mut state = self.state.lock().map_err(|_| "Native mod state is unavailable.")?;
-            state.enabled.remove(id);
-            self.persist_state(&state)?;
+            let was_enabled = state.enabled.remove(id);
+            if let Err(e) = self.persist_state(&state) {
+                if was_enabled {
+                    state.enabled.insert(id.to_string());
+                }
+                return Err(e);
+            }
         }
 
         let dll = folder.join(&manifest.module);
@@ -532,8 +540,11 @@ fn validate_pe_bytes(data: &[u8]) -> Result<(), String> {
         if rva < headers_size { return Some(rva as usize); }
         sections.iter().find_map(|s| {
             let span = s.virtual_size.max(s.raw_size);
-            (rva >= s.virtual_address && rva < s.virtual_address.checked_add(span)?)
-                .then_some((s.raw_ptr + (rva - s.virtual_address)) as usize)
+            let end = s.virtual_address.checked_add(span)?;
+            if rva < s.virtual_address || rva >= end {
+                return None;
+            }
+            s.raw_ptr.checked_add(rva - s.virtual_address).map(|offset| offset as usize)
         })
     }
     fn c_string(data: &[u8], offset: usize) -> Option<&str> {
@@ -570,19 +581,41 @@ fn validate_pe_bytes(data: &[u8]) -> Result<(), String> {
         });
     }
     let export_off = rva_offset(export_rva, &sections, headers_size).ok_or("cannot map native DLL export directory")?;
+    let export_size = u32_at(data, optional + 116).ok_or("native DLL export directory is truncated")?;
+    let export_end = export_rva.checked_add(export_size).ok_or("native DLL export range overflows")?;
+    let function_count = u32_at(data, export_off + 20).ok_or("native DLL export directory is truncated")? as usize;
     let name_count = u32_at(data, export_off + 24).ok_or("native DLL export directory is truncated")? as usize;
+    let functions_rva = u32_at(data, export_off + 28).ok_or("native DLL export directory is truncated")?;
     let names_rva = u32_at(data, export_off + 32).ok_or("native DLL export directory is truncated")?;
+    let ordinals_rva = u32_at(data, export_off + 36).ok_or("native DLL export directory is truncated")?;
+    let functions_off = rva_offset(functions_rva, &sections, headers_size).ok_or("cannot map native DLL export functions")?;
     let names_off = rva_offset(names_rva, &sections, headers_size).ok_or("cannot map native DLL export names")?;
-    if name_count > 100_000 { return Err("native DLL export count is unreasonable".into()); }
+    let ordinals_off = rva_offset(ordinals_rva, &sections, headers_size).ok_or("cannot map native DLL export ordinals")?;
+    if name_count > 100_000 || function_count > 100_000 {
+        return Err("native DLL export count is unreasonable".into());
+    }
 
-    let mut names = HashSet::new();
+    let mut exports = HashMap::new();
     for i in 0..name_count {
         let name_rva = u32_at(data, names_off + i * 4).ok_or("native DLL export name array is truncated")?;
         let name_off = rva_offset(name_rva, &sections, headers_size).ok_or("cannot map native DLL export name")?;
-        if let Some(name) = c_string(data, name_off) { names.insert(name.to_string()); }
+        if let Some(name) = c_string(data, name_off) {
+            let ordinal = u16_at(data, ordinals_off + i * 2).ok_or("native DLL export ordinal array is truncated")? as usize;
+            if ordinal >= function_count {
+                return Err("native DLL export ordinal is out of range".into());
+            }
+            let function_rva = u32_at(data, functions_off + ordinal * 4).ok_or("native DLL export function array is truncated")?;
+            if function_rva == 0 || (function_rva >= export_rva && function_rva < export_end) {
+                return Err(format!("native DLL export '{name}' is a forwarder or has no code RVA"));
+            }
+            if rva_offset(function_rva, &sections, headers_size).is_none() {
+                return Err(format!("native DLL export '{name}' points outside the image"));
+            }
+            exports.insert(name.to_string(), function_rva);
+        }
     }
     for export in REQUIRED_EXPORTS {
-        if !names.contains(export) {
+        if !exports.contains_key(export) {
             return Err(format!("native DLL is missing required SDK export '{export}'"));
         }
     }
@@ -924,10 +957,23 @@ mod win {
         if !module.is_null() { FreeLibrary(module); }
     }
 
-    pub fn inject(pid: u32, executable: &str, module_path: &Path) -> Result<(), String> {
-        if !SUPPORTED_TARGETS.iter().any(|t| t.eq_ignore_ascii_case(executable)) {
+    fn verify_target_pid(pid: u32, requested_name: &str) -> Result<(), String> {
+        if !SUPPORTED_TARGETS.iter().any(|t| t.eq_ignore_ascii_case(requested_name)) {
             return Err("target executable is not on the native shell allow-list".into());
         }
+        let actual = processes()?.into_iter().find(|(found_pid, _)| *found_pid == pid)
+            .map(|(_, name)| name)
+            .ok_or_else(|| format!("target process {pid} has exited"))?;
+        if !actual.eq_ignore_ascii_case(requested_name)
+            || !SUPPORTED_TARGETS.iter().any(|t| t.eq_ignore_ascii_case(&actual))
+        {
+            return Err(format!("PID {pid} is no longer the expected shell process"));
+        }
+        Ok(())
+    }
+
+    pub fn inject(pid: u32, executable: &str, module_path: &Path) -> Result<(), String> {
+        verify_target_pid(pid, executable)?;
         if process_architecture(pid)? != "x64" {
             return Err("target process is not x64; only x64 native mods are supported".into());
         }
@@ -1002,9 +1048,7 @@ mod win {
     }
 
     pub fn unload(pid: u32, executable: &str, module_path: &Path) -> Result<bool, String> {
-        if !SUPPORTED_TARGETS.iter().any(|t| t.eq_ignore_ascii_case(executable)) {
-            return Err("target executable is not on the native shell allow-list".into());
-        }
+        verify_target_pid(pid, executable)?;
         let Some(module) = module_for_path(pid, module_path)? else { return Ok(false) };
         unsafe {
             let local_module = local_map_module(module_path)?;
@@ -1072,8 +1116,15 @@ mod tests {
     }
 
     #[test]
-    fn mod_manifest_requires_known_abi() {
+    fn native_pe_validator_rejects_non_pe_input() {
+        assert!(validate_pe_bytes(b"").unwrap_err().contains("MZ"));
+        assert!(validate_pe_bytes(b"MZ").unwrap_err().contains("truncated PE header"));
+    }
+
+    #[test]
+    fn native_mod_manifest_requires_the_module_file_in_package() {
         let m = manifest(vec!["explorer.exe"], "bin/mod.dll");
-        assert!(validate_manifest(&m, None).is_ok());
+        let files = HashSet::from(["manifest.json".to_string()]);
+        assert!(validate_manifest(&m, Some(&files)).unwrap_err().contains("missing from the ZIP"));
     }
 }
