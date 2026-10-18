@@ -95,6 +95,19 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         if (answer !== 'go') return;
         const status = await invoke('native_mod_disable', { id });
         toast(String(status));
+      } else if (action === 'array-add') {
+        const panel = button.closest('.native-settings-panel');
+        const field = Array.from(panel?.querySelectorAll('[data-array-setting-id]') || [])
+          .find(item => item.dataset.arraySettingId === button.dataset.arraySettingId);
+        const template = field?.querySelector('template[data-array-template]');
+        const list = field?.querySelector('.native-array-list');
+        if (!template || !list) return;
+        list.append(template.content.cloneNode(true));
+        bindActions(list);
+        return;
+      } else if (action === 'array-remove') {
+        button.closest('.native-array-item')?.remove();
+        return;
       } else if (action === 'settings') {
         await toggleSettings(button, id);
         return;
@@ -126,15 +139,41 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     if (getView() === 'native-mods') await renderNativeMods();
   }
 
+  function renderArrayItem(setting, value) {
+    const options = Array.isArray(setting.options) ? setting.options : [];
+    const isSelect = setting.dynamicSelect === true || options.length > 0;
+    let control = '';
+    if (isSelect) {
+      control = '<select data-array-item="true" data-array-item-type="select">' +
+        options.map(option => '<option value="' + esc(option.value) + '" ' +
+          (String(value) === String(option.value) ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('') +
+        '</select>';
+    } else {
+      const maxLength = setting.maxLength == null ? 1024 : setting.maxLength;
+      control = '<input type="text" data-array-item="true" data-array-item-type="string" maxlength="' +
+        esc(String(maxLength)) + '" value="' + esc(String(value == null ? '' : value)) + '">';
+    }
+    return '<div class="native-array-item">' + control +
+      '<button class="btn" type="button" data-native-action="array-remove" data-array-setting-id="' +
+      esc(setting.id) + '">Remove</button></div>';
+  }
+
   function renderSettingField(setting, value) {
     const id = esc(setting.id);
     const label = esc(setting.label);
     const description = setting.description ? '<small class="mu">' + esc(setting.description) + '</small>' : '';
     const kind = setting.type;
     let control = '';
-    if (kind === 'boolean') {
+    if (kind === 'stringArray') {
+      const items = Array.isArray(value) ? value : [];
+      const itemMarkup = items.map(item => renderArrayItem(setting, item)).join('');
+      control = '<div class="native-array-field" data-array-setting-id="' + id + '">' +
+        '<div class="native-array-list">' + itemMarkup + '</div>' +
+        '<template data-array-template>' + renderArrayItem(setting, '') + '</template>' +
+        '<button class="btn" type="button" data-native-action="array-add" data-array-setting-id="' + id + '">Add value</button></div>';
+    } else if (kind === 'boolean') {
       control = '<input type="checkbox" data-setting-id="' + id + '" data-setting-type="boolean" ' + (value === true ? 'checked' : '') + '>';
-    } else if (kind === 'select' || (kind === 'string' && setting.dynamicSelect === true)) {
+    } else if (kind === 'select' || (kind === 'string' && (setting.dynamicSelect === true || (Array.isArray(setting.options) && setting.options.length > 0)))) {
       control = '<select data-setting-id="' + id + '" data-setting-type="select">' +
         (setting.options || []).map(option => '<option value="' + esc(option.value) + '" ' + (String(value) === String(option.value) ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('') +
         '</select>';
@@ -182,6 +221,10 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       else if (kind === 'integer') values[key] = Number.parseInt(control.value, 10);
       else if (kind === 'number') values[key] = Number(control.value);
       else values[key] = control.value;
+    }
+    for (const field of panel.querySelectorAll('[data-array-setting-id]')) {
+      const key = field.dataset.arraySettingId;
+      values[key] = Array.from(field.querySelectorAll('[data-array-item]')).map(item => item.value);
     }
     if (form && !form.reportValidity()) return;
     await invoke('native_mod_settings_write', { id, values });
