@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Validate native-mod authoring tool
+      - name: Validate native-mod authoring tools
         run: python -m unittest discover -s tools/tests -v
 
       - name: Check frontend JavaScript syntax
@@ -66,15 +66,12 @@ jobs:
         shell: pwsh
         run: |
           $build = Join-Path $env:RUNNER_TEMP "00047-native-mod-build"
-          $stage = Join-Path $env:RUNNER_TEMP "00047-native-mod-package"
-          $bin = Join-Path $stage "bin"
           cmake -S samples/native-mod -B $build -A x64
           cmake --build $build --config Release
-          New-Item -ItemType Directory -Force -Path $bin | Out-Null
-          Copy-Item "samples/native-mod/manifest.json" $stage
-          Copy-Item (Join-Path $build "Release/00047_sample_native_mod.dll") $bin
+          $dll = Join-Path $build "Release/00047_sample_native_mod.dll"
           $zip = Join-Path $env:RUNNER_TEMP "00047-sample-native-mod.zip"
-          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -Force
+          python tools/package_native_mod.py --manifest samples/native-mod/manifest.json --dll $dll --output $zip
+          python tools/validate_native_mod.py $zip
           if (-not (Test-Path $zip)) { throw "Native mod sample package was not created." }
 
       - name: Install prebuilt Tauri CLI
