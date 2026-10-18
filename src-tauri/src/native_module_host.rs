@@ -254,8 +254,11 @@ impl NativeModuleManager {
             // First load: the descriptor does not yet have a sidecar manifest.
             metadata.file_name = format!("{id}.dll");
         }
-        if metadata.id != id || metadata.file_name != format!("{id}.dll") {
-            return Err("native module metadata does not match its installed filename".into());
+        if metadata.id != id || metadata.file_name != format!("{id}.dll")
+            || metadata.name != probe.name || metadata.version != probe.version
+            || metadata.description != probe.description
+        {
+            return Err("native module metadata does not match its installed DLL".into());
         }
         let metadata_bytes = serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string())?;
         fs::write(&meta_path, metadata_bytes).map_err(|e| format!("write native module metadata: {e}"))?;
