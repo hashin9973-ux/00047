@@ -162,6 +162,10 @@ impl ExtensionManager {
                     Ok(m) => m,
                     Err(e) => { errors.push(format!("{display}: {e}")); continue; }
                 };
+                if manifest.id != display {
+                    errors.push(format!("{display}: directory name does not match extension id '{}'", manifest.id));
+                    continue;
+                }
                 if let Err(e) = validate_manifest(&manifest, Some(&dir), None) {
                     errors.push(format!("{}: {e}", manifest.id));
                     continue;
