@@ -98,7 +98,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       } else if (action === 'array-add') {
         const panel = button.closest('.native-settings-panel');
         const field = Array.from(panel?.querySelectorAll('[data-array-setting-id]') || [])
-          .find(item => item.dataset.arraySettingId === button.dataset.arraySettingId);
+          .find(item => item.dataset.arraySettingId === button.dataset.arrayActionSettingId);
         const template = field?.querySelector('template[data-array-template]');
         const list = field?.querySelector('.native-array-list');
         if (!template || !list) return;
@@ -154,7 +154,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         esc(String(maxLength)) + '" value="' + esc(String(value == null ? '' : value)) + '">';
     }
     return '<div class="native-array-item">' + control +
-      '<button class="btn" type="button" data-native-action="array-remove" data-array-setting-id="' +
+      '<button class="btn" type="button" data-native-action="array-remove" data-array-action-setting-id="' +
       esc(setting.id) + '">Remove</button></div>';
   }
 
@@ -170,7 +170,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       control = '<div class="native-array-field" data-array-setting-id="' + id + '">' +
         '<div class="native-array-list">' + itemMarkup + '</div>' +
         '<template data-array-template>' + renderArrayItem(setting, '') + '</template>' +
-        '<button class="btn" type="button" data-native-action="array-add" data-array-setting-id="' + id + '">Add value</button></div>';
+        '<button class="btn" type="button" data-native-action="array-add" data-array-action-setting-id="' + id + '">Add value</button></div>';
     } else if (kind === 'boolean') {
       control = '<input type="checkbox" data-setting-id="' + id + '" data-setting-type="boolean" ' + (value === true ? 'checked' : '') + '>';
     } else if (kind === 'select' || (kind === 'string' && (setting.dynamicSelect === true || (Array.isArray(setting.options) && setting.options.length > 0)))) {
