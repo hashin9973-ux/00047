@@ -179,7 +179,7 @@ pub fn write_settings(root: &Path, id: &str, values: Value) -> Result<NativeModS
     let folder = package_directory(root, id)?;
     let settings = load_specs(&folder)?;
     let object = values.as_object().ok_or("Settings must be submitted as a JSON object")?;
-    if serde_json::to_vec(&values).map_err(|e| e.to_string())?.len() > MAX_SETTINGS_BYTES {
+    if serde_json::to_vec(&values).map_err(|e| e.to_string())?.len() > MAX_SETTINGS_BYTES as usize {
         return Err("Settings object exceeds the 256 KB limit.".into());
     }
     let allowed: HashSet<&str> = settings.iter().map(|s| s.id.as_str()).collect();
