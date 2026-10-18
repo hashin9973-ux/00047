@@ -11,6 +11,7 @@
 #include "00047_mod_services.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdarg>
 #include <cstdint>
@@ -21,6 +22,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include <winhttp.h>
 
 namespace wmod::windhawk_compat {
 
@@ -457,6 +459,38 @@ inline void Logf(PCWSTR format, ...) noexcept {
     (void)wmod::Log(L"info", buffer);
 }
 
+inline bool ValidDynamicSelectPath(PCWSTR setting_path) noexcept {
+    if (!setting_path || !*setting_path) return false;
+    size_t length = 0;
+    for (const wchar_t* p = setting_path; *p; ++p) {
+        if (++length > 64 || !((*p >= L'a' && *p <= L'z') ||
+            (*p >= L'A' && *p <= L'Z') || (*p >= L'0' && *p <= L'9') ||
+            *p == L'_' || *p == L'-' || *p == L'.')) return false;
+    }
+    return (*setting_path >= L'a' && *setting_path <= L'z') ||
+        (*setting_path >= L'A' && *setting_path <= L'Z') || *setting_path == L'_';
+}
+
+inline bool DynamicSelectStorageKey(PCWSTR setting_path, PCWSTR value,
+    std::wstring& key) noexcept {
+    key.clear();
+    if (!ValidDynamicSelectPath(setting_path) || !value) return false;
+    size_t value_length = 0;
+    for (const wchar_t* p = value; *p; ++p) {
+        if (++value_length > 100) return false;
+    }
+    try {
+        key = L"::wh_select_option::";
+        key += setting_path;
+        key += L"::";
+        key += value;
+        return ValidStorageKey(key.c_str());
+    } catch (...) {
+        key.clear();
+        return false;
+    }
+}
+
 } // namespace wmod::windhawk_compat
 
 // Windhawk-style logging syntax is source-compatible for ordinary wide-string
@@ -607,6 +641,311 @@ inline size_t Wh_GetModStoragePath(PWSTR pathBuffer, size_t bufferChars) {
         pathBuffer[0] = L'\0';
         return 0;
     }
+}
+
+// Dynamic select options are persisted in ordinary mod values using Windhawk's
+// legacy key naming scheme. Only manifest-declared dynamicSelect fields accept them.
+inline BOOL Wh_SetDynamicSelectOption(PCWSTR settingPath, PCWSTR value, PCWSTR label) {
+    if (!label) return FALSE;
+    size_t label_length = 0;
+    for (const wchar_t* p = label; *p; ++p) {
+        if (++label_length > 100 || *p == L'\r' || *p == L'\n') return FALSE;
+    }
+    std::wstring key;
+    if (!::wmod::windhawk_compat::DynamicSelectStorageKey(settingPath, value, key)) return FALSE;
+    if (!Wh_SetStringValue(key.c_str(), label)) return FALSE;
+    const auto path = ::wmod::windhawk_compat::ValuesPath();
+    // This API intentionally returns zero when flushing the profile cache, even
+    // when the flush succeeds. Do not misreport a successful write as failure.
+    if (!path.empty()) (void)WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    return TRUE;
+}
+
+inline BOOL Wh_DeleteDynamicSelectOption(PCWSTR settingPath, PCWSTR value) {
+    std::wstring key;
+    if (!::wmod::windhawk_compat::DynamicSelectStorageKey(settingPath, value, key)) return FALSE;
+    if (!Wh_DeleteValue(key.c_str())) return FALSE;
+    const auto path = ::wmod::windhawk_compat::ValuesPath();
+    if (!path.empty()) (void)WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+    return TRUE;
+}
+
+inline BOOL Wh_ClearDynamicSelectOptions(PCWSTR settingPath) {
+    if (!::wmod::windhawk_compat::ValidDynamicSelectPath(settingPath)) return FALSE;
+    try {
+        const auto path = ::wmod::windhawk_compat::ValuesPath();
+        if (path.empty()) return FALSE;
+        std::error_code pathError;
+        const auto fileStatus = std::filesystem::symlink_status(path, pathError);
+        if (pathError == std::errc::no_such_file_or_directory ||
+            (!pathError && fileStatus.type() == std::filesystem::file_type::not_found)) return TRUE;
+        if (pathError || std::filesystem::is_symlink(fileStatus) ||
+            !std::filesystem::is_regular_file(fileStatus)) return FALSE;
+        const std::wstring prefix = std::wstring(L"::wh_select_option::") + settingPath + L"::";
+        std::vector<wchar_t> section(32768, L'\0');
+        const DWORD copied = GetPrivateProfileSectionW(
+            L"values", section.data(), static_cast<DWORD>(section.size()), path.c_str());
+        if (copied >= section.size() - 2) return FALSE;
+
+        std::vector<std::wstring> keys;
+        size_t offset = 0;
+        while (offset < copied) {
+            const wchar_t* entry = section.data() + offset;
+            const size_t length = std::wcslen(entry);
+            if (length == 0) break;
+            const wchar_t* equals = std::wcschr(entry, L'=');
+            if (equals) {
+                const std::wstring_view key(entry, static_cast<size_t>(equals - entry));
+                if (key.size() >= prefix.size() && key.substr(0, prefix.size()) == prefix)
+                    keys.emplace_back(key);
+            }
+            offset += length + 1;
+        }
+
+        if (keys.empty()) return TRUE;
+        BOOL ok = TRUE;
+        for (const auto& key : keys) {
+            if (!Wh_DeleteValue(key.c_str())) ok = FALSE;
+        }
+        // WritePrivateProfileStringW returns zero for the documented cache-flush
+        // operation; the return value is not an error signal in this case.
+        (void)WritePrivateProfileStringW(nullptr, nullptr, nullptr, path.c_str());
+        return ok;
+    } catch (...) {
+        return FALSE;
+    }
+}
+
+#ifndef WMOD_00047_WINDHAWK_URL_CONTENT_TYPES
+#define WMOD_00047_WINDHAWK_URL_CONTENT_TYPES
+struct WH_GET_URL_CONTENT_OPTIONS {
+    size_t optionsSize;
+    PCWSTR targetFilePath;
+};
+
+struct WH_URL_CONTENT {
+    const char* data;
+    size_t length;
+    int statusCode;
+};
+#endif
+
+namespace wmod::windhawk_compat {
+inline constexpr size_t kMaxUrlChars = 8192;
+inline constexpr size_t kMaxUrlResponseBytes = 8 * 1024 * 1024;
+inline constexpr ULONGLONG kMaxUrlRequestMs = 30000;
+
+inline void CloseWinHttp(HINTERNET& handle) noexcept {
+    if (handle) {
+        WinHttpCloseHandle(handle);
+        handle = nullptr;
+    }
+}
+
+inline bool WriteUrlContentFile(PCWSTR target, const std::string& content) noexcept {
+    if (!target || !*target) return false;
+    size_t path_length = 0;
+    for (const wchar_t* p = target; *p; ++p) {
+        if (++path_length > 32000) return false;
+    }
+    try {
+        static std::atomic<unsigned long long> sequence{0};
+        std::wstring temporary(target);
+        temporary += L".00047-";
+        temporary += std::to_wstring(GetCurrentProcessId());
+        temporary += L"-";
+        temporary += std::to_wstring(GetTickCount64());
+        temporary += L"-";
+        temporary += std::to_wstring(sequence.fetch_add(1, std::memory_order_relaxed));
+        temporary += L".tmp";
+        if (temporary.size() >= 32760) return false;
+
+        HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+
+        size_t offset = 0;
+        bool ok = true;
+        while (offset < content.size()) {
+            DWORD written = 0;
+            const DWORD requested = static_cast<DWORD>(
+                (content.size() - offset) > (1u << 20) ? (1u << 20) : (content.size() - offset));
+            if (!WriteFile(file, content.data() + offset, requested, &written, nullptr) ||
+                written == 0) {
+                ok = false;
+                break;
+            }
+            offset += written;
+        }
+        if (ok && !FlushFileBuffers(file)) ok = false;
+        CloseHandle(file);
+        if (!ok || offset != content.size()) {
+            DeleteFileW(temporary.c_str());
+            return false;
+        }
+        if (!MoveFileExW(temporary.c_str(), target,
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DeleteFileW(temporary.c_str());
+            return false;
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline const WH_URL_CONTENT* GetUrlContent(PCWSTR url,
+    const WH_GET_URL_CONTENT_OPTIONS* options) noexcept {
+    if (options && options->optionsSize != sizeof(WH_GET_URL_CONTENT_OPTIONS)) return nullptr;
+    if (options && options->targetFilePath && !*options->targetFilePath) return nullptr;
+    if (options && options->targetFilePath) {
+        size_t path_length = 0;
+        for (const wchar_t* p = options->targetFilePath; *p; ++p) {
+            if (++path_length > 32000) return nullptr;
+        }
+    }
+    if (!url || !*url) return nullptr;
+    size_t url_length = 0;
+    for (const wchar_t* p = url; *p; ++p) {
+        if (++url_length > kMaxUrlChars) return nullptr;
+    }
+
+    HINTERNET session = nullptr, connection = nullptr, request = nullptr;
+    auto cleanup = [&]() {
+        CloseWinHttp(request);
+        CloseWinHttp(connection);
+        CloseWinHttp(session);
+    };
+
+    try {
+        wchar_t scheme[16]{}, host[512]{}, user[512]{}, password[512]{};
+        wchar_t url_path[kMaxUrlChars + 1]{}, extra[kMaxUrlChars + 1]{};
+        URL_COMPONENTS parts{};
+        parts.dwStructSize = sizeof(parts);
+        parts.lpszScheme = scheme; parts.dwSchemeLength = _countof(scheme);
+        parts.lpszHostName = host; parts.dwHostNameLength = _countof(host);
+        parts.lpszUserName = user; parts.dwUserNameLength = _countof(user);
+        parts.lpszPassword = password; parts.dwPasswordLength = _countof(password);
+        parts.lpszUrlPath = url_path; parts.dwUrlPathLength = _countof(url_path);
+        parts.lpszExtraInfo = extra; parts.dwExtraInfoLength = _countof(extra);
+        if (!WinHttpCrackUrl(url, 0, 0, &parts) || parts.dwHostNameLength == 0 ||
+            parts.dwHostNameLength >= _countof(host) || parts.dwUrlPathLength >= _countof(url_path) ||
+            parts.dwExtraInfoLength >= _countof(extra) || parts.dwUserNameLength != 0 ||
+            parts.dwPasswordLength != 0 ||
+            (parts.nScheme != INTERNET_SCHEME_HTTP && parts.nScheme != INTERNET_SCHEME_HTTPS)) {
+            cleanup();
+            return nullptr;
+        }
+
+        std::wstring request_path;
+        if (parts.dwUrlPathLength == 0) request_path = L"/";
+        else request_path.assign(url_path, parts.dwUrlPathLength);
+        if (parts.dwExtraInfoLength > 0) {
+            std::wstring query(extra, parts.dwExtraInfoLength);
+            const auto fragment = query.find(L'#');
+            if (fragment != std::wstring::npos) query.resize(fragment);
+            request_path += query;
+        }
+        if (request_path.empty() || request_path.front() != L'/') {
+            cleanup();
+            return nullptr;
+        }
+
+        session = WinHttpOpen(L"00047 Native Mod SDK/1.0",
+            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
+            WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session || !WinHttpSetTimeouts(session, 5000, 5000, 10000, 10000)) {
+            cleanup();
+            return nullptr;
+        }
+        connection = WinHttpConnect(session, host, parts.nPort, 0);
+        if (!connection) {
+            cleanup();
+            return nullptr;
+        }
+        request = WinHttpOpenRequest(connection, L"GET", request_path.c_str(), nullptr,
+            WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+            parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
+        if (!request || !WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                WINHTTP_NO_REQUEST_DATA, 0, 0, 0) || !WinHttpReceiveResponse(request, nullptr)) {
+            cleanup();
+            return nullptr;
+        }
+
+        DWORD status_code = 0;
+        DWORD status_size = sizeof(status_code);
+        if (!WinHttpQueryHeaders(request,
+                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                WINHTTP_HEADER_NAME_BY_INDEX, &status_code, &status_size, WINHTTP_NO_HEADER_INDEX)) {
+            cleanup();
+            return nullptr;
+        }
+
+        std::string content;
+        content.reserve(16 * 1024);
+        const ULONGLONG started = GetTickCount64();
+        for (;;) {
+            if (GetTickCount64() - started > kMaxUrlRequestMs) {
+                cleanup();
+                return nullptr;
+            }
+            DWORD available = 0;
+            if (!WinHttpQueryDataAvailable(request, &available)) {
+                cleanup();
+                return nullptr;
+            }
+            if (available == 0) break;
+            if (available > kMaxUrlResponseBytes ||
+                content.size() > kMaxUrlResponseBytes - available) {
+                cleanup();
+                return nullptr;
+            }
+            std::vector<char> chunk(std::min<DWORD>(available, 64 * 1024));
+            DWORD read = 0;
+            if (!WinHttpReadData(request, chunk.data(), static_cast<DWORD>(chunk.size()), &read)) {
+                cleanup();
+                return nullptr;
+            }
+            if (read == 0) break;
+            content.append(chunk.data(), read);
+        }
+        cleanup();
+
+        const char* data = nullptr;
+        if (options && options->targetFilePath) {
+            if (!WriteUrlContentFile(options->targetFilePath, content)) return nullptr;
+        } else {
+            auto* allocated = new (std::nothrow) char[content.size() + 1];
+            if (!allocated) return nullptr;
+            if (!content.empty()) std::copy(content.begin(), content.end(), allocated);
+            allocated[content.size()] = '\0';
+            data = allocated;
+        }
+        auto* result = new (std::nothrow) WH_URL_CONTENT{
+            data, content.size(), static_cast<int>(status_code)};
+        if (!result) {
+            delete[] const_cast<char*>(data);
+            return nullptr;
+        }
+        return result;
+    } catch (...) {
+        cleanup();
+        return nullptr;
+    }
+}
+} // namespace wmod::windhawk_compat
+
+// Performs a bounded GET request to an HTTP(S) URL. The returned structure and
+// any in-memory data remain owned by the caller until Wh_FreeUrlContent.
+inline const WH_URL_CONTENT* Wh_GetUrlContent(PCWSTR url,
+    const WH_GET_URL_CONTENT_OPTIONS* options) {
+    return ::wmod::windhawk_compat::GetUrlContent(url, options);
+}
+
+inline void Wh_FreeUrlContent(const WH_URL_CONTENT* content) {
+    if (!content) return;
+    delete[] const_cast<char*>(content->data);
+    delete content;
 }
 
 #endif // WMOD_00047_WINDHAWK_NONHOOK_COMPAT_H

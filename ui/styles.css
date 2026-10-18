@@ -341,6 +341,7 @@ textarea.glass.liquidglass-variant {
 .native-settings-panel,.native-log-panel{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .native-settings-panel h4,.native-log-panel h4{margin:0 0 12px;font-size:13px}
 .native-settings-form{display:flex;flex-direction:column;gap:12px}
+.native-array-field{display:flex;flex-direction:column;gap:8px;min-width:0}.native-array-list{display:flex;flex-direction:column;gap:6px}.native-array-item{display:flex;align-items:center;gap:6px;min-width:0}.native-array-item select,.native-array-item input{box-sizing:border-box;flex:1;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;color:var(--tx);background:var(--bg)}.native-array-item .btn{flex:none;padding:7px 9px;font-size:11px}
 .native-setting-field{display:grid;grid-template-columns:minmax(140px,1fr) minmax(140px,1.3fr);align-items:center;gap:12px;font-size:12px}
 .native-setting-field>span{display:flex;flex-direction:column;gap:4px}
 .native-setting-field input[type=text],.native-setting-field input[type=number],.native-setting-field select{box-sizing:border-box;width:100%;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:8px;color:var(--tx);background:var(--bg)}

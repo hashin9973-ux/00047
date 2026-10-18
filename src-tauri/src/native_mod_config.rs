@@ -28,6 +28,7 @@ pub struct SettingSpec {
     #[serde(default)] pub max: Option<f64>,
     #[serde(default)] pub step: Option<f64>,
     #[serde(default)] pub max_length: Option<usize>,
+    #[serde(default)] pub dynamic_select: bool,
     #[serde(default)] pub options: Vec<SettingOption>,
 }
 
@@ -75,10 +76,108 @@ fn load_specs(folder: &Path) -> Result<Vec<SettingSpec>, String> {
     let manifest: Value = serde_json::from_str(content.trim_start_matches('\u{feff}'))
         .map_err(|e| format!("Invalid native mod manifest: {e}"))?;
     let raw = manifest.get("settings").cloned().unwrap_or_else(|| Value::Array(Vec::new()));
-    let specs: Vec<SettingSpec> = serde_json::from_value(raw)
+    let mut specs: Vec<SettingSpec> = serde_json::from_value(raw)
         .map_err(|e| format!("Invalid native mod settings schema: {e}"))?;
+    merge_dynamic_select_options(folder, &mut specs)?;
     validate_specs(&specs)?;
     Ok(specs)
+}
+
+fn read_profile_text(path: &Path) -> Result<Option<String>, String> {
+    let meta = match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("Cannot inspect native mod values file: {e}")),
+        Ok(meta) => meta,
+    };
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > 512 * 1024 {
+        return Err("wh_values.ini must be a regular file no larger than 512 KB.".into());
+    }
+    let bytes = fs::read(path).map_err(|e| format!("Cannot read native mod values file: {e}"))?;
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        let units = bytes[2..].chunks_exact(2)
+            .map(|p| u16::from_le_bytes([p[0], p[1]])).collect::<Vec<_>>();
+        return Ok(Some(String::from_utf16_lossy(&units)));
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        let units = bytes[2..].chunks_exact(2)
+            .map(|p| u16::from_be_bytes([p[0], p[1]])).collect::<Vec<_>>();
+        return Ok(Some(String::from_utf16_lossy(&units)));
+    }
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+    Ok(Some(String::from_utf8_lossy(bytes).into_owned()))
+}
+
+fn dynamic_select_entries(folder: &Path) -> Result<Vec<(String, String, String)>, String> {
+    let Some(content) = read_profile_text(&folder.join("wh_values.ini"))? else {
+        return Ok(Vec::new());
+    };
+    let mut in_values = false;
+    let mut entries = Vec::new();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            in_values = line[1..line.len() - 1].trim().eq_ignore_ascii_case("values");
+            continue;
+        }
+        if !in_values {
+            continue;
+        }
+        let Some((key, label)) = line.split_once('=') else {
+            continue;
+        };
+        let Some(suffix) = key.strip_prefix("::wh_select_option::") else {
+            continue;
+        };
+        let Some((setting_path, value)) = suffix.split_once("::") else {
+            continue;
+        };
+        if !valid_setting_key(setting_path) || value.chars().count() > 100
+            || label.chars().count() > 100 {
+            continue;
+        }
+        entries.push((setting_path.to_owned(), value.to_owned(), label.to_owned()));
+    }
+    Ok(entries)
+}
+
+fn merge_dynamic_select_options(folder: &Path, specs: &mut [SettingSpec]) -> Result<(), String> {
+    let entries = dynamic_select_entries(folder)?;
+    for (setting_path, value, label) in entries {
+        let Some(spec) = specs.iter_mut().find(|s| {
+            s.id == setting_path && s.dynamic_select && matches!(s.kind.as_str(), "select" | "string" | "stringArray")
+        }) else {
+            continue;
+        };
+        if let Some(existing) = spec.options.iter_mut().find(|o| o.value == value) {
+            existing.label = label;
+        } else if spec.options.len() < MAX_OPTIONS {
+            spec.options.push(SettingOption { value, label });
+        }
+    }
+    Ok(())
+}
+
+fn append_stored_dynamic_select_values(specs: &mut [SettingSpec], values: &HashMap<String, Value>) {
+    for spec in specs.iter_mut().filter(|s| s.dynamic_select && matches!(s.kind.as_str(), "select" | "string" | "stringArray")) {
+        let selected_values: Vec<String> = match (spec.kind.as_str(), values.get(&spec.id)) {
+            ("stringArray", Some(Value::Array(items))) => items.iter()
+                .filter_map(Value::as_str)
+                .filter(|value| value.chars().count() <= 100)
+                .map(str::to_owned)
+                .collect(),
+            (_, Some(Value::String(value))) if value.chars().count() <= 100 => vec![value.clone()],
+            _ => Vec::new(),
+        };
+        for selected in selected_values {
+            if spec.options.iter().any(|o| o.value == selected) || spec.options.len() >= MAX_OPTIONS {
+                continue;
+            }
+            spec.options.push(SettingOption { value: selected.clone(), label: selected });
+        }
+    }
 }
 
 fn validate_specs(specs: &[SettingSpec]) -> Result<(), String> {
@@ -93,17 +192,24 @@ fn validate_specs(specs: &[SettingSpec]) -> Result<(), String> {
         if s.step.is_some_and(|n| !n.is_finite() || n <= 0.0) { return Err(format!("Setting '{}': step must be positive and finite.", s.id)); }
         if s.max_length.is_some_and(|n| n > MAX_SETTING_TEXT) { return Err(format!("Setting '{}': maxLength may not exceed {MAX_SETTING_TEXT}.", s.id)); }
         if s.options.len() > MAX_OPTIONS { return Err(format!("Setting '{}': too many select options.", s.id)); }
-        if s.kind == "select" {
-            if s.options.is_empty() { return Err(format!("Setting '{}': select settings need options.", s.id)); }
+        if s.dynamic_select && !matches!(s.kind.as_str(), "select" | "string" | "stringArray") {
+            return Err(format!("Setting '{}': dynamicSelect is only valid for string, stringArray, or select settings.", s.id));
+        }
+        let has_select_options = s.kind == "select"
+            || (matches!(s.kind.as_str(), "string" | "stringArray") && (s.dynamic_select || !s.options.is_empty()));
+        if has_select_options {
+            if s.options.is_empty() && !s.dynamic_select {
+                return Err(format!("Setting '{}': select settings need options or dynamicSelect:true.", s.id));
+            }
             let mut choices = HashSet::new();
             for o in &s.options {
-                if o.value.is_empty() || o.value.len() > 100 || o.label.trim().is_empty()
-                    || o.label.chars().count() > 100 || !choices.insert(o.value.clone()) {
-                    return Err(format!("Setting '{}': select options must have unique values and non-empty labels.", s.id));
+                if o.value.len() > 100 || o.label.trim().is_empty() || o.label.chars().count() > 100
+                    || !choices.insert(o.value.clone()) {
+                    return Err(format!("Setting '{}': select option values must be unique and values/labels may not exceed 100 characters.", s.id));
                 }
             }
         } else if !s.options.is_empty() {
-            return Err(format!("Setting '{}': options are only valid for select settings.", s.id));
+            return Err(format!("Setting '{}': options are only valid for select, stringArray, or dynamic-select string settings.", s.id));
         }
         validate_value(s, &s.default).map_err(|e| format!("Setting '{}': invalid default value: {e}", s.id))?;
     }
@@ -115,9 +221,31 @@ fn validate_value(s: &SettingSpec, v: &Value) -> Result<(), String> {
         "boolean" => if !v.is_boolean() { return Err("expected true or false".into()); },
         "string" => {
             let text = v.as_str().ok_or("expected text")?;
-            let max = s.max_length.unwrap_or(1024);
-            if text.chars().count() > max { return Err(format!("text exceeds {max} characters")); }
+            if s.dynamic_select {
+                if text.chars().count() > 100 { return Err("dynamic select value exceeds 100 characters".into()); }
+            } else {
+                let max = s.max_length.unwrap_or(1024);
+                if text.chars().count() > max { return Err(format!("text exceeds {max} characters")); }
+                if !s.options.is_empty() && !s.options.iter().any(|option| option.value == text) {
+                    return Err("value is not one of the declared options".into());
+                }
+            }
         }
+        "stringArray" => {
+            let items = v.as_array().ok_or("expected an array of strings")?;
+            let max = if s.dynamic_select { 100 } else { s.max_length.unwrap_or(1024) };
+            for item in items {
+                let text = item.as_str().ok_or("array values must be strings")?;
+                if text.chars().count() > max {
+                    return Err(format!("array value exceeds {max} characters"));
+                }
+                if !s.dynamic_select && !s.options.is_empty()
+                    && !s.options.iter().any(|option| option.value == text) {
+                    return Err("array value is not one of the declared options".into());
+                }
+            }
+        }
+
         "integer" => {
             let n = v.as_i64().ok_or("expected an integer")? as f64;
             validate_number(s, n)?;
@@ -129,7 +257,11 @@ fn validate_value(s: &SettingSpec, v: &Value) -> Result<(), String> {
         }
         "select" => {
             let selected = v.as_str().ok_or("expected an option value")?;
-            if !s.options.iter().any(|o| o.value == selected) { return Err("value is not one of the declared options".into()); }
+            if s.dynamic_select {
+                if selected.chars().count() > 100 { return Err("dynamic select value exceeds 100 characters".into()); }
+            } else if !s.options.iter().any(|o| o.value == selected) {
+                return Err("value is not one of the declared options".into());
+            }
         }
         other => return Err(format!("unsupported setting type '{other}'")),
     }
@@ -170,14 +302,17 @@ fn stored_values(folder: &Path, specs: &[SettingSpec]) -> Result<HashMap<String,
 
 pub fn read_settings(root: &Path, id: &str) -> Result<NativeModSettings, String> {
     let folder = package_directory(root, id)?;
-    let settings = load_specs(&folder)?;
+    let mut settings = load_specs(&folder)?;
     let values = stored_values(&folder, &settings)?;
+    append_stored_dynamic_select_values(&mut settings, &values);
     Ok(NativeModSettings { id: id.into(), settings, values })
 }
 
 pub fn write_settings(root: &Path, id: &str, values: Value) -> Result<NativeModSettings, String> {
     let folder = package_directory(root, id)?;
-    let settings = load_specs(&folder)?;
+    let mut settings = load_specs(&folder)?;
+    let previously_stored = stored_values(&folder, &settings)?;
+    append_stored_dynamic_select_values(&mut settings, &previously_stored);
     let object = values.as_object().ok_or("Settings must be submitted as a JSON object")?;
     if serde_json::to_vec(&values).map_err(|e| e.to_string())?.len() > MAX_SETTINGS_BYTES as usize {
         return Err("Settings object exceeds the 256 KB limit.".into());
@@ -196,6 +331,7 @@ pub fn write_settings(root: &Path, id: &str, values: Value) -> Result<NativeModS
     }
     fs::write(&path, serde_json::to_vec_pretty(&checked).map_err(|e| e.to_string())?)
         .map_err(|e| format!("Cannot save settings.json: {e}"))?;
+    append_stored_dynamic_select_values(&mut settings, &checked);
     Ok(NativeModSettings { id: id.into(), settings, values: checked })
 }
 
@@ -232,6 +368,106 @@ mod tests {
           {"id":"style","label":"Style","type":"select","default":"mica","options":[{"value":"mica","label":"Mica"},{"value":"acrylic","label":"Acrylic"}]},
           {"id":"label","label":"Label","type":"string","default":"Example","maxLength":40}
         ]"#).unwrap()
+    }
+
+    #[test]
+    fn dynamic_select_options_merge_static_labels_and_keep_disconnected_selection() {
+        let temp = TestRoot::new();
+        let package = temp.path.join("packages").join("com.example.test-mod");
+
+        let manifest_path = package.join("manifest.json");
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["settings"].as_array_mut().unwrap().push(serde_json::json!({
+            "id": "device",
+            "label": "Device",
+            "type": "string",
+            "dynamicSelect": true,
+            "default": "",
+            "options": [{ "value": "static", "label": "Static" }]
+        }));
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        fs::write(package.join("wh_values.ini"),
+            "[values]\n::wh_select_option::device::speaker=Speakers\n::wh_select_option::device::static=Runtime static label\n::wh_select_option::other::ignored=Ignore me\n"
+        ).unwrap();
+        fs::write(package.join("settings.json"), serde_json::to_vec(&serde_json::json!({
+            "device": "offline-device"
+        })).unwrap()).unwrap();
+
+        let result = read_settings(&temp.path, "com.example.test-mod").unwrap();
+        let spec = result.settings.iter().find(|s| s.id == "device").unwrap();
+        assert!(spec.dynamic_select);
+        assert_eq!(spec.options.iter().find(|o| o.value == "static").unwrap().label, "Runtime static label");
+        assert_eq!(spec.options.iter().find(|o| o.value == "speaker").unwrap().label, "Speakers");
+        assert_eq!(spec.options.iter().find(|o| o.value == "offline-device").unwrap().label, "offline-device");
+        assert_eq!(result.values.get("device"), Some(&Value::String("offline-device".into())));
+
+        let mut updated = result.values.clone();
+        updated.insert("device".into(), Value::String("speaker".into()));
+        let saved = write_settings(&temp.path, "com.example.test-mod", serde_json::to_value(updated).unwrap()).unwrap();
+        assert_eq!(saved.values.get("device"), Some(&Value::String("speaker".into())));
+        let reread = read_settings(&temp.path, "com.example.test-mod").unwrap();
+        assert_eq!(reread.values.get("device"), Some(&Value::String("speaker".into())));
+    }
+
+    #[test]
+    fn dynamic_select_string_array_merges_runtime_options_and_preserves_selected_values() {
+        let temp = TestRoot::new();
+        let package = temp.path.join("packages").join("com.example.test-mod");
+        let manifest_path = package.join("manifest.json");
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["settings"].as_array_mut().unwrap().push(serde_json::json!({
+            "id": "devices",
+            "label": "Devices",
+            "type": "stringArray",
+            "dynamicSelect": true,
+            "default": ["speaker"],
+            "options": [{ "value": "default", "label": "Default device" }]
+        }));
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+        fs::write(package.join("wh_values.ini"),
+            "[values]\n::wh_select_option::devices::speaker=Speakers\n::wh_select_option::devices::hdmi=HDMI output\n"
+        ).unwrap();
+        fs::write(package.join("settings.json"), serde_json::to_vec(&serde_json::json!({
+            "devices": ["unplugged"]
+        })).unwrap()).unwrap();
+
+        let result = read_settings(&temp.path, "com.example.test-mod").unwrap();
+        let spec = result.settings.iter().find(|s| s.id == "devices").unwrap();
+        assert_eq!(spec.options.iter().find(|o| o.value == "speaker").unwrap().label, "Speakers");
+        assert_eq!(spec.options.iter().find(|o| o.value == "hdmi").unwrap().label, "HDMI output");
+        assert_eq!(spec.options.iter().find(|o| o.value == "unplugged").unwrap().label, "unplugged");
+        assert_eq!(result.values.get("devices"), Some(&serde_json::json!(["unplugged"])));
+
+        let mut updated = result.values.clone();
+        updated.insert("devices".into(), serde_json::json!(["speaker", "hdmi"]));
+        let saved = write_settings(&temp.path, "com.example.test-mod", serde_json::to_value(updated).unwrap()).unwrap();
+        assert_eq!(saved.values.get("devices"), Some(&serde_json::json!(["speaker", "hdmi"])));
+    }
+
+    #[test]
+    fn dynamic_select_reader_accepts_utf16_windows_ini_files() {
+        let temp = TestRoot::new();
+        let package = temp.path.join("packages").join("com.example.test-mod");
+        let text = "[values]\n::wh_select_option::device::speaker=Speakers\n";
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        fs::write(package.join("wh_values.ini"), bytes).unwrap();
+        let entries = dynamic_select_entries(&package).unwrap();
+        assert_eq!(entries, vec![("device".into(), "speaker".into(), "Speakers".into())]);
+    }
+
+    #[test]
+    fn dynamic_select_schema_can_start_without_options() {
+        let spec: SettingSpec = serde_json::from_value(serde_json::json!({
+            "id": "device",
+            "label": "Device",
+            "type": "string",
+            "dynamicSelect": true,
+            "default": ""
+        })).unwrap();
+        assert!(validate_specs(&[spec]).is_ok());
     }
 
     #[test]
