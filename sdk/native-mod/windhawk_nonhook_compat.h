@@ -706,7 +706,8 @@ inline BOOL Wh_ClearDynamicSelectOptions(PCWSTR settingPath) {
         if (path.empty()) return FALSE;
         std::error_code pathError;
         const auto fileStatus = std::filesystem::symlink_status(path, pathError);
-        if (pathError == std::errc::no_such_file_or_directory) return TRUE;
+        if (pathError == std::errc::no_such_file_or_directory ||
+            (!pathError && fileStatus.type() == std::filesystem::file_type::not_found)) return TRUE;
         if (pathError || std::filesystem::is_symlink(fileStatus) ||
             !std::filesystem::is_regular_file(fileStatus)) return FALSE;
         const std::wstring prefix = std::wstring(L"::wh_select_option::") + settingPath + L"::";
