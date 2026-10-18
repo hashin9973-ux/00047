@@ -572,6 +572,17 @@ async function bindEvents() {
     clearTimeout(extensionRefreshTimer);
     extensionRefreshTimer = setTimeout(() => refreshPluginLists(), 200);
   });
+  await listen('native-module-log', e => {
+    const item = e.payload;
+    extensionOutput.push({ ...item, stream: 'native/' + (item.level || 'info') });
+    if (extensionOutput.length > 1000) extensionOutput.splice(0, extensionOutput.length - 1000);
+    if (S.view === 'plugins') fillExtensionOutput();
+  });
+  await listen('native-module-state', () => {
+    if (S.view !== 'plugins') return;
+    clearTimeout(extensionRefreshTimer);
+    extensionRefreshTimer = setTimeout(() => refreshPluginLists(), 200);
+  });
   await listen('close-requested', async () => {
     if (!$('#modal').hidden) return;
     const c = await modal({
@@ -804,6 +815,48 @@ async function refreshPluginLists() {
     if (nativeCount) nativeCount.textContent = 'Unavailable';
     const nativeItems = $('#native-module-items');
     if (nativeItems) nativeItems.innerHTML = `<p class="er">Could not load native modules: ${esc(e)}</p>`;
+  }
+}
+
+async function loadNativeModule() {
+  const c = await modal({
+    title: 'Load an in-process native DLL?',
+    body: 'This loads native machine code directly into the 00047 process. DLL initialization code can execute before the module metadata is shown. A faulty or hostile module can crash or corrupt 00047 and can use your account permissions. Only continue with a DLL whose source you trust.',
+    buttons: [['cancel', 'Cancel'], ['go', 'Choose DLL and load', 'danger']]
+  });
+  if (c !== 'go') return;
+  try {
+    const status = await invoke('native_module_load');
+    toast(`Loaded native module: ${status.name}`);
+    await refreshPluginLists();
+  } catch (e) {
+    const message = String(e?.message || e);
+    if (!message.toLowerCase().includes('cancel')) toast('Native module load failed: ' + message, 'err');
+    await refreshPluginLists();
+  }
+}
+
+async function runNativeModuleAction(action, id) {
+  if (!id) return;
+  try {
+    if (action === 'uninstall') {
+      const c = await modal({
+        title: 'Uninstall native module?',
+        body: `Remove "${id}" from the managed native-module folder? Its stop callback will run first if the module is loaded. This does not undo changes the module made outside 00047 if its stop callback does not restore them.`,
+        buttons: [['cancel', 'Cancel'], ['go', 'Uninstall', 'danger']]
+      });
+      if (c !== 'go') return;
+      await invoke('native_module_uninstall', { id });
+    } else if (action === 'start') {
+      await invoke('native_module_start', { id });
+    } else if (action === 'unload') {
+      await invoke('native_module_unload', { id });
+    }
+    await refreshPluginLists();
+    if (action !== 'uninstall') toast(`Native module ${action === 'start' ? 'loaded' : 'unloaded'}`);
+  } catch (e) {
+    toast(`Native module ${action} failed: ` + String(e?.message || e), 'err');
+    await refreshPluginLists();
   }
 }
 
