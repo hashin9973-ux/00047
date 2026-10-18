@@ -38,6 +38,41 @@ Include sdk/native-mod/00047_mod_api.h when building a native x64 DLL. The exact
 
 A no-op C++ sample is in samples/native-mod. It writes debug output only, so it is safe as a loader-lifecycle example without modifying the desktop.
 
+## Package authoring tools
+
+The repository includes a standard-library-only project scaffold generator, package builder, and validator. Start by generating an example project (choose an ID and name appropriate for your mod):
+
+    python tools/new_native_mod.py --id com.example.my-mod --name "My Mod" --output-dir mods
+
+The generator creates a manifest, C++ lifecycle exports, CMake configuration, and build/package instructions. It will refuse to overwrite an existing project directory. This starter DLL only logs lifecycle messages; it does not patch Windows UI.
+
+Build the generated project with the x64 Visual Studio C++ toolchain, pointing CMake to the SDK headers:
+
+    cmake -S mods/com.example.my-mod -B mods/com.example.my-mod/build -A x64 -DWMOD_SDK_DIR=C:/path/to/00047/sdk/native-mod
+    cmake --build mods/com.example.my-mod/build --config Release
+
+Build the ZIP from the repository root (replace the DLL path with the filename recorded in that generated project's manifest):
+
+    python tools/package_native_mod.py --manifest mods/com.example.my-mod/manifest.json --dll mods/com.example.my-mod/build/bin/Release/com_example_my_mod.dll --output dist/my-mod.zip
+
+Run the package builder against any manifest/DLL pair from the repository root:
+
+    python tools/package_native_mod.py --manifest path/to/manifest.json --dll path/to/mod.dll --output dist/my-mod.zip
+
+The builder puts the manifest at the ZIP root and places the DLL at the exact path specified by manifest.module. It writes a deterministic archive and validates it before replacing the requested output file. The same manifest and DLL inputs should produce byte-identical ZIPs with the same Python version.
+
+Validate a package independently at any time:
+
+    python tools/validate_native_mod.py dist/my-mod.zip
+
+Validation checks archive and decompression limits, path traversal, case-collisions, Windows-reserved names and file/directory conflicts, symbolic links and encryption, manifest fields, allowed target process names, the x64 PE32+ machine type, export-table bounds and the three required lifecycle exports. All archive entries are read to verify their CRCs. Invalid packages fail before an output package is committed.
+
+The author tools do not replace the application's independent validation at installation time, and they do not provide a security sandbox or certify that a DLL is safe. They confirm the package structure and ABI prerequisites only. Regression tests include a synthetic PE32+ export-table fixture, invalid package cases, and deterministic packaging:
+
+    python -m unittest discover -s tools/tests -v
+
+Windows CI runs those tests and builds/validates the real no-op sample package.
+
 ## Settings and logs
 
 A mod may declare an optional `settings` array in `manifest.json`. Each setting has a unique `id`, a `label`, a `type`, and a `default`. Supported types are `boolean`, `string`, `integer`, `number`, and `select`. Numeric settings can declare `min`, `max`, and `step`; string settings can declare `maxLength`; select settings declare `options` with unique `value` and `label` properties.
