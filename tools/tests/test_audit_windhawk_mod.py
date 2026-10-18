@@ -73,6 +73,12 @@ class WindhawkAuditTests(unittest.TestCase):
         report = audit_text("mod.cpp", "void Wh_ModSettingsChanged() {}")
         self.assertEqual(report[0]["category"], "adapter-available-lifecycle")
 
+    def test_settings_changed_reload_variant_is_blocked(self):
+        report = audit_text("mod.cpp", "BOOL Wh_ModSettingsChanged(BOOL* bReload) { *bReload = TRUE; return TRUE; }")
+        finding = next(item for item in report if item["name"] == "Wh_ModSettingsChanged")
+        self.assertEqual(finding["category"], "unsupported")
+        self.assertIn("reload/unload protocol is not implemented", finding["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()
