@@ -416,7 +416,7 @@ impl ExtensionManager {
         record.cancel = None;
         record.control = None;
         match result {
-            Ok(exit) if stopped_by_user => {
+            Ok(_exit) if stopped_by_user => {
                 record.status.state = "stopped".into();
                 record.status.last_error = None;
             }
