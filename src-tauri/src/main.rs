@@ -417,6 +417,15 @@ async fn extension_start(
 }
 
 #[tauri::command]
+async fn extension_run_command(
+    ext: State<'_, extensions::ExtensionManager>,
+    package_id: String,
+    component_id: String,
+) -> Result<extensions::ExtensionCommandResult, String> {
+    ext.run_command(&package_id, &component_id).await
+}
+
+#[tauri::command]
 async fn extension_stop(
     ext: State<'_, extensions::ExtensionManager>,
     package_id: String,
@@ -634,6 +643,7 @@ fn main() {
             extension_pack_preview,
             extension_pack_install,
             extension_start,
+            extension_run_command,
             extension_stop,
             extension_restart,
             extension_uninstall,
