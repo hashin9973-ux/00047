@@ -184,7 +184,7 @@ impl ExtensionManager {
     pub fn preview_zip(&self, path: &Path) -> Result<ExtensionPreview, String> {
         let archive = read_archive(path)?;
         let dir = PathBuf::from("<extensionDir>");
-        validate_manifest(&archive.manifest, Some(&dir), Some(&archive.files))?;
+        validate_manifest(&archive.manifest, None, Some(&archive.files))?;
         let entrypoint = dir.join(&archive.manifest.entrypoint).to_string_lossy().to_string();
         let command = expand_template(&archive.manifest.runtime.command, &dir, &archive.manifest, &entrypoint);
         let args = archive.manifest.runtime.args.iter()
