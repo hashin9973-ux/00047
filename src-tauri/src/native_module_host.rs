@@ -92,7 +92,7 @@ struct HostContext {
 struct NativeModuleRecord {
     status: NativeModuleStatus,
     _library: Library,
-    host: HostApiV1,
+    host: Box<HostApiV1>,
     _context: Box<HostContext>,
     stop: NativeStopV1,
     user_data: usize,
@@ -261,21 +261,24 @@ impl NativeModuleManager {
         fs::write(&meta_path, metadata_bytes).map_err(|e| format!("write native module metadata: {e}"))?;
 
         let context = Box::new(HostContext { app: self.app.clone(), id: probe.id.clone() });
-        let host = HostApiV1 {
+        // Keep the host table and callback context at stable heap addresses for
+        // the entire loaded-module lifetime. Extensions may retain these pointers
+        // until their stop callback returns.
+        let host = Box::new(HostApiV1 {
             abi_version: NATIVE_ABI_VERSION,
             struct_size: std::mem::size_of::<HostApiV1>() as u32,
             context: (&*context as *const HostContext) as usize,
             log: Some(native_log),
-        };
+        });
         let (library, metadata_live, start, stop) = open_module(&path)?;
         if metadata_live.id != probe.id || metadata_live.name != probe.name || metadata_live.version != probe.version {
             return Err("native module metadata changed while loading".into());
         }
         let mut user_data = 0usize;
-        let rc = unsafe { start(&host, &mut user_data) };
+        let rc = unsafe { start(&*host, &mut user_data) };
         if rc != 0 {
             // Give the module a chance to undo partial initialization before unloading it.
-            unsafe { let _ = stop(&host, user_data); }
+            unsafe { let _ = stop(&*host, user_data); }
             return Err(format!("native module start returned error code {rc}"));
         }
         let status = NativeModuleStatus {
@@ -303,7 +306,7 @@ impl NativeModuleManager {
         let mut record = {
             self.state.lock().unwrap().remove(id).ok_or("native module is not running")?
         };
-        let rc = unsafe { (record.stop)(&record.host, record.user_data) };
+        let rc = unsafe { (record.stop)(&*record.host, record.user_data) };
         if rc != 0 {
             record.status.state = "failed".into();
             record.status.last_error = Some(format!("native module stop returned error code {rc}; module remains loaded"));
@@ -373,7 +376,7 @@ impl NativeModuleManager {
         for id in ids {
             let record = self.state.lock().unwrap().remove(&id);
             if let Some(record) = record {
-                let rc = unsafe { (record.stop)(&record.host, record.user_data) };
+                let rc = unsafe { (record.stop)(&*record.host, record.user_data) };
                 if rc != 0 {
                     self.log(&id, "error", &format!("native module stop returned {rc} during shutdown"));
                 } else {
