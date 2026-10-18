@@ -17,4 +17,4 @@ target_include_directories(00047_windhawk_nonhook_adapter_smoke PRIVATE "${WMOD_
 add_library(00047_windhawk_settings_changed_smoke SHARED windhawk_settings_changed_smoke.cpp)
 target_compile_features(00047_windhawk_settings_changed_smoke PRIVATE cxx_std_17)
 target_compile_definitions(00047_windhawk_settings_changed_smoke PRIVATE WMOD_BUILD_DLL WIN32_LEAN_AND_MEAN NOMINMAX)
-target_include_directories(00047_windhawk_settings_changed_smoke PRIVATE "\${WMOD_SDK_DIR}")
+target_include_directories(00047_windhawk_settings_changed_smoke PRIVATE "${WMOD_SDK_DIR}")
