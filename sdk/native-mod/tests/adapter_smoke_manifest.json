@@ -1,0 +1,10 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.00047-adapter-smoke",
+  "name": "00047 Windhawk Adapter Smoke Test",
+  "version": "1.0.0",
+  "description": "CI-only test of the non-hook Windhawk lifecycle adapter.",
+  "architecture": "x64",
+  "module": "bin/00047_windhawk_nonhook_adapter_smoke.dll",
+  "targets": ["explorer.exe"]
+}
