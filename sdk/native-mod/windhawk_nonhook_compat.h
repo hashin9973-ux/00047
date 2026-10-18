@@ -675,4 +675,60 @@ inline size_t Wh_GetModStoragePath(PWSTR pathBuffer, size_t bufferChars) {
     }
 }
 
+// Source-compatible dynamic-select option helpers. Options are stored as
+// ordinary mod values, matching Windhawk's legacy representation so existing
+// Wh_GetStringValue/Wh_DeleteValue operations can inspect them.
+inline BOOL Wh_SetDynamicSelectOption(PCWSTR settingPath, PCWSTR value, PCWSTR label) {
+    if (!label) return FALSE;
+    size_t label_length = 0;
+    for (const wchar_t* p = label; *p; ++p) {
+        if (++label_length > 100 || *p == L'\r' || *p == L'\n') return FALSE;
+    }
+    std::wstring key;
+    if (!::wmod::windhawk_compat::DynamicSelectStorageKey(settingPath, value, key)) return FALSE;
+    return Wh_SetStringValue(key.c_str(), label);
+}
+
+inline BOOL Wh_DeleteDynamicSelectOption(PCWSTR settingPath, PCWSTR value) {
+    std::wstring key;
+    if (!::wmod::windhawk_compat::DynamicSelectStorageKey(settingPath, value, key)) return FALSE;
+    return Wh_DeleteValue(key.c_str());
+}
+
+inline BOOL Wh_ClearDynamicSelectOptions(PCWSTR settingPath) {
+    if (!::wmod::windhawk_compat::IsDynamicSelectSetting(settingPath)) return FALSE;
+    try {
+        const auto path = ::wmod::windhawk_compat::ValuesPath();
+        if (path.empty()) return FALSE;
+        const std::wstring prefix = std::wstring(L"::wh_select_option::") + settingPath + L"::";
+        std::vector<wchar_t> section(32768, L'\0');
+        const DWORD copied = GetPrivateProfileSectionW(
+            L"values", section.data(), static_cast<DWORD>(section.size()), path.c_str());
+        if (copied >= section.size() - 2) return FALSE; // Never partially clear a truncated enumeration.
+
+        std::vector<std::wstring> keys;
+        size_t offset = 0;
+        while (offset < copied) {
+            const wchar_t* entry = section.data() + offset;
+            const size_t length = std::wcslen(entry);
+            if (length == 0) break;
+            const wchar_t* equals = std::wcschr(entry, L'=');
+            if (equals) {
+                const std::wstring_view key(entry, static_cast<size_t>(equals - entry));
+                if (key.size() >= prefix.size() && key.substr(0, prefix.size()) == prefix)
+                    keys.emplace_back(key);
+            }
+            offset += length + 1;
+        }
+
+        BOOL ok = TRUE;
+        for (const auto& key : keys) {
+            if (!Wh_DeleteValue(key.c_str())) ok = FALSE;
+        }
+        return ok;
+    } catch (...) {
+        return FALSE;
+    }
+}
+
 #endif // WMOD_00047_WINDHAWK_NONHOOK_COMPAT_H
