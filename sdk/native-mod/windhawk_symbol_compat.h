@@ -136,32 +136,32 @@ inline bool ResolveSearchPath(const WH_FIND_SYMBOL_OPTIONS* options,
 }
 
 inline HANDLE DbgHelpMutex() noexcept {
-    static HANDLE mutexHandle = []() noexcept -> HANDLE {
-        wchar_t name[96]{};
-        if (swprintf_s(name, _countof(name), L"Local\\00047.WindhawkSymbols.%lu",
-                GetCurrentProcessId()) <= 0) return nullptr;
-        return CreateMutexW(nullptr, FALSE, name);
-    }();
-    return mutexHandle;
+    wchar_t name[96]{};
+    if (swprintf_s(name, _countof(name), L"Local\\00047.WindhawkSymbols.%lu",
+            GetCurrentProcessId()) <= 0) return nullptr;
+    return CreateMutexW(nullptr, FALSE, name);
 }
 
 class DbgHelpLock final {
 public:
     DbgHelpLock() noexcept {
-        HANDLE mutex = DbgHelpMutex();
-        if (!mutex) return;
-        const DWORD result = WaitForSingleObject(mutex, kDbgHelpLockTimeoutMs);
+        mutex_ = DbgHelpMutex();
+        if (!mutex_) return;
+        const DWORD result = WaitForSingleObject(mutex_, kDbgHelpLockTimeoutMs);
         if (result == WAIT_OBJECT_0) {
-            mutex_ = mutex;
             acquired_ = true;
         } else if (result == WAIT_ABANDONED) {
             // A caller died while DbgHelp was active; its session may be in an
             // unknown state, so do not continue symbol operations.
-            ReleaseMutex(mutex);
+            ReleaseMutex(mutex_);
+        } else {
+            CloseHandle(mutex_);
+            mutex_ = nullptr;
         }
     }
     ~DbgHelpLock() {
         if (acquired_) ReleaseMutex(mutex_);
+        if (mutex_) CloseHandle(mutex_);
     }
     bool Acquired() const noexcept { return acquired_; }
     DbgHelpLock(const DbgHelpLock&) = delete;
