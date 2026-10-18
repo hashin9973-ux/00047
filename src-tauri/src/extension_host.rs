@@ -775,6 +775,16 @@ mod tests {
     }
 
     #[test]
+    fn supports_only_known_lifecycle_protocols() {
+        let mut manifest = sample();
+        assert!(validate_manifest(&manifest, None, None).is_ok());
+        manifest.protocol = Some("stdio-jsonl-v1".into());
+        assert!(validate_manifest(&manifest, None, None).is_ok());
+        manifest.protocol = Some("unknown".into());
+        assert!(validate_manifest(&manifest, None, None).is_err());
+    }
+
+    #[test]
     fn reads_a_zip_with_root_manifest_and_entrypoint() {
         let path = std::env::temp_dir().join(format!("00047-extension-test-{}.zip", std::process::id()));
         let _ = fs::remove_file(&path);
