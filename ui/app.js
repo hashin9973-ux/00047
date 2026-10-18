@@ -645,8 +645,20 @@ async function renderPlugins() {
       <div id="extension-errors"></div>
     </div>
     <div class="card glass plugin-list extension-output-card">
-      <div class="sec"><h3>Recent runtime output</h3><span class="mu">stdout / stderr / host events</span></div>
+      <div class="sec"><h3>Recent runtime output</h3><span class="mu">External and native module logs</span></div>
       <div id="extension-output" class="extension-output"><p class="mu">No extension output yet.</p></div>
+    </div>
+    <div class="plugins-head plugin-section-head">
+      <div><h2>In-process native modules</h2><p class="mu">Trusted Windows DLLs loaded into 00047 using a versioned C ABI.</p></div>
+      <div class="plugins-actions">
+        <button class="btn" data-plugin-action="open-native-folder">Open native modules folder</button>
+        <button class="btn primary" data-plugin-action="load-native-module">+ Load native DLL</button>
+      </div>
+    </div>
+    <div class="card glass plugin-list">
+      <div class="sec"><h3>Installed native modules</h3><span class="mu" id="native-module-count">Loading…</span></div>
+      <div id="native-module-items" class="plugin-items"><p class="mu">Loading native modules…</p></div>
+      <div id="native-module-errors"></div>
     </div>
     <div class="plugins-head plugin-section-head">
       <div><h2>Automation block packs</h2><p class="mu">The original custom conditions and actions remain supported separately.</p></div>
@@ -664,10 +676,14 @@ async function renderPlugins() {
   if (!host.dataset.actionsBound) {
     host.dataset.actionsBound = '1';
     host.addEventListener('click', async e => {
-      const b = e.target.closest('[data-plugin-action], [data-extension-action]');
+      const b = e.target.closest('[data-plugin-action], [data-extension-action], [data-native-module-action]');
       if (!b) return;
       if (b.dataset.extensionAction) {
         await runExtensionAction(b.dataset.extensionAction, b.dataset.id);
+        return;
+      }
+      if (b.dataset.nativeModuleAction) {
+        await runNativeModuleAction(b.dataset.nativeModuleAction, b.dataset.id);
         return;
       }
       const action = b.dataset.pluginAction;
@@ -677,6 +693,10 @@ async function renderPlugins() {
         try { await invoke('open_blocks_folder'); } catch (err) { toast('Could not open block folder: ' + err, 'err'); }
       } else if (action === 'install-extension') {
         await installExtension();
+      } else if (action === 'open-native-folder') {
+        try { await invoke('native_module_open_folder'); } catch (err) { toast('Could not open native modules folder: ' + err, 'err'); }
+      } else if (action === 'load-native-module') {
+        await loadNativeModule();
       } else if (action === 'install-block-pack') {
         await installPack();
       } else if (action === 'reload-blocks') {
@@ -686,11 +706,15 @@ async function renderPlugins() {
       }
     });
     host.addEventListener('change', async e => {
-      const box = e.target.closest('[data-extension-autostart]');
-      if (!box) return;
+      const extensionBox = e.target.closest('[data-extension-autostart]');
+      const nativeBox = e.target.closest('[data-native-module-autostart]');
+      if (!extensionBox && !nativeBox) return;
+      const box = extensionBox || nativeBox;
+      const id = extensionBox ? extensionBox.dataset.extensionAutostart : nativeBox.dataset.nativeModuleAutostart;
+      const command = extensionBox ? 'extension_set_autostart' : 'native_module_set_autostart';
       try {
-        await invoke('extension_set_autostart', { id: box.dataset.extensionAutostart, enabled: box.checked });
-        toast(box.checked ? 'Extension will start with 00047' : 'Extension autostart disabled');
+        await invoke(command, { id, enabled: box.checked });
+        toast(box.checked ? 'Autostart enabled' : 'Autostart disabled');
       } catch (err) {
         box.checked = !box.checked;
         toast('Could not change autostart: ' + err, 'err');
@@ -703,7 +727,11 @@ async function renderPlugins() {
 async function refreshPluginLists() {
   const host = $('#view-plugins');
   try {
-    const [info, ext] = await Promise.all([invoke('list_block_specs'), invoke('list_extensions')]);
+    const [info, ext, native] = await Promise.all([
+      invoke('list_block_specs'),
+      invoke('list_extensions'),
+      invoke('list_native_modules')
+    ]);
     if (S.view !== 'plugins') return;
 
     const custom = info.specs.filter(x => x.origin === 'custom');
@@ -740,12 +768,42 @@ async function refreshPluginLists() {
       : '<div class="plugin-empty"><div class="plugin-icon">＋</div><b>No runtime extensions installed</b><p class="mu">Install an extension ZIP containing extension.json and its entrypoint.</p><button class="btn primary" data-plugin-action="install-extension">Install your first extension</button></div>';
     $('#extension-errors').innerHTML = ext.errors.length
       ? `<div class="plugin-errors"><b>Extension loading warnings</b><ul>${ext.errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>` : '';
+
+    $('#native-module-count').textContent = `${native.modules.length} installed`;
+    $('#native-module-items').innerHTML = native.modules.length
+      ? native.modules.map(x => {
+        const id = esc(x.id), running = x.state === 'running' || x.state === 'stopping' || x.state === 'failed';
+        const state = x.lastError ? `${x.state}: ${x.lastError}` : x.state;
+        return `<div class="plugin-item extension-item native-module-item">
+          <div class="plugin-icon small">▣</div>
+          <div class="plugin-info">
+            <b>${esc(x.name)} <small>v${esc(x.version)}</small></b>
+            <small>${esc(x.id)} · in-process DLL</small>
+            ${x.description ? `<small>${esc(x.description)}</small>` : ''}
+            ${x.lastError ? `<small class="er">${esc(x.lastError)}</small>` : ''}
+            <label class="chk extension-autostart"><input type="checkbox" data-native-module-autostart="${id}" ${x.autoStart ? 'checked' : ''}> Start with 00047</label>
+          </div>
+          <span class="plugin-status">${esc(state)}</span>
+          <div class="extension-actions">
+            <button class="btn" data-native-module-action="start" data-id="${id}" ${running ? 'disabled' : ''}>Load</button>
+            <button class="btn" data-native-module-action="unload" data-id="${id}" ${x.state !== 'running' ? 'disabled' : ''}>Unload</button>
+            <button class="btn danger" data-native-module-action="uninstall" data-id="${id}">Uninstall</button>
+          </div>
+        </div>`;
+      }).join('')
+      : '<div class="plugin-empty"><div class="plugin-icon">▣</div><b>No native modules installed</b><p class="mu">Load a trusted Windows DLL that exports the 00047 native extension ABI.</p><button class="btn primary" data-plugin-action="load-native-module">Load native DLL</button></div>';
+    $('#native-module-errors').innerHTML = native.errors.length
+      ? `<div class="plugin-errors"><b>Native module warnings</b><ul>${native.errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul></div>` : '';
     fillExtensionOutput();
   } catch (e) {
     $('#extension-count').textContent = 'Unavailable';
     $('#extension-items').innerHTML = `<p class="er">Could not load extension list: ${esc(e)}</p><button class="btn" data-plugin-action="retry">Retry</button>`;
     $('#plugin-count').textContent = 'Unavailable';
     $('#plugin-items').innerHTML = `<p class="er">Could not load custom blocks: ${esc(e)}</p>`;
+    const nativeCount = $('#native-module-count');
+    if (nativeCount) nativeCount.textContent = 'Unavailable';
+    const nativeItems = $('#native-module-items');
+    if (nativeItems) nativeItems.innerHTML = `<p class="er">Could not load native modules: ${esc(e)}</p>`;
   }
 }
 
