@@ -9,11 +9,16 @@ Use a Visual Studio x64 C++ toolchain and CMake:
     cmake -S samples/native-mod -B build -A x64
     cmake --build build --config Release
 
-Copy build/Release/00047_sample_native_mod.dll to samples/native-mod/bin/00047_sample_native_mod.dll. The bin output is intentionally not committed.
+The sample DLL is produced under build/Release/00047_sample_native_mod.dll. The compiled binary is intentionally not committed.
 
-## Package
+## Package and validate
 
-Build this directory's manifest.json plus bin/00047_sample_native_mod.dll into a ZIP with manifest.json at the archive root. The DLL is not included in the repository, so the source folder alone is not an installable ZIP.
+From the repository root, run:
+
+    python tools/package_native_mod.py --manifest samples/native-mod/manifest.json --dll build/Release/00047_sample_native_mod.dll --output dist/00047-sample-native-mod.zip
+    python tools/validate_native_mod.py dist/00047-sample-native-mod.zip
+
+The builder puts manifest.json at the ZIP root and copies the DLL to the module path declared in the manifest. It validates the completed archive before publishing the output ZIP. The validator can also be used on ZIPs produced by other tools.
 
 ## Install and verify
 
