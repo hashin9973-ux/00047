@@ -41,7 +41,7 @@ bool Exists(const std::filesystem::path& path) {
 
 #define CHECK(condition) do { \
     if (!(condition)) { \
-        std::wcerr << L"FAILED at line " << __LINE__ << L": " #condition << L"\n"; \
+        std::wcerr << L"FAILED check at line " << __LINE__ << L"\n"; \
         return 1; \
     } \
 } while (false)
@@ -69,7 +69,7 @@ int wmain() {
       "settings": [
         {"id":"intSetting","label":"Integer","type":"integer","default":42},
         {"id":"boolSetting","label":"Boolean","type":"boolean","default":true},
-        {"id":"stringSetting","label":"String","type":"string","default":"Hello \\u263A"},
+        {"id":"stringSetting","label":"String","type":"string","default":"Hello \u263A"},
         {"id":"choice","label":"Choice","type":"select","default":"mica",
          "options":[{"value":"mica","label":"Mica"}]}
       ]
