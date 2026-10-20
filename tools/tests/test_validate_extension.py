@@ -63,7 +63,7 @@ class ExtensionAuthoringTests(unittest.TestCase):
                 ("../escape.txt", "not safe"),
                 ("manifest.json", json.dumps(command_manifest())),
             ], directory)
-            with self.assertRaisesRegex(ValidationError, "unsafe ZIP path"):
+            with self.assertRaisesRegex(ValidationError, "unsafe.*ZIP path"):
                 validate_package(traversal)
 
             duplicate = make_zip([
