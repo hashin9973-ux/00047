@@ -926,7 +926,8 @@ mod tests {
 
         let result = read_package(&path);
         let _ = fs::remove_file(&path);
-        assert!(result.unwrap_err().contains("ZIP entry integrity check failed"));
+        assert!(result.is_err());
+        assert!(result.err().unwrap().contains("ZIP entry integrity check failed"));
     }
 
     #[test]
