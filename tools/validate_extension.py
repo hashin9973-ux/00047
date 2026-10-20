@@ -40,11 +40,28 @@ def valid_id(value: object) -> bool:
     )
 
 
+def _valid_windows_component(part: str) -> bool:
+    if (
+        not part
+        or part in (".", "..")
+        or part.endswith((" ", "."))
+        or any(ord(ch) < 0x20 or ch in '<>:"\\|?*' for ch in part)
+    ):
+        return False
+    stem = part.split(".", 1)[0].rstrip(" .").casefold()
+    if stem in {"con", "prn", "aux", "nul", "conin$", "conout$", "clock$"}:
+        return False
+    for prefix in ("com", "lpt"):
+        suffix = stem.removeprefix(prefix) if stem.startswith(prefix) else None
+        if suffix in {"1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³"}:
+            return False
+    return True
+
+
 def _safe_relative_path(value: object) -> bool:
     if not isinstance(value, str) or not value or value.startswith("/") or "\\" in value or ":" in value:
         return False
-    parts = value.split("/")
-    return all(part not in ("", ".", "..") for part in parts)
+    return all(_valid_windows_component(part) for part in value.split("/"))
 
 
 def _archive_path(name: str, is_dir: bool) -> str:
@@ -52,15 +69,12 @@ def _archive_path(name: str, is_dir: bool) -> str:
         raise ValidationError(f"unsafe ZIP path: {name!r}")
     normalized = name[:-1] if is_dir and name.endswith("/") else name
     path = PurePosixPath(normalized)
-    if (
-        not normalized
-        or path.is_absolute()
-        or any(part in ("", ".", "..") for part in normalized.split("/"))
-        or (normalized.split("/")[0].startswith("//"))
-    ):
+    if not normalized or path.is_absolute():
         raise ValidationError(f"unsafe ZIP path: {name!r}")
+    parts = normalized.split("/")
+    if any(not _valid_windows_component(part) for part in parts):
+        raise ValidationError(f"unsafe or Windows-incompatible ZIP path: {name!r}")
     return normalized
-
 
 def _check_text(value: object, label: str, limit: int, allow_empty: bool = False) -> str:
     if not isinstance(value, str):
