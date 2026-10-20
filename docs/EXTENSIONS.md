@@ -81,7 +81,7 @@ The repository includes a standard-library-only scaffold, deterministic packager
     python tools/package_extension.py extensions/com.example.status-check dist/status-check.zip
     python tools/validate_extension.py dist/status-check.zip
 
-Use `--kind service` to scaffold a persistent helper instead. The command template uses a 15-second timeout and exits after printing its result; the service template is a minimal long-running loop. The packager sorts files and fixes ZIP metadata so the same project produces reproducible package bytes, then validates the generated ZIP before replacing the destination file. The validator checks archive size/paths/CRC, Windows path collisions and file-directory conflicts, manifest fields, placeholders, entrypoints, and command timeout bounds.
+Use `--kind service` to scaffold a persistent helper instead. The command template uses a 15-second timeout and exits after printing its result; the service template is a minimal long-running loop. The packager sorts files and fixes ZIP metadata so the same project produces reproducible package bytes, then validates the generated ZIP before replacing the destination file. The validator checks archive size/paths/CRC, case-insensitive Windows path collisions, reserved device names, invalid Windows characters, trailing dots/spaces, and file-directory conflicts, plus manifest fields, placeholders, entrypoints, and command timeout bounds. The install-time validator applies the same Windows path restrictions.
 
 Run author-tool regression tests with:
 
