@@ -101,6 +101,25 @@ class ExtensionAuthoringTests(unittest.TestCase):
                     ("scripts/CON.txt", "print('unsafe entrypoint')"),
                 ], directory))
 
+    def test_rejects_boolean_manifest_version_and_non_string_kind_cleanly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            boolean_version = command_manifest()
+            boolean_version["manifestVersion"] = True
+            package = make_zip([
+                ("manifest.json", json.dumps(boolean_version)),
+                ("scripts/main.py", "print('ok')"),
+            ], directory)
+            with self.assertRaisesRegex(ValidationError, "manifestVersion"):
+                validate_package(package)
+
+            invalid_kind = command_manifest(kind=["command"])
+            package = make_zip([
+                ("manifest.json", json.dumps(invalid_kind)),
+                ("scripts/main.py", "print('ok')"),
+            ], directory)
+            with self.assertRaisesRegex(ValidationError, r"kind must"):
+                validate_package(package)
+
     def test_rejects_bad_timeout_placeholder_and_missing_entrypoint(self):
         with tempfile.TemporaryDirectory() as directory:
             bad_timeout = command_manifest()
