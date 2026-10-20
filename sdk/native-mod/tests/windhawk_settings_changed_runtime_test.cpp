@@ -38,7 +38,8 @@ int wmain(int argc, wchar_t** argv) {
         (L"00047-settings-changed-runtime-" +
          std::to_wstring(GetCurrentProcessId()) + L"-" +
          std::to_wstring(GetTickCount64()));
-    if (!std::filesystem::create_directories(packageDir, ec) || ec) {
+    std::filesystem::create_directories(packageDir, ec);
+    if (ec || !std::filesystem::is_directory(packageDir, ec) || ec) {
         std::wcerr << L"Could not create temporary mod package directory.\n";
         return 2;
     }
