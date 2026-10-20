@@ -617,11 +617,41 @@ fn valid_id(id: &str) -> bool {
         && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '-' | '_'))
 }
 
-fn valid_relative_path(value: &str) -> bool {
-    !value.is_empty() && !value.starts_with('/') && !value.contains('\\') && !value.contains(':')
-        && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+fn valid_windows_component(part: &str) -> bool {
+    if part.is_empty()
+        || part == "."
+        || part == ".."
+        || part.ends_with(' ')
+        || part.ends_with('.')
+        || part.chars().any(|ch| ch < '\u{20}' || "<>:\"|?*".contains(ch))
+    {
+        return false;
+    }
+
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(|ch| ch == ' ' || ch == '.')
+        .to_ascii_lowercase();
+    let reserved_device = matches!(
+        stem.as_str(),
+        "con" | "prn" | "aux" | "nul" | "conin$" | "conout$" | "clock$"
+    ) || ["com", "lpt"].iter().any(|prefix| {
+        stem.strip_prefix(prefix)
+            .map(|suffix| matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"))
+            .unwrap_or(false)
+    });
+    !reserved_device
 }
 
+fn valid_relative_path(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('/')
+        && !value.contains('\\')
+        && !value.contains(':')
+        && value.split('/').all(valid_windows_component)
+}
 fn register_windows_zip_path(seen: &mut HashSet<String>, path: &str) -> Result<(), String> {
     let normalized = path.trim_end_matches('/');
     if !normalized.is_empty() && !valid_relative_path(normalized) {
@@ -843,6 +873,28 @@ mod tests {
         assert!(!valid_relative_path("../start.py"));
         assert!(!valid_relative_path("C:/start.py"));
         assert!(!valid_relative_path("scripts\\start.py"));
+    }
+
+    #[test]
+    fn extension_zip_paths_with_windows_reserved_or_invalid_components_are_rejected() {
+        for path in [
+            "CON",
+            "scripts/NUL.txt",
+            "LPT1.data",
+            "COM¹.log",
+            "scripts/bad?.txt",
+            "scripts/trailing./file.py",
+            "scripts/trailing /file.py",
+            "scripts/control\u{1f}char.txt",
+        ] {
+            let mut seen = HashSet::new();
+            assert!(
+                register_windows_zip_path(&mut seen, path).is_err(),
+                "must reject unsafe Windows path {path:?}"
+            );
+        }
+        assert!(!valid_relative_path("scripts/CON.txt"));
+        assert!(!valid_relative_path("scripts/trailing./entry.py"));
     }
 
     #[test]
