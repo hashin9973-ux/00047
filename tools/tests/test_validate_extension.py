@@ -73,6 +73,34 @@ class ExtensionAuthoringTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "duplicate or case-colliding"):
                 validate_package(duplicate)
 
+    def test_rejects_case_insensitive_file_directory_conflicts(self):
+        cases = [
+            [
+                ("manifest.json", json.dumps(command_manifest())),
+                ("scripts/main.py", "print('ok')"),
+                ("ASSETS", "file"),
+                ("assets/icon.png", "image"),
+            ],
+            [
+                ("manifest.json", json.dumps(command_manifest())),
+                ("scripts/main.py", "print('ok')"),
+                ("assets/icon.png", "image"),
+                ("ASSETS", "file"),
+            ],
+            [
+                ("manifest.json", json.dumps(command_manifest())),
+                ("scripts/main.py", "print('ok')"),
+                ("Assets/child/data.txt", "data"),
+                ("ASSETS", "file"),
+            ],
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for entries in cases:
+                with self.subTest(entries=[name for name, _ in entries]):
+                    package = make_zip(entries, directory)
+                    with self.assertRaisesRegex(ValidationError, "file/directory path conflict"):
+                        validate_package(package)
+
     def test_rejects_windows_reserved_names_invalid_chars_and_ambiguous_trailing_chars(self):
         unsafe_paths = [
             "CON",
