@@ -88,8 +88,9 @@ def _check_text(value: object, label: str, limit: int, allow_empty: bool = False
 def _validate_manifest(manifest: object, files: dict[str, bool]) -> dict:
     if not isinstance(manifest, dict):
         raise ValidationError("manifest.json must contain a JSON object")
-    if manifest.get("manifestVersion") != 1:
-        raise ValidationError("manifestVersion must be 1")
+    manifest_version = manifest.get("manifestVersion")
+    if isinstance(manifest_version, bool) or not isinstance(manifest_version, int) or manifest_version != 1:
+        raise ValidationError("manifestVersion must be integer 1")
     if not valid_id(manifest.get("id")):
         raise ValidationError("manifest id must use lowercase ASCII letters, digits, dots, dashes or underscores (max 100 bytes)")
     _check_text(manifest.get("name"), "manifest name", 100)
@@ -115,7 +116,7 @@ def _validate_manifest(manifest: object, files: dict[str, bool]) -> dict:
         _check_text(component.get("description", ""), f"{label}.description", 1000, allow_empty=True)
 
         kind = component.get("kind")
-        if kind not in ALLOWED_KINDS:
+        if not isinstance(kind, str) or kind not in ALLOWED_KINDS:
             raise ValidationError(f"{label}.kind must be app, service, or command")
 
         runtime = component.get("runtime")
