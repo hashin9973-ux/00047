@@ -236,17 +236,22 @@ def validate_package(path: str) -> dict:
             if info.compress_size and info.file_size / info.compress_size > 1000:
                 raise ValidationError(f"suspicious ZIP compression ratio for {name!r}")
 
-        # Reject file/directory conflicts, e.g. a regular file "assets" and an
-        # entry "assets/logo.png", before extraction tries to create both.
-        for path_name, is_dir in files.items():
+        # Windows path lookup is case-insensitive. Canonicalize hierarchy keys
+        # too, so ASSETS and assets/logo.png cannot be interpreted differently
+        # by authoring and extraction code.
+        folded_files = {
+            path_name.rstrip("/").casefold(): is_dir
+            for path_name, is_dir in files.items()
+        }
+        for path_name, is_dir in folded_files.items():
             parts = path_name.split("/")
             for i in range(1, len(parts)):
                 parent = "/".join(parts[:i])
-                if parent in files and not files[parent]:
+                if parent in folded_files and not folded_files[parent]:
                     raise ValidationError(f"file/directory path conflict at {parent!r}")
             if not is_dir:
                 prefix = path_name.rstrip("/") + "/"
-                if any(other.startswith(prefix) for other in files):
+                if any(other.startswith(prefix) for other in folded_files):
                     raise ValidationError(f"file/directory path conflict at {path_name!r}")
 
         manifest_info = next((info for info in infos if info.filename == "manifest.json"), None)
