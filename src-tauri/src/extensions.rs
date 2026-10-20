@@ -892,7 +892,7 @@ mod tests {
     #[test]
     fn package_preview_rejects_corrupt_zip_entry_crc() {
         use std::io::Write;
-        use zip::write::SimpleFileOptions;
+        use zip::write::FileOptions;
         use zip::{CompressionMethod, ZipWriter};
 
         let path = std::env::temp_dir().join(format!(
@@ -904,7 +904,7 @@ mod tests {
                 .as_nanos()
         ));
         let manifest = r#"{"manifestVersion":1,"id":"com.example.crc-test","name":"CRC test","version":"1.0.0","components":[{"id":"test","name":"Test","kind":"app","runtime":{"command":"cmd.exe"}}]}"#;
-        let options = SimpleFileOptions::default()
+        let options = FileOptions::default()
             .compression_method(CompressionMethod::Stored);
         {
             let file = File::create(&path).unwrap();
