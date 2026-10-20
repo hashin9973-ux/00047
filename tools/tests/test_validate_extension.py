@@ -73,6 +73,34 @@ class ExtensionAuthoringTests(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "duplicate or case-colliding"):
                 validate_package(duplicate)
 
+    def test_rejects_windows_reserved_names_invalid_chars_and_ambiguous_trailing_chars(self):
+        unsafe_paths = [
+            "CON",
+            "scripts/NUL.txt",
+            "LPT1.data",
+            "COM¹.log",
+            "scripts/bad?.txt",
+            "scripts/trailing./file.py",
+            "scripts/trailing /file.py",
+            "scripts/control\x1fchar.txt",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            for unsafe_path in unsafe_paths:
+                with self.subTest(path=unsafe_path):
+                    package = make_zip([
+                        ("manifest.json", json.dumps(command_manifest())),
+                        ("scripts/main.py", "print('ok')"),
+                        (unsafe_path, "not safe"),
+                    ], directory)
+                    with self.assertRaises(ValidationError):
+                        validate_package(package)
+
+            with self.assertRaises(ValidationError):
+                validate_package(make_zip([
+                    ("manifest.json", json.dumps(command_manifest())),
+                    ("scripts/CON.txt", "print('unsafe entrypoint')"),
+                ], directory))
+
     def test_rejects_bad_timeout_placeholder_and_missing_entrypoint(self):
         with tempfile.TemporaryDirectory() as directory:
             bad_timeout = command_manifest()
