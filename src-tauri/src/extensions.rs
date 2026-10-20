@@ -652,6 +652,24 @@ fn valid_relative_path(value: &str) -> bool {
         && !value.contains(':')
         && value.split('/').all(valid_windows_component)
 }
+fn validate_windows_path_hierarchy(paths: &HashMap<String, bool>) -> Result<(), String> {
+    for (path, is_dir) in paths {
+        let components: Vec<&str> = path.split('/').collect();
+        for index in 1..components.len() {
+            let parent = components[..index].join("/");
+            if paths.get(&parent).is_some_and(|parent_is_dir| !*parent_is_dir) {
+                return Err(format!("ZIP file/directory path conflict at '{parent}'"));
+            }
+        }
+        if !is_dir {
+            let prefix = format!("{path}/");
+            if paths.keys().any(|candidate| candidate.starts_with(&prefix)) {
+                return Err(format!("ZIP file/directory path conflict at '{path}'"));
+            }
+        }
+    }
+    Ok(())
+}
 fn register_windows_zip_path(seen: &mut HashSet<String>, path: &str) -> Result<(), String> {
     let normalized = path.trim_end_matches('/');
     if !normalized.is_empty() && !valid_relative_path(normalized) {
@@ -801,6 +819,7 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
     }
     let mut files = HashSet::new();
     let mut windows_path_keys = HashSet::new();
+    let mut windows_path_types = HashMap::new();
     let mut total = 0u64;
     for i in 0..archive.len() {
         let entry = archive.by_index(i).map_err(|e| format!("cannot read ZIP entry: {e}"))?;
@@ -812,6 +831,7 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
         // Windows filesystems are case-insensitive by default. Reject archives whose
         // entries would alias when extracted, including "folder" vs "folder/".
         register_windows_zip_path(&mut windows_path_keys, &name)?;
+        windows_path_types.insert(name.trim_end_matches('/').to_lowercase(), entry.is_dir());
         if let Some(mode) = entry.unix_mode() {
             if mode & 0o170000 == 0o120000 { return Err(format!("symbolic links are not allowed: {name}")); }
         }
@@ -821,6 +841,7 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
             return Err("manifest.json exceeds the 1 MB limit".into());
         }
     }
+    validate_windows_path_hierarchy(&windows_path_types)?;
     if !files.contains("manifest.json") { return Err("extension ZIP must contain manifest.json at its root".into()); }
     let mut text = String::new();
     archive.by_name("manifest.json").map_err(|e| e.to_string())?
@@ -897,6 +918,25 @@ mod tests {
         assert!(!valid_relative_path("scripts/trailing./entry.py"));
     }
 
+    #[test]
+    fn extension_zip_file_directory_conflicts_ignore_case() {
+        let mut file_parent = HashMap::new();
+        file_parent.insert("assets".to_string(), false);
+        file_parent.insert("assets/icon.png".to_string(), false);
+        assert!(validate_windows_path_hierarchy(&file_parent)
+            .unwrap_err().contains("file/directory path conflict"));
+
+        let mut file_child = HashMap::new();
+        file_child.insert("assets/icon.png".to_string(), false);
+        file_child.insert("assets".to_string(), false);
+        assert!(validate_windows_path_hierarchy(&file_child)
+            .unwrap_err().contains("file/directory path conflict"));
+
+        let mut valid_folder = HashMap::new();
+        valid_folder.insert("assets".to_string(), true);
+        valid_folder.insert("assets/icon.png".to_string(), false);
+        assert!(validate_windows_path_hierarchy(&valid_folder).is_ok());
+    }
     #[test]
     fn extension_zip_paths_that_alias_on_windows_are_rejected() {
         let mut seen = HashSet::new();
