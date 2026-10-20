@@ -822,7 +822,7 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
     let mut windows_path_types = HashMap::new();
     let mut total = 0u64;
     for i in 0..archive.len() {
-        let entry = archive.by_index(i).map_err(|e| format!("cannot read ZIP entry: {e}"))?;
+        let mut entry = archive.by_index(i).map_err(|e| format!("cannot read ZIP entry: {e}"))?;
         let name = entry.name().to_string();
         if entry.enclosed_name().is_none() || name.contains('\\') || name.contains(':') {
             return Err(format!("unsafe ZIP path: {name}"));
@@ -840,6 +840,10 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
         if name.eq_ignore_ascii_case("manifest.json") && entry.size() > MAX_MANIFEST_BYTES {
             return Err("manifest.json exceeds the 1 MB limit".into());
         }
+        // Drain every entry so the ZIP reader checks decompression and CRC before
+        // preview accepts the package. Size limits above bound the total work.
+        std::io::copy(&mut entry, &mut std::io::sink())
+            .map_err(|e| format!("ZIP entry integrity check failed for '{name}': {e}"))?;
     }
     validate_windows_path_hierarchy(&windows_path_types)?;
     if !files.contains("manifest.json") { return Err("extension ZIP must contain manifest.json at its root".into()); }
@@ -884,6 +888,47 @@ fn extract_package(path: &Path, destination: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_preview_rejects_corrupt_zip_entry_crc() {
+        use std::io::Write;
+        use zip::write::FileOptions;
+        use zip::{CompressionMethod, ZipWriter};
+
+        let path = std::env::temp_dir().join(format!(
+            "00047-extension-crc-test-{}-{}.zip",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let manifest = r#"{"manifestVersion":1,"id":"com.example.crc-test","name":"CRC test","version":"1.0.0","components":[{"id":"test","name":"Test","kind":"app","runtime":{"command":"cmd.exe"}}]}"#;
+        let options = FileOptions::default()
+            .compression_method(CompressionMethod::Stored);
+        {
+            let file = File::create(&path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            writer.start_file("manifest.json", options).unwrap();
+            writer.write_all(manifest.as_bytes()).unwrap();
+            writer.start_file("payload.bin", options).unwrap();
+            writer.write_all(b"unique-payload-corrupt-me").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut bytes = fs::read(&path).unwrap();
+        let payload = b"unique-payload-corrupt-me";
+        let offset = bytes.windows(payload.len())
+            .position(|window| window == payload)
+            .expect("stored payload should appear verbatim in the ZIP");
+        bytes[offset] ^= 1;
+        fs::write(&path, bytes).unwrap();
+
+        let result = read_package(&path);
+        let _ = fs::remove_file(&path);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().contains("ZIP entry integrity check failed"));
+    }
 
     #[test]
     fn extension_identifiers_and_paths_are_restricted() {
