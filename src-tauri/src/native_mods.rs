@@ -197,6 +197,10 @@ impl NativeModManager {
 
         for folder in folders {
             let folder_name = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let folder = match self.package_dir(&folder_name) {
+                Ok(path) => path,
+                Err(e) => { errors.push(format!("{folder_name}: {e}")); continue; }
+            };
             let manifest = match load_manifest(&folder) {
                 Ok(m) => m,
                 Err(e) => { errors.push(format!("{folder_name}: {e}")); continue; }
@@ -205,7 +209,10 @@ impl NativeModManager {
                 errors.push(format!("{folder_name}: mod ID does not match its package directory"));
                 continue;
             }
-            let module = folder.join(&manifest.module);
+            let module = match module_file_path(&folder, &manifest.module) {
+                Ok(path) => path,
+                Err(e) => { errors.push(format!("{}: {e}", manifest.id)); continue; }
+            };
             if let Err(e) = validate_pe_file(&module) {
                 errors.push(format!("{}: {e}", manifest.id));
                 continue;
@@ -285,7 +292,11 @@ impl NativeModManager {
             let _ = fs::remove_dir_all(&stage);
             return Err("Mod ID changed while staging install.".into());
         }
-        if let Err(e) = validate_pe_file(&stage.join(&staged.module)) {
+        let staged_module = match module_file_path(&stage, &staged.module) {
+            Ok(path) => path,
+            Err(e) => { let _ = fs::remove_dir_all(&stage); return Err(e); }
+        };
+        if let Err(e) = validate_pe_file(&staged_module) {
             let _ = fs::remove_dir_all(&stage);
             return Err(e);
         }
@@ -309,7 +320,8 @@ impl NativeModManager {
         if manifest.id != id {
             return Err("Mod ID does not match its package directory.".into());
         }
-        validate_pe_file(&folder.join(&manifest.module))?;
+        let module = module_file_path(&folder, &manifest.module)?;
+        validate_pe_file(&module)?;
 
         {
             let mut state = self.state.lock().map_err(|_| "Native mod state is unavailable.")?;
@@ -349,7 +361,7 @@ impl NativeModManager {
             }
         }
 
-        let dll = folder.join(&manifest.module);
+        let dll = module_file_path(&folder, &manifest.module)?;
         match unload_from_targets(&manifest.targets, &dll) {
             Ok(count) => {
                 let status = format!("Disabled; unloaded from {count} process(es)");
@@ -401,7 +413,10 @@ impl NativeModManager {
 
         let cleanup_warning = self.package_dir(id)
             .and_then(|folder| load_manifest(&folder).map(|manifest| (folder, manifest)))
-            .and_then(|(folder, manifest)| unload_from_targets(&manifest.targets, &folder.join(&manifest.module)).map(|_| ()))
+            .and_then(|(folder, manifest)| {
+                module_file_path(&folder, &manifest.module)
+                    .and_then(|dll| unload_from_targets(&manifest.targets, &dll).map(|_| ()))
+            })
             .err();
 
         let mut status = format!("Disabled after load failure: {reason}");
@@ -417,7 +432,8 @@ impl NativeModManager {
     fn apply_one(&self, id: &str) -> Result<String, String> {
         let folder = self.package_dir(id)?;
         let manifest = load_manifest(&folder)?;
-        validate_pe_file(&folder.join(&manifest.module))?;
+        let dll = module_file_path(&folder, &manifest.module)?;
+        validate_pe_file(&dll)?;
         let targets = discover_targets()?;
         let matching: Vec<NativeTarget> = targets.into_iter()
             .filter(|p| manifest.targets.iter().any(|t| t.eq_ignore_ascii_case(&p.executable)))
@@ -427,7 +443,6 @@ impl NativeModManager {
             return Ok("Enabled; waiting for a supported target process".into());
         }
 
-        let dll = folder.join(&manifest.module);
         let mut successes = 0usize;
         let mut failures = Vec::new();
         for target in matching {
