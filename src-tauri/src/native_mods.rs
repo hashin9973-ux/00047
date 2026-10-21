@@ -7,10 +7,13 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, File},
-    io::Read,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
 };
 use zip::ZipArchive;
 
@@ -18,6 +21,8 @@ const MAX_ZIP_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_FILES: usize = 500;
 const MAX_UNPACKED_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_ENABLED_STATE_BYTES: u64 = 1024 * 1024;
+static STATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const REQUIRED_EXPORTS: [&str; 3] = [
     "WmodGetApiVersion",
     "WmodInitializeV1",
@@ -113,10 +118,7 @@ pub struct NativeModManager {
 impl NativeModManager {
     pub fn new(root: PathBuf) -> Self {
         let _ = fs::create_dir_all(root.join("packages"));
-        let state = fs::read_to_string(root.join("enabled.json"))
-            .ok()
-            .and_then(|text| serde_json::from_str::<PersistedState>(&text).ok())
-            .unwrap_or_default();
+        let state = load_persisted_state(&root.join("enabled.json"));
         Self {
             root,
             state: Mutex::new(state),
@@ -174,8 +176,15 @@ impl NativeModManager {
     }
 
     fn persist_state(&self, state: &PersistedState) -> Result<(), String> {
-        let bytes = serde_json::to_vec_pretty(state).map_err(|e| format!("serialize native mod state: {e}"))?;
-        fs::write(self.root.join("enabled.json"), bytes).map_err(|e| format!("save native mod state: {e}"))
+        if state.enabled.iter().any(|id| !valid_id(id)) {
+            return Err("Native mod state contains an invalid mod ID.".into());
+        }
+        let bytes = serde_json::to_vec_pretty(state)
+            .map_err(|e| format!("serialize native mod state: {e}"))?;
+        if bytes.len() as u64 > MAX_ENABLED_STATE_BYTES {
+            return Err("Native mod enabled-state file exceeds the 1 MB limit.".into());
+        }
+        atomic_write_enabled_state(&self.root, &bytes)
     }
 
     fn set_status(&self, id: &str, status: String) {
@@ -473,6 +482,91 @@ impl NativeModManager {
         }
         Ok(format!("Enabled in {successes} process(es); new shell processes are monitored"))
     }
+}
+
+fn load_persisted_state(path: &Path) -> PersistedState {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(_) => return PersistedState::default(),
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.is_file()
+        || metadata.len() > MAX_ENABLED_STATE_BYTES
+    {
+        return PersistedState::default();
+    }
+    let state = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<PersistedState>(&text).ok())
+        .unwrap_or_default();
+    PersistedState {
+        enabled: state.enabled.into_iter().filter(|id| valid_id(id)).collect(),
+    }
+}
+
+fn checked_enabled_state_path(root: &Path) -> Result<PathBuf, String> {
+    let root = root.canonicalize()
+        .map_err(|e| format!("Cannot resolve native mod data directory: {e}"))?;
+    if !root.is_dir() {
+        return Err("Native mod data path must be a directory.".into());
+    }
+    let path = root.join("enabled.json");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("Native mod enabled-state file must not be a symlink.".into());
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err("Native mod enabled-state path must be a regular file.".into());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Cannot inspect native mod enabled-state file: {error}")),
+    }
+    Ok(path)
+}
+
+fn atomic_write_enabled_state(root: &Path, bytes: &[u8]) -> Result<(), String> {
+    let target = checked_enabled_state_path(root)?;
+    let parent = target.parent()
+        .ok_or_else(|| "Native mod data directory has no parent path.".to_string())?;
+    let mut temporary = None;
+    for _ in 0..32 {
+        let sequence = STATE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(
+            ".enabled.json.{}.{}.tmp",
+            std::process::id(),
+            sequence
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(mut file) => {
+                if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
+                    drop(file);
+                    let _ = fs::remove_file(&candidate);
+                    return Err(format!("write native mod state temporary file: {error}"));
+                }
+                drop(file);
+                temporary = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create native mod state temporary file: {error}")),
+        }
+    }
+    let temporary = temporary.ok_or_else(|| {
+        "Cannot allocate a unique temporary file for native mod state.".to_string()
+    })?;
+
+    // Re-check the destination immediately before replacement. Rename replaces
+    // the directory entry rather than following a destination symlink.
+    if let Err(error) = checked_enabled_state_path(root) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&temporary, &target) {
+        let _ = fs::remove_file(&temporary);
+        return Err(format!("atomically save native mod state: {error}"));
+    }
+    Ok(())
 }
 
 fn valid_id(id: &str) -> bool {
@@ -1601,6 +1695,85 @@ mod tests {
         symlink(&outside, package.join("bin/mod.dll")).unwrap();
 
         assert!(module_file_path(&package, "bin/mod.dll").unwrap_err().contains("symlink"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn state_test_root(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "00047-native-mod-state-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn native_mod_enabled_state_round_trips_using_atomic_replacement() {
+        let root = state_test_root("roundtrip");
+        let manager = NativeModManager::new(root.clone());
+        let mut state = PersistedState::default();
+        state.enabled.insert("com.example.first".into());
+        manager.persist_state(&state).unwrap();
+
+        let path = root.join("enabled.json");
+        assert!(load_persisted_state(&path).enabled.contains("com.example.first"));
+
+        state.enabled.clear();
+        state.enabled.insert("com.example.second".into());
+        manager.persist_state(&state).unwrap();
+        let reloaded = load_persisted_state(&path);
+        assert_eq!(reloaded.enabled, HashSet::from(["com.example.second".to_string()]));
+        assert!(!fs::read_dir(&root).unwrap().filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp")));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_mod_enabled_state_load_ignores_invalid_ids_and_oversized_file() {
+        let root = state_test_root("invalid-state");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("enabled.json");
+        fs::write(
+            &path,
+            r#"{"enabled":["com.example.valid","../outside","UPPERCASE"]}"#,
+        ).unwrap();
+        assert_eq!(
+            load_persisted_state(&path).enabled,
+            HashSet::from(["com.example.valid".to_string()])
+        );
+
+        fs::write(&path, vec![b' '; MAX_ENABLED_STATE_BYTES as usize + 1]).unwrap();
+        assert!(load_persisted_state(&path).enabled.is_empty());
+
+        // A corrupt/oversized regular file can be repaired safely by replacement.
+        atomic_write_enabled_state(&root, br#"{\"enabled\":[]}"#).unwrap();
+        assert!(load_persisted_state(&path).enabled.is_empty());
+        assert!(fs::metadata(&path).unwrap().len() < MAX_ENABLED_STATE_BYTES);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_enabled_state_rejects_symlink_and_preserves_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = state_test_root("state-symlink");
+        fs::create_dir_all(&root).unwrap();
+        let outside = root.join("outside.json");
+        fs::write(&outside, b"do not overwrite").unwrap();
+        symlink(&outside, root.join("enabled.json")).unwrap();
+
+        assert!(load_persisted_state(&root.join("enabled.json")).enabled.is_empty());
+        let result = atomic_write_enabled_state(&root, br#"{"enabled":[]}"#);
+        assert!(result.unwrap_err().contains("symlink"));
+        assert_eq!(fs::read(&outside).unwrap(), b"do not overwrite");
 
         fs::remove_dir_all(root).unwrap();
     }
