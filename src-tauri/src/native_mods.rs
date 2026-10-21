@@ -1356,6 +1356,82 @@ mod tests {
         assert!(result.err().unwrap().contains("ZIP entry integrity check failed"));
     }
 
+    fn state_test_root(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "00047-native-mod-state-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn native_mod_enabled_state_round_trips_using_atomic_replacement() {
+        let root = state_test_root("roundtrip");
+        let manager = NativeModManager::new(root.clone());
+        let mut state = PersistedState::default();
+        state.enabled.insert("com.example.first".into());
+        manager.persist_state(&state).unwrap();
+
+        let path = root.join("enabled.json");
+        assert!(load_persisted_state(&path).enabled.contains("com.example.first"));
+
+        state.enabled.clear();
+        state.enabled.insert("com.example.second".into());
+        manager.persist_state(&state).unwrap();
+        let reloaded = load_persisted_state(&path);
+        assert_eq!(reloaded.enabled, HashSet::from(["com.example.second".to_string()]));
+        assert!(!fs::read_dir(&root).unwrap().filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp")));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_mod_enabled_state_load_ignores_invalid_ids_and_oversized_file() {
+        let root = state_test_root("invalid-state");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("enabled.json");
+        fs::write(
+            &path,
+            r#"{"enabled":["com.example.valid","../outside","UPPERCASE"]}"#,
+        ).unwrap();
+        assert_eq!(
+            load_persisted_state(&path).enabled,
+            HashSet::from(["com.example.valid".to_string()])
+        );
+
+        fs::write(&path, vec![b' '; MAX_ENABLED_STATE_BYTES as usize + 1]).unwrap();
+        assert!(load_persisted_state(&path).enabled.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_enabled_state_rejects_symlink_and_preserves_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = state_test_root("state-symlink");
+        fs::create_dir_all(&root).unwrap();
+        let outside = root.join("outside.json");
+        fs::write(&outside, b"do not overwrite").unwrap();
+        symlink(&outside, root.join("enabled.json")).unwrap();
+
+        assert!(load_persisted_state(&root.join("enabled.json")).enabled.is_empty());
+        let state = PersistedState::default();
+        let result = atomic_write_enabled_state(&root, br#"{"enabled":[]}"#);
+        assert!(result.unwrap_err().contains("symlink"));
+        assert_eq!(fs::read(&outside).unwrap(), b"do not overwrite");
+        let _ = state;
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn native_mod_manifest_requires_the_module_file_in_package() {
         let m = manifest(vec!["explorer.exe"], "bin/mod.dll");
