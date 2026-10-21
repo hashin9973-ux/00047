@@ -254,6 +254,21 @@ def audit_paths(inputs: list[Path]) -> dict:
 
 
 
+
+def _sarif_artifact_uri(raw_path: str) -> str:
+    """Use repository-relative URIs for in-tree files and file URIs otherwise."""
+    path = Path(raw_path)
+    try:
+        resolved = path.resolve()
+        try:
+            return resolved.relative_to(Path.cwd().resolve()).as_posix()
+        except ValueError:
+            return resolved.as_uri()
+    except (OSError, ValueError):
+        # Keep malformed or platform-specific user input diagnosable without
+        # allowing backslashes to be interpreted as URI escape sequences.
+        return raw_path.replace("\\", "/")
+
 def to_sarif(report: dict) -> dict:
     """Convert an audit report into SARIF 2.1.0 for code-scanning integrations."""
     categories = sorted({item["category"] for item in report["findings"]})
@@ -280,7 +295,7 @@ def to_sarif(report: dict) -> dict:
         )
         locations = []
         for location in item["locations"]:
-            path = str(location["file"]).replace("\\", "/")
+            path = _sarif_artifact_uri(str(location["file"]))
             locations.append({
                 "physicalLocation": {
                     "artifactLocation": {"uri": path},
