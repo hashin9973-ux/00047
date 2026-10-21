@@ -79,6 +79,22 @@ class WindhawkAuditTests(unittest.TestCase):
             uri = parsed["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
             self.assertTrue(uri.startswith("file:"), uri)
 
+
+    def test_sarif_cli_writes_file_without_stdout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "mod.cpp"
+            output_path = root / "windhawk-audit.sarif"
+            source.write_text("Wh_SetFunctionHook(target, hook, &original);", encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = main([str(source), "--sarif", "--output", str(output_path)])
+            self.assertEqual(result, 0)
+            self.assertEqual(output.getvalue(), "")
+            parsed = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(parsed["version"], "2.1.0")
+            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "error")
+
     def test_classifies_supported_unsupported_unknown_and_lifecycle(self):
         source = r'''
         // Wh_Disasm(address, &result) is only an example in a comment.
