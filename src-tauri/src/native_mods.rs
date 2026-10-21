@@ -1306,6 +1306,13 @@ mod tests {
         assert!(!valid_relative_path("../mod.dll"));
         assert!(!valid_relative_path("C:/temp/mod.dll"));
         assert!(!valid_relative_path("bin\\mod.dll"));
+        assert!(!valid_relative_path("bin/CON.dll"));
+        assert!(!valid_relative_path("bin/NUL.txt"));
+        assert!(!valid_relative_path("bin/COM1.log"));
+        assert!(!valid_relative_path("bin/trailing."));
+        assert!(!valid_relative_path("bin/trailing "));
+        assert!(!valid_relative_path("bin/bad?.dll"));
+        assert!(!valid_relative_path("bin/line\\u{1f}break.dll"));
 
         let mut wrong_arch = manifest(vec!["explorer.exe"], "bin/mod.dll");
         wrong_arch.architecture = "x86".into();
@@ -1329,6 +1336,12 @@ mod tests {
         assert!(register_windows_zip_path(&mut seen_directories, "assets").is_ok());
         assert!(register_windows_zip_path(&mut seen_directories, "assets/")
             .unwrap_err().contains("collide on Windows"));
+        assert!(register_windows_zip_path(&mut HashSet::new(), "CON.txt")
+            .unwrap_err().contains("unsafe"));
+        assert!(register_windows_zip_path(&mut HashSet::new(), "file.")
+            .unwrap_err().contains("unsafe"));
+        assert!(register_windows_zip_path(&mut HashSet::new(), "folder//")
+            .unwrap_err().contains("unsafe"));
     }
 
     #[test]
