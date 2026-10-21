@@ -434,6 +434,37 @@ fn valid_relative_path(value: &str) -> bool {
         && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
+fn validate_windows_path_hierarchy(paths: &HashMap<String, bool>) -> Result<(), String> {
+    for (path, is_dir) in paths {
+        let components: Vec<&str> = path.split('/').collect();
+        for index in 1..components.len() {
+            let parent = components[..index].join("/");
+            if paths.get(&parent).is_some_and(|parent_is_dir| !*parent_is_dir) {
+                return Err(format!("ZIP file/directory path conflict at '{parent}'"));
+            }
+        }
+        if !is_dir {
+            let prefix = format!("{path}/");
+            if paths.keys().any(|candidate| candidate.starts_with(&prefix)) {
+                return Err(format!("ZIP file/directory path conflict at '{path}'"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn register_windows_zip_path(seen: &mut HashSet<String>, path: &str) -> Result<(), String> {
+    let normalized = path.trim_end_matches('/');
+    if !normalized.is_empty() && !valid_relative_path(normalized) {
+        return Err(format!("unsafe ZIP path: {path}"));
+    }
+    let key = normalized.to_lowercase();
+    if !seen.insert(key) {
+        return Err(format!("ZIP entries collide on Windows (case-insensitive path): {path}"));
+    }
+    Ok(())
+}
+
 fn validate_manifest(m: &ModManifest, files: Option<&HashSet<String>>) -> Result<(), String> {
     if m.manifest_version != 1 { return Err("manifestVersion must be 1".into()); }
     if !valid_id(&m.id) { return Err("mod id must use lowercase a-z, digits, dots, dashes or underscores".into()); }
@@ -479,27 +510,38 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
     }
 
     let mut files = HashSet::new();
+    let mut windows_path_keys = HashSet::new();
+    let mut windows_path_types = HashMap::new();
     let mut total = 0u64;
     for i in 0..archive.len() {
-        let entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = entry.name().to_string();
         if entry.enclosed_name().is_none() || name.contains('\\') || name.contains(':') {
             return Err(format!("unsafe ZIP path: {name}"));
         }
         if !files.insert(name.clone()) { return Err(format!("duplicate ZIP entry: {name}")); }
+        // Windows normally resolves package paths without regard to case. Reject
+        // collisions such as "Module.dll" vs "module.dll" and "assets" vs "assets/".
+        register_windows_zip_path(&mut windows_path_keys, &name)?;
+        let normalized = name.trim_end_matches('/');
+        if !normalized.is_empty() && !valid_relative_path(normalized) {
+            return Err(format!("unsafe ZIP path: {name}"));
+        }
+        windows_path_types.insert(normalized.to_lowercase(), entry.is_dir());
         if let Some(mode) = entry.unix_mode() {
             if mode & 0o170000 == 0o120000 { return Err(format!("symbolic links are not allowed: {name}")); }
         }
         total = total.saturating_add(entry.size());
         if total > MAX_UNPACKED_BYTES { return Err("native mod ZIP expands beyond the 50 MB unpacked-size limit".into()); }
-        if name == "manifest.json" && entry.size() > MAX_MANIFEST_BYTES {
+        if name.eq_ignore_ascii_case("manifest.json") && entry.size() > MAX_MANIFEST_BYTES {
             return Err("manifest.json exceeds the 1 MB limit".into());
         }
-        let normalized = name.trim_end_matches('/');
-        if !normalized.is_empty() && !valid_relative_path(normalized) {
-            return Err(format!("unsafe ZIP path: {name}"));
-        }
+        // Drain every entry so preview verifies decompression and CRC, including
+        // payloads that are not the manifest or DLL. The total size is bounded above.
+        std::io::copy(&mut entry, &mut std::io::sink())
+            .map_err(|e| format!("ZIP entry integrity check failed for '{name}': {e}"))?;
     }
+    validate_windows_path_hierarchy(&windows_path_types)?;
     if !files.contains("manifest.json") { return Err("native mod ZIP must have manifest.json at its root".into()); }
 
     let mut text = String::new();
@@ -1145,6 +1187,79 @@ mod tests {
     fn native_pe_validator_rejects_non_pe_input() {
         assert!(validate_pe_bytes(b"").unwrap_err().contains("MZ"));
         assert!(validate_pe_bytes(b"MZ").unwrap_err().contains("truncated PE header"));
+    }
+
+    #[test]
+    fn native_mod_zip_paths_that_alias_on_windows_are_rejected() {
+        let mut seen = HashSet::new();
+        assert!(register_windows_zip_path(&mut seen, "bin/Module.dll").is_ok());
+        assert!(register_windows_zip_path(&mut seen, "BIN/module.DLL")
+            .unwrap_err().contains("collide on Windows"));
+
+        let mut seen_directories = HashSet::new();
+        assert!(register_windows_zip_path(&mut seen_directories, "assets").is_ok());
+        assert!(register_windows_zip_path(&mut seen_directories, "assets/")
+            .unwrap_err().contains("collide on Windows"));
+    }
+
+    #[test]
+    fn native_mod_zip_file_directory_conflicts_are_rejected() {
+        let mut file_parent = HashMap::new();
+        file_parent.insert("assets".to_string(), false);
+        file_parent.insert("assets/icon.png".to_string(), false);
+        assert!(validate_windows_path_hierarchy(&file_parent)
+            .unwrap_err().contains("file/directory path conflict"));
+
+        let mut file_child = HashMap::new();
+        file_child.insert("assets/icon.png".to_string(), false);
+        file_child.insert("assets".to_string(), false);
+        assert!(validate_windows_path_hierarchy(&file_child)
+            .unwrap_err().contains("file/directory path conflict"));
+
+        let mut valid_folder = HashMap::new();
+        valid_folder.insert("assets".to_string(), true);
+        valid_folder.insert("assets/icon.png".to_string(), false);
+        assert!(validate_windows_path_hierarchy(&valid_folder).is_ok());
+    }
+
+    #[test]
+    fn native_mod_preview_rejects_corrupt_zip_entry_crc() {
+        use std::io::Write;
+        use zip::write::FileOptions;
+        use zip::{CompressionMethod, ZipWriter};
+
+        let path = std::env::temp_dir().join(format!(
+            "00047-native-mod-crc-test-{}-{}.zip",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let options = FileOptions::default()
+            .compression_method(CompressionMethod::Stored);
+        {
+            let file = File::create(&path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            writer.start_file("manifest.json", options).unwrap();
+            writer.write_all(b"not valid json").unwrap();
+            writer.start_file("payload.bin", options).unwrap();
+            writer.write_all(b"unique-native-mod-payload-corrupt-me").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut bytes = fs::read(&path).unwrap();
+        let payload = b"unique-native-mod-payload-corrupt-me";
+        let offset = bytes.windows(payload.len())
+            .position(|window| window == payload)
+            .expect("stored payload should appear verbatim in the ZIP");
+        bytes[offset] ^= 1;
+        fs::write(&path, bytes).unwrap();
+
+        let result = read_package(&path);
+        let _ = fs::remove_file(&path);
+        assert!(result.is_err());
+        assert!(result.err().unwrap().contains("ZIP entry integrity check failed"));
     }
 
     #[test]
