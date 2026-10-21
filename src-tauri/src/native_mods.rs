@@ -136,7 +136,31 @@ impl NativeModManager {
         if !valid_id(id) {
             return Err("Invalid native mod ID.".into());
         }
-        Ok(self.packages_dir().join(id))
+
+        let packages = self.packages_dir();
+        let packages_meta = fs::symlink_metadata(&packages)
+            .map_err(|e| format!("Cannot inspect native mod package directory: {e}"))?;
+        if packages_meta.file_type().is_symlink() || !packages_meta.is_dir() {
+            return Err("Native mod package root must be a real directory, not a symlink.".into());
+        }
+        let packages = packages.canonicalize()
+            .map_err(|e| format!("Cannot resolve native mod package root: {e}"))?;
+        let candidate = packages.join(id);
+        match fs::symlink_metadata(&candidate) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() || !meta.is_dir() {
+                    return Err("Installed native mod package must be a real directory, not a symlink.".into());
+                }
+                let resolved = candidate.canonicalize()
+                    .map_err(|e| format!("Cannot resolve installed native mod package: {e}"))?;
+                if !resolved.starts_with(&packages) {
+                    return Err("Native mod package path escapes the managed package directory.".into());
+                }
+                Ok(resolved)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(candidate),
+            Err(e) => Err(format!("Cannot inspect installed native mod package: {e}")),
+        }
     }
 
     fn enabled_snapshot(&self) -> HashSet<String> {
@@ -561,13 +585,47 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
 }
 
 fn load_manifest(folder: &Path) -> Result<ModManifest, String> {
+    let folder_meta = fs::symlink_metadata(folder)
+        .map_err(|e| format!("cannot inspect native mod package directory: {e}"))?;
+    if folder_meta.file_type().is_symlink() || !folder_meta.is_dir() {
+        return Err("native mod package must be a real directory, not a symlink".into());
+    }
+    let folder = folder.canonicalize()
+        .map_err(|e| format!("cannot resolve native mod package directory: {e}"))?;
     let path = folder.join("manifest.json");
+    let meta = fs::symlink_metadata(&path)
+        .map_err(|e| format!("cannot inspect manifest.json: {e}"))?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err("manifest.json must be a regular file, not a symlink".into());
+    }
+    if meta.len() > MAX_MANIFEST_BYTES {
+        return Err("manifest.json exceeds the 1 MB limit".into());
+    }
     let text = fs::read_to_string(&path).map_err(|e| format!("cannot read manifest.json: {e}"))?;
-    if text.len() as u64 > MAX_MANIFEST_BYTES { return Err("manifest.json exceeds the 1 MB limit".into()); }
     let manifest: ModManifest = serde_json::from_str(text.trim_start_matches('\u{feff}'))
         .map_err(|e| format!("invalid native mod manifest: {e}"))?;
     validate_manifest(&manifest, None)?;
     Ok(manifest)
+}
+
+fn module_file_path(folder: &Path, module: &str) -> Result<PathBuf, String> {
+    if !valid_relative_path(module) {
+        return Err("native module path is not a safe relative path".into());
+    }
+    let folder = folder.canonicalize()
+        .map_err(|e| format!("cannot resolve native mod package directory: {e}"))?;
+    let candidate = folder.join(module);
+    let meta = fs::symlink_metadata(&candidate)
+        .map_err(|e| format!("cannot inspect native module {}: {e}", candidate.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err("native module must be a regular file, not a symlink".into());
+    }
+    let resolved = candidate.canonicalize()
+        .map_err(|e| format!("cannot resolve native module {}: {e}", candidate.display()))?;
+    if !resolved.starts_with(&folder) {
+        return Err("native module path escapes the managed package directory".into());
+    }
+    Ok(resolved)
 }
 
 fn extract_package(path: &Path, destination: &Path) -> Result<(), String> {
