@@ -1410,7 +1410,7 @@ mod tests {
         let result = extract_package(&archive_path, &destination);
         assert!(result.unwrap_err().contains("staging directory"));
         assert!(!outside.join("payload.txt").exists());
-        assert!(destination.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(&destination).unwrap().file_type().is_symlink());
 
         fs::remove_dir_all(root).unwrap();
     }
