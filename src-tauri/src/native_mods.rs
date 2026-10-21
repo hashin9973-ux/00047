@@ -137,6 +137,9 @@ impl NativeModManager {
             return Err("Invalid native mod ID.".into());
         }
 
+        let app_root = self.root.canonicalize()
+            .map_err(|e| format!("Cannot resolve native mod data directory: {e}"))?;
+        let expected_packages = app_root.join("packages");
         let packages = self.packages_dir();
         let packages_meta = fs::symlink_metadata(&packages)
             .map_err(|e| format!("Cannot inspect native mod package directory: {e}"))?;
@@ -145,6 +148,9 @@ impl NativeModManager {
         }
         let packages = packages.canonicalize()
             .map_err(|e| format!("Cannot resolve native mod package root: {e}"))?;
+        if packages != expected_packages {
+            return Err("Native mod package root resolves outside its managed location.".into());
+        }
         let candidate = packages.join(id);
         match fs::symlink_metadata(&candidate) {
             Ok(meta) => {
@@ -1375,6 +1381,22 @@ mod tests {
         let resolved = module_file_path(&package, "bin/mod.dll").unwrap();
         assert_eq!(resolved, package.join("bin/mod.dll").canonicalize().unwrap());
         assert!(module_file_path(&package, "../outside.dll").is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_package_root_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("package-root-symlink");
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("packages")).unwrap();
+
+        let manager = NativeModManager::new(root.clone());
+        assert!(manager.package_dir("com.example.test").unwrap_err().contains("symlink"));
 
         fs::remove_dir_all(root).unwrap();
     }
