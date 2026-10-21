@@ -700,7 +700,9 @@ fn extract_package(path: &Path, destination: &Path) -> Result<(), String> {
     if archive.len() == 0 || archive.len() > MAX_FILES {
         return Err(format!("native mod ZIP must contain between 1 and {MAX_FILES} entries"));
     }
-    fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+    // The stage path must be new. `create_dir_all` would follow an already-planted
+    // directory symlink/junction and could extract package contents outside the store.
+    fs::create_dir(destination).map_err(|e| format!("cannot create native mod staging directory: {e}"))?;
     let mut total = 0u64;
     let mut windows_path_keys = HashSet::new();
     let mut windows_path_types = HashMap::new();
@@ -1378,6 +1380,39 @@ mod tests {
         valid_folder.insert("assets".to_string(), true);
         valid_folder.insert("assets/icon.png".to_string(), false);
         assert!(validate_windows_path_hierarchy(&valid_folder).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_extraction_rejects_symlinked_destination() {
+        use std::io::Write;
+        use std::os::unix::fs::symlink;
+        use zip::write::FileOptions;
+        use zip::{CompressionMethod, ZipWriter};
+
+        let root = test_root("extract-symlink-destination");
+        fs::create_dir_all(&root).unwrap();
+        let archive_path = root.join("valid.zip");
+        let options = FileOptions::default()
+            .compression_method(CompressionMethod::Stored);
+        {
+            let file = File::create(&archive_path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            writer.start_file("payload.txt", options).unwrap();
+            writer.write_all(b"must not escape the staging directory").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let destination = root.join("stage");
+        symlink(&outside, &destination).unwrap();
+        let result = extract_package(&archive_path, &destination);
+        assert!(result.unwrap_err().contains("staging directory"));
+        assert!(!outside.join("payload.txt").exists());
+        assert!(destination.symlink_metadata().unwrap().file_type().is_symlink());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
