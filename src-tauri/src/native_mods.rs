@@ -463,9 +463,6 @@ fn checked_enabled_state_path(root: &Path) -> Result<PathBuf, String> {
         Ok(metadata) if !metadata.is_file() => {
             return Err("Native mod enabled-state path must be a regular file.".into());
         }
-        Ok(metadata) if metadata.len() > MAX_ENABLED_STATE_BYTES => {
-            return Err("Native mod enabled-state file exceeds the 1 MB limit.".into());
-        }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("Cannot inspect native mod enabled-state file: {error}")),
@@ -1407,6 +1404,11 @@ mod tests {
 
         fs::write(&path, vec![b' '; MAX_ENABLED_STATE_BYTES as usize + 1]).unwrap();
         assert!(load_persisted_state(&path).enabled.is_empty());
+
+        // A corrupt/oversized regular file can be repaired safely by replacement.
+        atomic_write_enabled_state(&root, br#"{\"enabled\":[]}"#).unwrap();
+        assert!(load_persisted_state(&path).enabled.is_empty());
+        assert!(fs::metadata(&path).unwrap().len() < MAX_ENABLED_STATE_BYTES);
 
         fs::remove_dir_all(root).unwrap();
     }
