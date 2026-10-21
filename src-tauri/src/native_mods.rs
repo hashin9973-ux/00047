@@ -1380,6 +1380,33 @@ mod tests {
     }
 
     #[test]
+    fn native_mod_extraction_rejects_windows_reserved_paths_independently() {
+        use std::io::Write;
+        use zip::write::FileOptions;
+        use zip::{CompressionMethod, ZipWriter};
+
+        let root = test_root("extract-reserved-path");
+        fs::create_dir_all(&root).unwrap();
+        let archive_path = root.join("changed-after-validation.zip");
+        let options = FileOptions::default()
+            .compression_method(CompressionMethod::Stored);
+        {
+            let file = File::create(&archive_path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            writer.start_file("CON.txt", options).unwrap();
+            writer.write_all(b"must not extract").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let destination = root.join("stage");
+        let result = extract_package(&archive_path, &destination);
+        assert!(result.unwrap_err().contains("unsafe or Windows-ambiguous"));
+        assert!(!destination.join("CON.txt").exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn native_mod_preview_rejects_corrupt_zip_entry_crc() {
         use std::io::Write;
         use zip::write::FileOptions;
