@@ -1327,7 +1327,8 @@ mod tests {
         assert!(!valid_relative_path("bin/trailing."));
         assert!(!valid_relative_path("bin/trailing "));
         assert!(!valid_relative_path("bin/bad?.dll"));
-        assert!(!valid_relative_path("bin/line\\u{1f}break.dll"));
+        let control_path = format!("bin/line{}break.dll", char::from_u32(0x1f).unwrap());
+        assert!(!valid_relative_path(&control_path));
 
         let mut wrong_arch = manifest(vec!["explorer.exe"], "bin/mod.dll");
         wrong_arch.architecture = "x86".into();
