@@ -361,7 +361,14 @@ impl NativeModManager {
             }
         }
 
-        let dll = module_file_path(&folder, &manifest.module)?;
+        let dll = match module_file_path(&folder, &manifest.module) {
+            Ok(path) => path,
+            Err(e) => {
+                let status = format!("Disabled; unload skipped because the module path is unsafe: {e}");
+                self.set_status(id, status.clone());
+                return Err(status);
+            }
+        };
         match unload_from_targets(&manifest.targets, &dll) {
             Ok(count) => {
                 let status = format!("Disabled; unloaded from {count} process(es)");
@@ -1333,6 +1340,78 @@ mod tests {
         let _ = fs::remove_file(&path);
         assert!(result.is_err());
         assert!(result.err().unwrap().contains("ZIP entry integrity check failed"));
+    }
+
+    fn test_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "00047-native-mod-paths-{label}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn native_mod_package_directory_resolves_inside_managed_root() {
+        let root = test_root("package-dir");
+        let package = root.join("packages").join("com.example.test");
+        fs::create_dir_all(&package).unwrap();
+        let manager = NativeModManager::new(root.clone());
+
+        let resolved = manager.package_dir("com.example.test").unwrap();
+        assert_eq!(resolved, package.canonicalize().unwrap());
+        assert!(manager.package_dir("../outside").is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_mod_module_path_must_be_a_safe_file_inside_package() {
+        let root = test_root("module-path");
+        let package = root.join("packages").join("com.example.test");
+        fs::create_dir_all(package.join("bin")).unwrap();
+        fs::write(package.join("bin/mod.dll"), b"fixture").unwrap();
+
+        let resolved = module_file_path(&package, "bin/mod.dll").unwrap();
+        assert_eq!(resolved, package.join("bin/mod.dll").canonicalize().unwrap());
+        assert!(module_file_path(&package, "../outside.dll").is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_package_directory_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("package-symlink");
+        let packages = root.join("packages");
+        let outside = root.join("outside");
+        fs::create_dir_all(&packages).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, packages.join("com.example.link")).unwrap();
+
+        let manager = NativeModManager::new(root.clone());
+        assert!(manager.package_dir("com.example.link").unwrap_err().contains("symlink"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_module_file_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("module-symlink");
+        let package = root.join("packages").join("com.example.test");
+        fs::create_dir_all(package.join("bin")).unwrap();
+        let outside = root.join("outside.dll");
+        fs::write(&outside, b"fixture").unwrap();
+        symlink(&outside, package.join("bin/mod.dll")).unwrap();
+
+        assert!(module_file_path(&package, "bin/mod.dll").unwrap_err().contains("symlink"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
