@@ -336,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--json", action="store_true", help="emit a machine-readable JSON report")
     output.add_argument("--sarif", action="store_true", help="emit SARIF 2.1.0 for code-scanning integrations")
+    parser.add_argument("--output", type=Path, help="write --json or --sarif output to this file instead of stdout")
     parser.add_argument(
         "--fail-on-unsupported",
         action="store_true",
@@ -347,10 +348,19 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    if args.sarif:
-        print(json.dumps(to_sarif(report), indent=2))
-    elif args.json:
-        print(json.dumps(report, indent=2))
+    if args.output and not (args.sarif or args.json):
+        parser.error("--output requires either --json or --sarif")
+    if args.sarif or args.json:
+        payload = to_sarif(report) if args.sarif else report
+        rendered = json.dumps(payload, indent=2)
+        if args.output:
+            try:
+                args.output.write_text(rendered + chr(10), encoding="utf-8")
+            except OSError as exc:
+                print(f"ERROR: cannot write report: {exc}", file=sys.stderr)
+                return 1
+        else:
+            print(rendered)
     else:
         print(f"Files scanned: {report['files_scanned']}")
         for item in report["findings"]:
