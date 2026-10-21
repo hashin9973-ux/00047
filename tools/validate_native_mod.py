@@ -39,7 +39,7 @@ class ValidationError(ValueError):
 
 def _is_reserved_windows_name(part: str) -> bool:
     stem = part.split(".", 1)[0].rstrip(" ").casefold()
-    if stem in {"con", "prn", "aux", "nul"}:
+    if stem in {"con", "prn", "aux", "nul", "conin$", "conout$"}:
         return True
     return bool(re.fullmatch(r"(?:com|lpt)[1-9¹²³]", stem))
 
