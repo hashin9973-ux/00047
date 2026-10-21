@@ -5,10 +5,42 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from audit_windhawk_mod import IDENTIFIER, SUPPORTED, UNSUPPORTED, audit_paths, audit_text, mask_cpp_noncode
+from audit_windhawk_mod import IDENTIFIER, SUPPORTED, UNSUPPORTED, audit_paths, audit_text, mask_cpp_noncode, to_sarif
 
 
 class WindhawkAuditTests(unittest.TestCase):
+
+    def test_sarif_export_preserves_api_locations_and_severity(self):
+        report = {
+            "files_scanned": 1,
+            "findings": [
+                {
+                    "name": "Wh_SetFunctionHook",
+                    "category": "unsupported",
+                    "reason": "Hook engine is unavailable.",
+                    "locations": [{"file": "mod.cpp", "line": 17}],
+                },
+                {
+                    "name": "Wh_GetIntSetting",
+                    "category": "supported-with-limitations",
+                    "reason": "Settings helper.",
+                    "locations": [{"file": "mod.cpp", "line": 22}],
+                },
+            ],
+            "summary": {"unsupported": 1, "supported-with-limitations": 1},
+            "note": "Static audit only.",
+        }
+        sarif = to_sarif(report)
+        self.assertEqual(sarif["version"], "2.1.0")
+        results = sarif["runs"][0]["results"]
+        self.assertEqual(len(results), 2)
+        hook = next(item for item in results if "Wh_SetFunctionHook" in item["message"]["text"])
+        self.assertEqual(hook["level"], "error")
+        self.assertEqual(hook["locations"][0]["physicalLocation"]["region"]["startLine"], 17)
+        supported = next(item for item in results if "Wh_GetIntSetting" in item["message"]["text"])
+        self.assertEqual(supported["level"], "note")
+        self.assertEqual(sarif["runs"][0]["properties"]["filesScanned"], 1)
+
     def test_classifies_supported_unsupported_unknown_and_lifecycle(self):
         source = r'''
         // Wh_Disasm(address, &result) is only an example in a comment.
