@@ -45,6 +45,26 @@ class WindhawkAuditTests(unittest.TestCase):
         self.assertEqual(sarif["runs"][0]["properties"]["filesScanned"], 1)
 
 
+
+    def test_sarif_uses_repo_relative_uri_for_in_tree_sources(self):
+        report = {
+            "files_scanned": 1,
+            "findings": [{
+                "name": "Wh_Log",
+                "category": "supported-with-limitations",
+                "reason": "Logging helper.",
+                "locations": [{
+                    "file": str(Path.cwd() / "tools" / "example.cpp"),
+                    "line": 3,
+                }],
+            }],
+            "summary": {"supported-with-limitations": 1},
+            "note": "Static audit only.",
+        }
+        sarif = to_sarif(report)
+        uri = sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+        self.assertEqual(uri, "tools/example.cpp")
+
     def test_sarif_cli_emits_parseable_sarif(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "mod.cpp"
@@ -56,6 +76,8 @@ class WindhawkAuditTests(unittest.TestCase):
             parsed = json.loads(output.getvalue())
             self.assertEqual(parsed["version"], "2.1.0")
             self.assertEqual(parsed["runs"][0]["results"][0]["level"], "error")
+            uri = parsed["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            self.assertTrue(uri.startswith("file:"), uri)
 
     def test_classifies_supported_unsupported_unknown_and_lifecycle(self):
         source = r'''
