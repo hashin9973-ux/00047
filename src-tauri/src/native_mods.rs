@@ -691,8 +691,15 @@ fn module_file_path(folder: &Path, module: &str) -> Result<PathBuf, String> {
 }
 
 fn extract_package(path: &Path, destination: &Path) -> Result<(), String> {
+    let package_meta = fs::metadata(path).map_err(|e| e.to_string())?;
+    if package_meta.len() > MAX_ZIP_BYTES {
+        return Err("native mod ZIP exceeds the 20 MB compressed-size limit".into());
+    }
     let file = File::open(path).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
+    if archive.len() == 0 || archive.len() > MAX_FILES {
+        return Err(format!("native mod ZIP must contain between 1 and {MAX_FILES} entries"));
+    }
     fs::create_dir_all(destination).map_err(|e| e.to_string())?;
     let mut total = 0u64;
     let mut windows_path_keys = HashSet::new();
@@ -708,6 +715,14 @@ fn extract_package(path: &Path, destination: &Path) -> Result<(), String> {
         windows_path_types.insert(normalized.to_lowercase(), entry.is_dir());
         total = total.saturating_add(entry.size());
         if total > MAX_UNPACKED_BYTES { return Err("native mod ZIP expands beyond the 50 MB unpacked-size limit".into()); }
+        if entry.size() > 0 && entry.compressed_size() == 0 {
+            return Err(format!("invalid compressed ZIP entry size: {name}"));
+        }
+        if entry.compressed_size() > 0
+            && entry.size() / entry.compressed_size() > 1000
+        {
+            return Err(format!("suspicious ZIP compression ratio: {name}"));
+        }
         if let Some(mode) = entry.unix_mode() {
             if mode & 0o170000 == 0o120000 { return Err(format!("symbolic links are not allowed: {}", entry.name())); }
         }
