@@ -1399,6 +1399,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn native_mod_manifest_file_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("manifest-symlink");
+        let package = root.join("packages").join("com.example.test");
+        fs::create_dir_all(&package).unwrap();
+        let outside = root.join("outside.json");
+        fs::write(&outside, b"{}").unwrap();
+        symlink(&outside, package.join("manifest.json")).unwrap();
+
+        assert!(load_manifest(&package).unwrap_err().contains("symlink"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn native_mod_module_file_rejects_symlinks() {
         use std::os::unix::fs::symlink;
 
