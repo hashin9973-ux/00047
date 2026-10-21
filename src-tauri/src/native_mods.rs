@@ -1399,6 +1399,24 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn native_mod_module_path_rejects_symlinked_parent_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("module-parent-symlink");
+        let package = root.join("packages").join("com.example.test");
+        let outside = root.join("outside");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("mod.dll"), b"fixture").unwrap();
+        symlink(&outside, package.join("bin")).unwrap();
+
+        assert!(module_file_path(&package, "bin/mod.dll").unwrap_err().contains("escapes"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn native_mod_manifest_file_rejects_symlinks() {
         use std::os::unix::fs::symlink;
 
