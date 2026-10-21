@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from audit_windhawk_mod import IDENTIFIER, SUPPORTED, UNSUPPORTED, audit_paths, audit_text, mask_cpp_noncode, to_sarif
+from audit_windhawk_mod import IDENTIFIER, SUPPORTED, UNSUPPORTED, audit_paths, audit_text, mask_cpp_noncode, main, to_sarif
 
 
 class WindhawkAuditTests(unittest.TestCase):
@@ -40,6 +40,19 @@ class WindhawkAuditTests(unittest.TestCase):
         supported = next(item for item in results if "Wh_GetIntSetting" in item["message"]["text"])
         self.assertEqual(supported["level"], "note")
         self.assertEqual(sarif["runs"][0]["properties"]["filesScanned"], 1)
+
+
+    def test_sarif_cli_emits_parseable_sarif(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "mod.cpp"
+            source.write_text("Wh_SetFunctionHook(target, hook, &original);", encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = main([str(source), "--sarif"])
+            self.assertEqual(result, 0)
+            parsed = json.loads(output.getvalue())
+            self.assertEqual(parsed["version"], "2.1.0")
+            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "error")
 
     def test_classifies_supported_unsupported_unknown_and_lifecycle(self):
         source = r'''
