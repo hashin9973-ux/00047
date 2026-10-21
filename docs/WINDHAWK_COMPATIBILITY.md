@@ -12,7 +12,7 @@ python tools/audit_windhawk_mod.py path\to\mod --json
 python tools/audit_windhawk_mod.py path\to\mod --fail-on-unsupported
 ```
 
-The scanner reads C/C++ source/header files, masks comments and ordinary/raw string literals, and reports the source locations where `Wh_*` identifiers occur. It excludes common build-output folders and the SDK compatibility header by default. Files over 2 MiB are skipped. `--fail-on-unsupported` returns exit code 2 when unsupported, unknown, lifecycle-adaptation, or warning findings exist, so it can be used in a porting checklist or CI.
+The scanner reads C/C++ source/header files, masks comments and ordinary/raw string literals, and reports the source locations where `Wh_*` identifiers occur. It excludes common build-output folders and the SDK compatibility header by default. Files over 2 MiB are skipped. `--fail-on-unsupported` returns exit code 2 when unsupported, unknown, lifecycle-adaptation, or warning findings exist, so it can be used in a porting checklist or CI. `--sarif` emits SARIF 2.1.0 with source locations and severity levels for code-scanning integrations. `--output` writes JSON/SARIF to a file without mixing diagnostic text into the machine-readable report. Paths inside the current working tree are emitted as repository-relative URIs; external files use `file:` URIs and are not suitable for repository-hosted code-scanning uploads without remapping. The report describes static compatibility findings and does not certify runtime safety or ABI compatibility.
 
 ## Supported subset
 

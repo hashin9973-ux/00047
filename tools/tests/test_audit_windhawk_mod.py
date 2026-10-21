@@ -1,3 +1,6 @@
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
@@ -5,10 +8,106 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from audit_windhawk_mod import IDENTIFIER, SUPPORTED, UNSUPPORTED, audit_paths, audit_text, mask_cpp_noncode
+from audit_windhawk_mod import IDENTIFIER, SUPPORTED, UNSUPPORTED, audit_paths, audit_text, mask_cpp_noncode, main, to_sarif
 
 
 class WindhawkAuditTests(unittest.TestCase):
+
+    def test_sarif_export_preserves_api_locations_and_severity(self):
+        report = {
+            "files_scanned": 1,
+            "findings": [
+                {
+                    "name": "Wh_SetFunctionHook",
+                    "category": "unsupported",
+                    "reason": "Hook engine is unavailable.",
+                    "locations": [{"file": "mod.cpp", "line": 17}],
+                },
+                {
+                    "name": "Wh_GetIntSetting",
+                    "category": "supported-with-limitations",
+                    "reason": "Settings helper.",
+                    "locations": [{"file": "mod.cpp", "line": 22}],
+                },
+            ],
+            "summary": {"unsupported": 1, "supported-with-limitations": 1},
+            "note": "Static audit only.",
+        }
+        sarif = to_sarif(report)
+        self.assertEqual(sarif["version"], "2.1.0")
+        results = sarif["runs"][0]["results"]
+        self.assertEqual(len(results), 2)
+        hook = next(item for item in results if "Wh_SetFunctionHook" in item["message"]["text"])
+        self.assertEqual(hook["level"], "error")
+        self.assertEqual(hook["locations"][0]["physicalLocation"]["region"]["startLine"], 17)
+        supported = next(item for item in results if "Wh_GetIntSetting" in item["message"]["text"])
+        self.assertEqual(supported["level"], "note")
+        self.assertEqual(sarif["runs"][0]["properties"]["filesScanned"], 1)
+
+
+
+    def test_sarif_uses_repo_relative_uri_for_in_tree_sources(self):
+        report = {
+            "files_scanned": 1,
+            "findings": [{
+                "name": "Wh_Log",
+                "category": "supported-with-limitations",
+                "reason": "Logging helper.",
+                "locations": [{
+                    "file": str(Path.cwd() / "tools" / "example.cpp"),
+                    "line": 3,
+                }],
+            }],
+            "summary": {"supported-with-limitations": 1},
+            "note": "Static audit only.",
+        }
+        sarif = to_sarif(report)
+        uri = sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+        self.assertEqual(uri, "tools/example.cpp")
+
+    def test_sarif_cli_emits_parseable_sarif(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "mod.cpp"
+            source.write_text("Wh_SetFunctionHook(target, hook, &original);", encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = main([str(source), "--sarif"])
+            self.assertEqual(result, 0)
+            parsed = json.loads(output.getvalue())
+            self.assertEqual(parsed["version"], "2.1.0")
+            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "error")
+            uri = parsed["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            self.assertTrue(uri.startswith("file:"), uri)
+
+
+    def test_sarif_cli_writes_file_without_stdout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "mod.cpp"
+            output_path = root / "windhawk-audit.sarif"
+            source.write_text("Wh_SetFunctionHook(target, hook, &original);", encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = main([str(source), "--sarif", "--output", str(output_path)])
+            self.assertEqual(result, 0)
+            self.assertEqual(output.getvalue(), "")
+            parsed = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(parsed["version"], "2.1.0")
+            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "error")
+
+
+    def test_fail_on_unsupported_still_emits_valid_sarif(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp) / "mod.cpp"
+            source.write_text("Wh_SetFunctionHook(target, hook, &original);", encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = main([str(source), "--sarif", "--fail-on-unsupported"])
+            self.assertEqual(result, 2)
+            parsed = json.loads(output.getvalue())
+            self.assertEqual(parsed["version"], "2.1.0")
+            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "error")
+
     def test_classifies_supported_unsupported_unknown_and_lifecycle(self):
         source = r'''
         // Wh_Disasm(address, &result) is only an example in a comment.
