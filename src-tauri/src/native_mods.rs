@@ -495,12 +495,13 @@ fn valid_windows_path_component(part: &str) -> bool {
         || part.ends_with(' ')
         || part.ends_with('.')
         || part.chars().any(|ch| {
-            ch <= '\\u{1f}' || matches!(ch, '<' | '>' | ':' | '"' | '\\\\' | '|' | '?' | '*')
+            ch <= '\u{1f}' || matches!(ch, '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*')
         })
     {
         return false;
     }
 
+    // Windows device names remain reserved even when followed by an extension.
     let stem = part.split('.').next().unwrap_or(part)
         .trim_end_matches(|ch| ch == ' ' || ch == '.')
         .to_ascii_lowercase();
