@@ -31,3 +31,10 @@ add_library(00047_windhawk_settings_changed_smoke SHARED windhawk_settings_chang
 target_compile_features(00047_windhawk_settings_changed_smoke PRIVATE cxx_std_17)
 target_compile_definitions(00047_windhawk_settings_changed_smoke PRIVATE WMOD_BUILD_DLL WIN32_LEAN_AND_MEAN NOMINMAX)
 target_include_directories(00047_windhawk_settings_changed_smoke PRIVATE "${WMOD_SDK_DIR}")
+
+# Load the smoke DLL as an installed package and exercise live settings changes,
+# callback re-arming, and synchronous shutdown on Windows.
+add_executable(00047_windhawk_settings_changed_runtime_test windhawk_settings_changed_runtime_test.cpp)
+target_compile_features(00047_windhawk_settings_changed_runtime_test PRIVATE cxx_std_17)
+target_compile_definitions(00047_windhawk_settings_changed_runtime_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+add_dependencies(00047_windhawk_settings_changed_runtime_test 00047_windhawk_settings_changed_smoke)

@@ -105,6 +105,12 @@ jobs:
           if (-not (Test-Path $symbolTestExe)) { throw "Symbol compatibility test executable was not created." }
           & $symbolTestExe
 
+          $settingsTestExe = Join-Path $build "Release/00047_windhawk_settings_changed_runtime_test.exe"
+          $settingsSmokeDll = Join-Path $build "Release/00047_windhawk_settings_changed_smoke.dll"
+          if (-not (Test-Path $settingsTestExe)) { throw "Settings-change runtime test executable was not created." }
+          if (-not (Test-Path $settingsSmokeDll)) { throw "Settings-change smoke DLL was not created." }
+          & $settingsTestExe $settingsSmokeDll
+
       - name: Install prebuilt Tauri CLI
         run: npm install --no-save @tauri-apps/cli@^2
 
