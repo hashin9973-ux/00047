@@ -482,8 +482,39 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn valid_relative_path(value: &str) -> bool {
-    !value.is_empty() && !value.starts_with('/') && !value.contains('\\') && !value.contains(':')
-        && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+    !value.is_empty()
+        && !value.starts_with('/')
+        && !value.contains('\\')
+        && value.split('/').all(valid_windows_path_component)
+}
+
+fn valid_windows_path_component(part: &str) -> bool {
+    if part.is_empty()
+        || part == "."
+        || part == ".."
+        || part.ends_with(' ')
+        || part.ends_with('.')
+        || part.chars().any(|ch| {
+            ch <= '\\u{1f}' || matches!(ch, '<' | '>' | ':' | '"' | '\\\\' | '|' | '?' | '*')
+        })
+    {
+        return false;
+    }
+
+    let stem = part.split('.').next().unwrap_or(part)
+        .trim_end_matches(|ch| ch == ' ' || ch == '.')
+        .to_ascii_lowercase();
+    if matches!(stem.as_str(), "con" | "prn" | "aux" | "nul" | "conin$" | "conout$") {
+        return false;
+    }
+    for prefix in ["com", "lpt"] {
+        if let Some(suffix) = stem.strip_prefix(prefix) {
+            if matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³") {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn validate_windows_path_hierarchy(paths: &HashMap<String, bool>) -> Result<(), String> {
@@ -506,9 +537,11 @@ fn validate_windows_path_hierarchy(paths: &HashMap<String, bool>) -> Result<(), 
 }
 
 fn register_windows_zip_path(seen: &mut HashSet<String>, path: &str) -> Result<(), String> {
-    let normalized = path.trim_end_matches('/');
-    if !normalized.is_empty() && !valid_relative_path(normalized) {
-        return Err(format!("unsafe ZIP path: {path}"));
+    // Strip at most one directory separator. Extra separators leave an empty
+    // component and are rejected instead of being silently normalized.
+    let normalized = path.strip_suffix('/').unwrap_or(path);
+    if !valid_relative_path(normalized) {
+        return Err(format!("unsafe or Windows-ambiguous ZIP path: {path}"));
     }
     let key = normalized.to_lowercase();
     if !seen.insert(key) {
@@ -661,11 +694,19 @@ fn extract_package(path: &Path, destination: &Path) -> Result<(), String> {
     let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
     fs::create_dir_all(destination).map_err(|e| e.to_string())?;
     let mut total = 0u64;
+    let mut windows_path_keys = HashSet::new();
+    let mut windows_path_types = HashMap::new();
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = entry.name().to_string();
+        let relative = entry.enclosed_name()
+            .ok_or_else(|| format!("unsafe ZIP path: {name}"))?
+            .to_path_buf();
+        register_windows_zip_path(&mut windows_path_keys, &name)?;
+        let normalized = name.strip_suffix('/').unwrap_or(&name);
+        windows_path_types.insert(normalized.to_lowercase(), entry.is_dir());
         total = total.saturating_add(entry.size());
         if total > MAX_UNPACKED_BYTES { return Err("native mod ZIP expands beyond the 50 MB unpacked-size limit".into()); }
-        let relative = entry.enclosed_name().ok_or_else(|| format!("unsafe ZIP path: {}", entry.name()))?.to_path_buf();
         if let Some(mode) = entry.unix_mode() {
             if mode & 0o170000 == 0o120000 { return Err(format!("symbolic links are not allowed: {}", entry.name())); }
         }
@@ -677,6 +718,7 @@ fn extract_package(path: &Path, destination: &Path) -> Result<(), String> {
         let copied = std::io::copy(&mut entry, &mut target).map_err(|e| format!("extract failed: {e}"))?;
         if copied != declared_size { return Err(format!("ZIP entry size mismatch: {}", relative.display())); }
     }
+    validate_windows_path_hierarchy(&windows_path_types)?;
     Ok(())
 }
 
