@@ -253,10 +253,74 @@ def audit_paths(inputs: list[Path]) -> dict:
     }
 
 
+
+def to_sarif(report: dict) -> dict:
+    """Convert an audit report into SARIF 2.1.0 for code-scanning integrations."""
+    categories = sorted({item["category"] for item in report["findings"]})
+    rules = []
+    rule_ids = {}
+    for category in categories:
+        rule_id = "windhawk-api-" + re.sub(r"[^a-z0-9-]+", "-", category.lower()).strip("-")
+        rule_ids[category] = rule_id
+        rules.append({
+            "id": rule_id,
+            "shortDescription": {"text": category.replace("-", " ").title()},
+            "help": {"text": (
+                "Static compatibility finding from audit_windhawk_mod.py. "
+                "Review the API and its documented limitations before porting."
+            )},
+        })
+
+    results = []
+    for item in report["findings"]:
+        level = "error" if item["category"] == "unsupported" else (
+            "warning" if item["category"] in {
+                "unknown-api", "manual-lifecycle-adaptation", "warning"
+            } else "note"
+        )
+        locations = []
+        for location in item["locations"]:
+            path = str(location["file"]).replace("\\", "/")
+            locations.append({
+                "physicalLocation": {
+                    "artifactLocation": {"uri": path},
+                    "region": {"startLine": max(1, int(location["line"]))},
+                }
+            })
+        results.append({
+            "ruleId": rule_ids[item["category"]],
+            "level": level,
+            "message": {"text": f'{item["name"]}: {item["reason"]}'},
+            "locations": locations,
+        })
+
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {
+                "driver": {
+                    "name": "00047 Windhawk Compatibility Audit",
+                    "informationUri": "https://github.com/hashin9973-ux/00047",
+                    "rules": rules,
+                }
+            },
+            "results": results,
+            "properties": {
+                "filesScanned": report["files_scanned"],
+                "summary": report["summary"],
+                "note": report["note"],
+            },
+        }],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="+", type=Path, help="C/C++ source files or directories")
-    parser.add_argument("--json", action="store_true", help="emit a machine-readable JSON report")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="emit a machine-readable JSON report")
+    output.add_argument("--sarif", action="store_true", help="emit SARIF 2.1.0 for code-scanning integrations")
     parser.add_argument(
         "--fail-on-unsupported",
         action="store_true",
@@ -268,7 +332,9 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    if args.json:
+    if args.sarif:
+        print(json.dumps(to_sarif(report), indent=2))
+    elif args.json:
         print(json.dumps(report, indent=2))
     else:
         print(f"Files scanned: {report['files_scanned']}")
