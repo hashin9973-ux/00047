@@ -1425,11 +1425,9 @@ mod tests {
         symlink(&outside, root.join("enabled.json")).unwrap();
 
         assert!(load_persisted_state(&root.join("enabled.json")).enabled.is_empty());
-        let state = PersistedState::default();
         let result = atomic_write_enabled_state(&root, br#"{"enabled":[]}"#);
         assert!(result.unwrap_err().contains("symlink"));
         assert_eq!(fs::read(&outside).unwrap(), b"do not overwrite");
-        let _ = state;
 
         fs::remove_dir_all(root).unwrap();
     }
