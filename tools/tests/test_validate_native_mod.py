@@ -120,12 +120,14 @@ class NativeModValidatorTests(unittest.TestCase):
             validate_package(path)
 
     def test_rejects_windows_reserved_names(self):
-        path = self.package([
-            ("manifest.json", "{}"),
-            ("CON.txt", "bad"),
-        ])
-        with self.assertRaisesRegex(ValidationError, "reserved Windows filename"):
-            validate_package(path)
+        for reserved_name in ("CON.txt", "CONIN$.txt", "CONOUT$.dll", "LPT1.log"):
+            with self.subTest(name=reserved_name):
+                path = self.package([
+                    ("manifest.json", "{}"),
+                    (reserved_name, "bad"),
+                ])
+                with self.assertRaisesRegex(ValidationError, "reserved Windows filename"):
+                    validate_package(path)
 
     def test_rejects_file_directory_conflicts(self):
         path = self.package([

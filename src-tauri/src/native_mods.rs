@@ -136,7 +136,37 @@ impl NativeModManager {
         if !valid_id(id) {
             return Err("Invalid native mod ID.".into());
         }
-        Ok(self.packages_dir().join(id))
+
+        let app_root = self.root.canonicalize()
+            .map_err(|e| format!("Cannot resolve native mod data directory: {e}"))?;
+        let expected_packages = app_root.join("packages");
+        let packages = self.packages_dir();
+        let packages_meta = fs::symlink_metadata(&packages)
+            .map_err(|e| format!("Cannot inspect native mod package directory: {e}"))?;
+        if packages_meta.file_type().is_symlink() || !packages_meta.is_dir() {
+            return Err("Native mod package root must be a real directory, not a symlink.".into());
+        }
+        let packages = packages.canonicalize()
+            .map_err(|e| format!("Cannot resolve native mod package root: {e}"))?;
+        if packages != expected_packages {
+            return Err("Native mod package root resolves outside its managed location.".into());
+        }
+        let candidate = packages.join(id);
+        match fs::symlink_metadata(&candidate) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() || !meta.is_dir() {
+                    return Err("Installed native mod package must be a real directory, not a symlink.".into());
+                }
+                let resolved = candidate.canonicalize()
+                    .map_err(|e| format!("Cannot resolve installed native mod package: {e}"))?;
+                if !resolved.starts_with(&packages) {
+                    return Err("Native mod package path escapes the managed package directory.".into());
+                }
+                Ok(resolved)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(candidate),
+            Err(e) => Err(format!("Cannot inspect installed native mod package: {e}")),
+        }
     }
 
     fn enabled_snapshot(&self) -> HashSet<String> {
@@ -173,6 +203,10 @@ impl NativeModManager {
 
         for folder in folders {
             let folder_name = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let folder = match self.package_dir(&folder_name) {
+                Ok(path) => path,
+                Err(e) => { errors.push(format!("{folder_name}: {e}")); continue; }
+            };
             let manifest = match load_manifest(&folder) {
                 Ok(m) => m,
                 Err(e) => { errors.push(format!("{folder_name}: {e}")); continue; }
@@ -181,7 +215,10 @@ impl NativeModManager {
                 errors.push(format!("{folder_name}: mod ID does not match its package directory"));
                 continue;
             }
-            let module = folder.join(&manifest.module);
+            let module = match module_file_path(&folder, &manifest.module) {
+                Ok(path) => path,
+                Err(e) => { errors.push(format!("{}: {e}", manifest.id)); continue; }
+            };
             if let Err(e) = validate_pe_file(&module) {
                 errors.push(format!("{}: {e}", manifest.id));
                 continue;
@@ -261,7 +298,11 @@ impl NativeModManager {
             let _ = fs::remove_dir_all(&stage);
             return Err("Mod ID changed while staging install.".into());
         }
-        if let Err(e) = validate_pe_file(&stage.join(&staged.module)) {
+        let staged_module = match module_file_path(&stage, &staged.module) {
+            Ok(path) => path,
+            Err(e) => { let _ = fs::remove_dir_all(&stage); return Err(e); }
+        };
+        if let Err(e) = validate_pe_file(&staged_module) {
             let _ = fs::remove_dir_all(&stage);
             return Err(e);
         }
@@ -285,7 +326,8 @@ impl NativeModManager {
         if manifest.id != id {
             return Err("Mod ID does not match its package directory.".into());
         }
-        validate_pe_file(&folder.join(&manifest.module))?;
+        let module = module_file_path(&folder, &manifest.module)?;
+        validate_pe_file(&module)?;
 
         {
             let mut state = self.state.lock().map_err(|_| "Native mod state is unavailable.")?;
@@ -325,7 +367,14 @@ impl NativeModManager {
             }
         }
 
-        let dll = folder.join(&manifest.module);
+        let dll = match module_file_path(&folder, &manifest.module) {
+            Ok(path) => path,
+            Err(e) => {
+                let status = format!("Disabled; unload skipped because the module path is unsafe: {e}");
+                self.set_status(id, status.clone());
+                return Err(status);
+            }
+        };
         match unload_from_targets(&manifest.targets, &dll) {
             Ok(count) => {
                 let status = format!("Disabled; unloaded from {count} process(es)");
@@ -377,7 +426,10 @@ impl NativeModManager {
 
         let cleanup_warning = self.package_dir(id)
             .and_then(|folder| load_manifest(&folder).map(|manifest| (folder, manifest)))
-            .and_then(|(folder, manifest)| unload_from_targets(&manifest.targets, &folder.join(&manifest.module)).map(|_| ()))
+            .and_then(|(folder, manifest)| {
+                module_file_path(&folder, &manifest.module)
+                    .and_then(|dll| unload_from_targets(&manifest.targets, &dll).map(|_| ()))
+            })
             .err();
 
         let mut status = format!("Disabled after load failure: {reason}");
@@ -393,7 +445,8 @@ impl NativeModManager {
     fn apply_one(&self, id: &str) -> Result<String, String> {
         let folder = self.package_dir(id)?;
         let manifest = load_manifest(&folder)?;
-        validate_pe_file(&folder.join(&manifest.module))?;
+        let dll = module_file_path(&folder, &manifest.module)?;
+        validate_pe_file(&dll)?;
         let targets = discover_targets()?;
         let matching: Vec<NativeTarget> = targets.into_iter()
             .filter(|p| manifest.targets.iter().any(|t| t.eq_ignore_ascii_case(&p.executable)))
@@ -403,7 +456,6 @@ impl NativeModManager {
             return Ok("Enabled; waiting for a supported target process".into());
         }
 
-        let dll = folder.join(&manifest.module);
         let mut successes = 0usize;
         let mut failures = Vec::new();
         for target in matching {
@@ -430,8 +482,40 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn valid_relative_path(value: &str) -> bool {
-    !value.is_empty() && !value.starts_with('/') && !value.contains('\\') && !value.contains(':')
-        && value.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+    !value.is_empty()
+        && !value.starts_with('/')
+        && !value.contains('\\')
+        && value.split('/').all(valid_windows_path_component)
+}
+
+fn valid_windows_path_component(part: &str) -> bool {
+    if part.is_empty()
+        || part == "."
+        || part == ".."
+        || part.ends_with(' ')
+        || part.ends_with('.')
+        || part.chars().any(|ch| {
+            ch <= '\u{1f}' || matches!(ch, '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*')
+        })
+    {
+        return false;
+    }
+
+    // Windows device names remain reserved even when followed by an extension.
+    let stem = part.split('.').next().unwrap_or(part)
+        .trim_end_matches(|ch| ch == ' ' || ch == '.')
+        .to_ascii_lowercase();
+    if matches!(stem.as_str(), "con" | "prn" | "aux" | "nul" | "conin$" | "conout$") {
+        return false;
+    }
+    for prefix in ["com", "lpt"] {
+        if let Some(suffix) = stem.strip_prefix(prefix) {
+            if matches!(suffix, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³") {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn validate_windows_path_hierarchy(paths: &HashMap<String, bool>) -> Result<(), String> {
@@ -454,9 +538,11 @@ fn validate_windows_path_hierarchy(paths: &HashMap<String, bool>) -> Result<(), 
 }
 
 fn register_windows_zip_path(seen: &mut HashSet<String>, path: &str) -> Result<(), String> {
-    let normalized = path.trim_end_matches('/');
-    if !normalized.is_empty() && !valid_relative_path(normalized) {
-        return Err(format!("unsafe ZIP path: {path}"));
+    // Strip at most one directory separator. Extra separators leave an empty
+    // component and are rejected instead of being silently normalized.
+    let normalized = path.strip_suffix('/').unwrap_or(path);
+    if !valid_relative_path(normalized) {
+        return Err(format!("unsafe or Windows-ambiguous ZIP path: {path}"));
     }
     let key = normalized.to_lowercase();
     if !seen.insert(key) {
@@ -561,25 +647,84 @@ fn read_package(path: &Path) -> Result<ReadPackage, String> {
 }
 
 fn load_manifest(folder: &Path) -> Result<ModManifest, String> {
+    let folder_meta = fs::symlink_metadata(folder)
+        .map_err(|e| format!("cannot inspect native mod package directory: {e}"))?;
+    if folder_meta.file_type().is_symlink() || !folder_meta.is_dir() {
+        return Err("native mod package must be a real directory, not a symlink".into());
+    }
+    let folder = folder.canonicalize()
+        .map_err(|e| format!("cannot resolve native mod package directory: {e}"))?;
     let path = folder.join("manifest.json");
+    let meta = fs::symlink_metadata(&path)
+        .map_err(|e| format!("cannot inspect manifest.json: {e}"))?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err("manifest.json must be a regular file, not a symlink".into());
+    }
+    if meta.len() > MAX_MANIFEST_BYTES {
+        return Err("manifest.json exceeds the 1 MB limit".into());
+    }
     let text = fs::read_to_string(&path).map_err(|e| format!("cannot read manifest.json: {e}"))?;
-    if text.len() as u64 > MAX_MANIFEST_BYTES { return Err("manifest.json exceeds the 1 MB limit".into()); }
     let manifest: ModManifest = serde_json::from_str(text.trim_start_matches('\u{feff}'))
         .map_err(|e| format!("invalid native mod manifest: {e}"))?;
     validate_manifest(&manifest, None)?;
     Ok(manifest)
 }
 
+fn module_file_path(folder: &Path, module: &str) -> Result<PathBuf, String> {
+    if !valid_relative_path(module) {
+        return Err("native module path is not a safe relative path".into());
+    }
+    let folder = folder.canonicalize()
+        .map_err(|e| format!("cannot resolve native mod package directory: {e}"))?;
+    let candidate = folder.join(module);
+    let meta = fs::symlink_metadata(&candidate)
+        .map_err(|e| format!("cannot inspect native module {}: {e}", candidate.display()))?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return Err("native module must be a regular file, not a symlink".into());
+    }
+    let resolved = candidate.canonicalize()
+        .map_err(|e| format!("cannot resolve native module {}: {e}", candidate.display()))?;
+    if !resolved.starts_with(&folder) {
+        return Err("native module path escapes the managed package directory".into());
+    }
+    Ok(resolved)
+}
+
 fn extract_package(path: &Path, destination: &Path) -> Result<(), String> {
+    let package_meta = fs::metadata(path).map_err(|e| e.to_string())?;
+    if package_meta.len() > MAX_ZIP_BYTES {
+        return Err("native mod ZIP exceeds the 20 MB compressed-size limit".into());
+    }
     let file = File::open(path).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
-    fs::create_dir_all(destination).map_err(|e| e.to_string())?;
+    if archive.len() == 0 || archive.len() > MAX_FILES {
+        return Err(format!("native mod ZIP must contain between 1 and {MAX_FILES} entries"));
+    }
+    // The stage path must be new. `create_dir_all` would follow an already-planted
+    // directory symlink/junction and could extract package contents outside the store.
+    fs::create_dir(destination).map_err(|e| format!("cannot create native mod staging directory: {e}"))?;
     let mut total = 0u64;
+    let mut windows_path_keys = HashSet::new();
+    let mut windows_path_types = HashMap::new();
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let name = entry.name().to_string();
+        let relative = entry.enclosed_name()
+            .ok_or_else(|| format!("unsafe ZIP path: {name}"))?
+            .to_path_buf();
+        register_windows_zip_path(&mut windows_path_keys, &name)?;
+        let normalized = name.strip_suffix('/').unwrap_or(&name);
+        windows_path_types.insert(normalized.to_lowercase(), entry.is_dir());
         total = total.saturating_add(entry.size());
         if total > MAX_UNPACKED_BYTES { return Err("native mod ZIP expands beyond the 50 MB unpacked-size limit".into()); }
-        let relative = entry.enclosed_name().ok_or_else(|| format!("unsafe ZIP path: {}", entry.name()))?.to_path_buf();
+        if entry.size() > 0 && entry.compressed_size() == 0 {
+            return Err(format!("invalid compressed ZIP entry size: {name}"));
+        }
+        if entry.compressed_size() > 0
+            && entry.size() / entry.compressed_size() > 1000
+        {
+            return Err(format!("suspicious ZIP compression ratio: {name}"));
+        }
         if let Some(mode) = entry.unix_mode() {
             if mode & 0o170000 == 0o120000 { return Err(format!("symbolic links are not allowed: {}", entry.name())); }
         }
@@ -591,6 +736,7 @@ fn extract_package(path: &Path, destination: &Path) -> Result<(), String> {
         let copied = std::io::copy(&mut entry, &mut target).map_err(|e| format!("extract failed: {e}"))?;
         if copied != declared_size { return Err(format!("ZIP entry size mismatch: {}", relative.display())); }
     }
+    validate_windows_path_hierarchy(&windows_path_types)?;
     Ok(())
 }
 
@@ -1177,6 +1323,14 @@ mod tests {
         assert!(!valid_relative_path("../mod.dll"));
         assert!(!valid_relative_path("C:/temp/mod.dll"));
         assert!(!valid_relative_path("bin\\mod.dll"));
+        assert!(!valid_relative_path("bin/CON.dll"));
+        assert!(!valid_relative_path("bin/NUL.txt"));
+        assert!(!valid_relative_path("bin/COM1.log"));
+        assert!(!valid_relative_path("bin/trailing."));
+        assert!(!valid_relative_path("bin/trailing "));
+        assert!(!valid_relative_path("bin/bad?.dll"));
+        let control_path = format!("bin/line{}break.dll", char::from_u32(0x1f).unwrap());
+        assert!(!valid_relative_path(&control_path));
 
         let mut wrong_arch = manifest(vec!["explorer.exe"], "bin/mod.dll");
         wrong_arch.architecture = "x86".into();
@@ -1200,6 +1354,12 @@ mod tests {
         assert!(register_windows_zip_path(&mut seen_directories, "assets").is_ok());
         assert!(register_windows_zip_path(&mut seen_directories, "assets/")
             .unwrap_err().contains("collide on Windows"));
+        assert!(register_windows_zip_path(&mut HashSet::new(), "CON.txt")
+            .unwrap_err().contains("unsafe"));
+        assert!(register_windows_zip_path(&mut HashSet::new(), "file.")
+            .unwrap_err().contains("unsafe"));
+        assert!(register_windows_zip_path(&mut HashSet::new(), "folder//")
+            .unwrap_err().contains("unsafe"));
     }
 
     #[test]
@@ -1220,6 +1380,66 @@ mod tests {
         valid_folder.insert("assets".to_string(), true);
         valid_folder.insert("assets/icon.png".to_string(), false);
         assert!(validate_windows_path_hierarchy(&valid_folder).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_extraction_rejects_symlinked_destination() {
+        use std::io::Write;
+        use std::os::unix::fs::symlink;
+        use zip::write::FileOptions;
+        use zip::{CompressionMethod, ZipWriter};
+
+        let root = test_root("extract-symlink-destination");
+        fs::create_dir_all(&root).unwrap();
+        let archive_path = root.join("valid.zip");
+        let options = FileOptions::default()
+            .compression_method(CompressionMethod::Stored);
+        {
+            let file = File::create(&archive_path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            writer.start_file("payload.txt", options).unwrap();
+            writer.write_all(b"must not escape the staging directory").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        let destination = root.join("stage");
+        symlink(&outside, &destination).unwrap();
+        let result = extract_package(&archive_path, &destination);
+        assert!(result.unwrap_err().contains("staging directory"));
+        assert!(!outside.join("payload.txt").exists());
+        assert!(fs::symlink_metadata(&destination).unwrap().file_type().is_symlink());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_mod_extraction_rejects_windows_reserved_paths_independently() {
+        use std::io::Write;
+        use zip::write::FileOptions;
+        use zip::{CompressionMethod, ZipWriter};
+
+        let root = test_root("extract-reserved-path");
+        fs::create_dir_all(&root).unwrap();
+        let archive_path = root.join("changed-after-validation.zip");
+        let options = FileOptions::default()
+            .compression_method(CompressionMethod::Stored);
+        {
+            let file = File::create(&archive_path).unwrap();
+            let mut writer = ZipWriter::new(file);
+            writer.start_file("CON.txt", options).unwrap();
+            writer.write_all(b"must not extract").unwrap();
+            writer.finish().unwrap();
+        }
+
+        let destination = root.join("stage");
+        let result = extract_package(&archive_path, &destination);
+        assert!(result.unwrap_err().contains("unsafe or Windows-ambiguous"));
+        assert!(!destination.join("CON.txt").exists());
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1260,6 +1480,129 @@ mod tests {
         let _ = fs::remove_file(&path);
         assert!(result.is_err());
         assert!(result.err().unwrap().contains("ZIP entry integrity check failed"));
+    }
+
+    fn test_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "00047-native-mod-paths-{label}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn native_mod_package_directory_resolves_inside_managed_root() {
+        let root = test_root("package-dir");
+        let package = root.join("packages").join("com.example.test");
+        fs::create_dir_all(&package).unwrap();
+        let manager = NativeModManager::new(root.clone());
+
+        let resolved = manager.package_dir("com.example.test").unwrap();
+        assert_eq!(resolved, package.canonicalize().unwrap());
+        assert!(manager.package_dir("../outside").is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_mod_module_path_must_be_a_safe_file_inside_package() {
+        let root = test_root("module-path");
+        let package = root.join("packages").join("com.example.test");
+        fs::create_dir_all(package.join("bin")).unwrap();
+        fs::write(package.join("bin/mod.dll"), b"fixture").unwrap();
+
+        let resolved = module_file_path(&package, "bin/mod.dll").unwrap();
+        assert_eq!(resolved, package.join("bin/mod.dll").canonicalize().unwrap());
+        assert!(module_file_path(&package, "../outside.dll").is_err());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_package_root_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("package-root-symlink");
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("packages")).unwrap();
+
+        let manager = NativeModManager::new(root.clone());
+        assert!(manager.package_dir("com.example.test").unwrap_err().contains("symlink"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_package_directory_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("package-symlink");
+        let packages = root.join("packages");
+        let outside = root.join("outside");
+        fs::create_dir_all(&packages).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, packages.join("com.example.link")).unwrap();
+
+        let manager = NativeModManager::new(root.clone());
+        assert!(manager.package_dir("com.example.link").unwrap_err().contains("symlink"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_module_path_rejects_symlinked_parent_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("module-parent-symlink");
+        let package = root.join("packages").join("com.example.test");
+        let outside = root.join("outside");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("mod.dll"), b"fixture").unwrap();
+        symlink(&outside, package.join("bin")).unwrap();
+
+        assert!(module_file_path(&package, "bin/mod.dll").unwrap_err().contains("escapes"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_manifest_file_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("manifest-symlink");
+        let package = root.join("packages").join("com.example.test");
+        fs::create_dir_all(&package).unwrap();
+        let outside = root.join("outside.json");
+        fs::write(&outside, b"{}").unwrap();
+        symlink(&outside, package.join("manifest.json")).unwrap();
+
+        assert!(load_manifest(&package).unwrap_err().contains("symlink"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_mod_module_file_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("module-symlink");
+        let package = root.join("packages").join("com.example.test");
+        fs::create_dir_all(package.join("bin")).unwrap();
+        let outside = root.join("outside.dll");
+        fs::write(&outside, b"fixture").unwrap();
+        symlink(&outside, package.join("bin/mod.dll")).unwrap();
+
+        assert!(module_file_path(&package, "bin/mod.dll").unwrap_err().contains("symlink"));
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
