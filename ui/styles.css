@@ -344,7 +344,8 @@ textarea.glass.liquidglass-variant {
 .native-target-lifecycle-row p{grid-column:1/-1;margin:0;font-size:11px;color:var(--mu);overflow-wrap:anywhere}
 .native-lifecycle-state{align-self:start;font-size:10px!important;text-transform:uppercase;letter-spacing:.04em;padding:3px 6px;border:1px solid var(--line);border-radius:6px;white-space:nowrap}
 .native-state-indeterminate,.native-state-failed,.native-state-ineligible{border-color:rgba(220,95,95,.55)}
-.native-state-running,.native-state-unloaded,.native-state-rolled-back{border-color:rgba(100,170,130,.5)}
+.native-state-initialized,.native-state-unloaded,.native-state-rolled-back{border-color:rgba(100,170,130,.5)}
+.native-state-detected,.native-state-loading,.native-state-initializing,.native-state-stopping{border-color:var(--line);opacity:.9}
 .native-mod-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.native-preview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:12px 0}.native-preview-grid code,.native-preview-grid span{overflow-wrap:anywhere;font-size:12px}@media(max-width:760px){.native-mod-grid{grid-template-columns:1fr}.native-target{align-items:flex-start;flex-direction:column}.native-mod-head{flex-direction:column}}
 
 
