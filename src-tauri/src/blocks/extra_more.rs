@@ -133,7 +133,7 @@ impl Block for ProcessCount {
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
         let name = text(&cx.cfg, "processName");
-        let script = format!("$ErrorActionPreference='Stop'; $n={}; $p=@(Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object {$_.ProcessName -eq $n}); Write-Output ([int]$p.Count)", ps_quote(&name));
+        let script = format!("$ErrorActionPreference='Stop'; $n={}; $p=@(Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object {{$_.ProcessName -eq $n}}); Write-Output ([int]$p.Count)", ps_quote(&name));
         let out = powershell(cx, &script).await?;
         let actual = out.trim().parse::<u64>().map_err(|e| format!("Invalid process count: {e}"))?;
         let expected = rng(&cx.cfg, "count", 1.0, 0.0, 100000.0, "Expected process count")? as u64;
