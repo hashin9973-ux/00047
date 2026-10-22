@@ -133,7 +133,7 @@ impl Block for ProcessCount {
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
         let name = text(&cx.cfg, "processName");
-        let script = format!("$ErrorActionPreference='Stop'; $n={}; $p=@(Get-Process -Name $n -ErrorAction SilentlyContinue); Write-Output ([int]$p.Count)", ps_quote(&name));
+        let script = format!("$ErrorActionPreference='Stop'; $n={}; $p=@(Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object {$_.ProcessName -eq $n}); Write-Output ([int]$p.Count)", ps_quote(&name));
         let out = powershell(cx, &script).await?;
         let actual = out.trim().parse::<u64>().map_err(|e| format!("Invalid process count: {e}"))?;
         let expected = rng(&cx.cfg, "count", 1.0, 0.0, 100000.0, "Expected process count")? as u64;
@@ -233,6 +233,7 @@ impl Block for EnvironmentVariable {
             if text(c, key).contains('\0') { return Err("Environment-variable fields must not contain NUL characters".into()); }
         }
         if text(c, "name").is_empty() { return Err("Variable name is required".into()); }
+        if text(c, "name").contains('=') { return Err("Environment-variable names cannot contain an equals sign".into()); }
         let mode = text(c, "mode");
         if !matches!(mode.as_str(), "exists"|"equal"|"contains") { return Err("Unknown environment-variable match mode".into()); }
         if mode == "equal" && !c.get("expected").and_then(Value::as_str).is_some() { return Err("Expected value is required".into()); }
@@ -604,7 +605,7 @@ impl Block for CaptureScreenshot {
             if !parent.is_dir() { return Err("Screenshot parent directory must exist".into()); }
         }
         let script = format!(
-            "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $p={}; if((Test-Path -LiteralPath $p) -and -not {}){{throw 'Screenshot file already exists'}}; $b=[System.Windows.Forms.SystemInformation]::VirtualScreen; if($b.Width -le 0 -or $b.Height -le 0){{throw 'Virtual desktop size is unavailable'}}; $img=New-Object System.Drawing.Bitmap($b.Width,$b.Height); $g=[System.Drawing.Graphics]::FromImage($img); try{{$g.CopyFromScreen($b.Left,$b.Top,0,0,$img.Size); $img.Save($p,[System.Drawing.Imaging.ImageFormat]::Png)}}finally{{$g.Dispose();$img.Dispose()}}; 'Screenshot saved.'",
+            "$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $p={}; if(Test-Path -LiteralPath $p){{if(-not {}){{throw 'Screenshot file already exists'}}else{{Remove-Item -LiteralPath $p -Force -ErrorAction Stop}}}}; $b=[System.Windows.Forms.SystemInformation]::VirtualScreen; if($b.Width -le 0 -or $b.Height -le 0){{throw 'Virtual desktop size is unavailable'}}; $img=[System.Drawing.Bitmap]::new($b.Width,$b.Height); $g=[System.Drawing.Graphics]::FromImage($img); try{{$g.CopyFromScreen($b.Left,$b.Top,0,0,$img.Size); $img.Save($p,[System.Drawing.Imaging.ImageFormat]::Png)}}finally{{$g.Dispose();$img.Dispose()}}; 'Screenshot saved.'",
             ps_quote(&path), if overwrite { "$true" } else { "$false" });
         let out = powershell(cx, &script).await?;
         (cx.log)("info", format!("Saved desktop screenshot to {path}. {}", out.trim()));
