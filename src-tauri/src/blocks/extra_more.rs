@@ -1,5 +1,5 @@
 //! Additional utility automation conditions and actions.
-use super::{flag, rng, spec, text, Block, Cat, NodeCx, Outcome};
+use super::{extra, flag, rng, spec, text, Block, Cat, NodeCx, Outcome};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::{
