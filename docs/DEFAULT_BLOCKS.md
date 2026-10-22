@@ -86,8 +86,9 @@ The additional conditions and actions use declarative specs for their editor fie
 - **Bulk File Operations** copies, moves, renames, or recycles matching files. A preview-only mode prints up to 200 planned changes and flags destination collisions without modifying files; actual operations refuse to exceed the configured match cap and can preflight destination collisions.
 - **Set Display Brightness** uses the Windows WMI brightness interface when a monitor supports it.
 - **Set Power Plan** activates an existing Windows power plan.
-- **Ask User / Confirm** displays a blocking Yes/No or Yes/No/Cancel dialog; Yes is satisfied, No/Cancel is not satisfied.
-- **Retry Command** runs PowerShell with bounded attempts and fixed or exponential backoff. A total-timeout setting is available in addition to the retry count.
+- **Ask User / Input / Choice** displays a blocking confirmation, text-input, or configured-choice dialog. Yes/OK stores an accepted input or choice in a per-run variable; Cancel does not alter the variable and follows ELSE.
+- **Retry Command** runs PowerShell with bounded attempts and fixed or exponential backoff. The block supports the workflow timeout setting in addition to the retry count.
+- **Find File & Store Path** finds a matching file using a selected ordering (first, newest, oldest, largest, or smallest) and saves the full path in a workflow variable. No matches return Not Satisfied so the ELSE route can handle it.
 
 ### Passing values between blocks
 
