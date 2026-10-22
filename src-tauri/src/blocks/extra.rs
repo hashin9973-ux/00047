@@ -17,7 +17,7 @@ use tokio::io::AsyncReadExt;
 const CAPTURE_LIMIT: usize = 32 * 1024;
 type Probe<'a> = Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
 
-async fn read_capped<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> Result<String, String> {
+async fn read_capped<R: tokio::io::AsyncRead + Unpin + Send>(reader: &mut R) -> Result<String, String> {
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
@@ -247,8 +247,8 @@ impl Block for BatteryPower {
         poll_condition(cx,&behavior,poll,stable,timeout,|| Box::pin(async {
             let p=power_sample(cx).await?;
             Ok(match mode.as_str() {
-                "battery_below"=>p.battery>=0 && p.battery<100 && (p.battery as f64)<threshold,
-                "battery_above"=>p.battery>=0 && p.battery<100 && (p.battery as f64)>threshold,
+                "battery_below"=>p.battery>=0 && p.battery<=100 && (p.battery as f64)<threshold,
+                "battery_above"=>p.battery>=0 && p.battery<=100 && (p.battery as f64)>threshold,
                 "charging"=>p.charging,
                 "on_ac"=>p.ac==1,
                 "on_battery"=>p.ac==0,
@@ -483,7 +483,7 @@ impl Block for CopyMoveFile{
  fn title(&self)-> &'static str{"Copy or Move File"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn spec(&self)->Option<Value>{Some(copy_move_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&copy_move_spec(),c)?;for k in ["source","destination"]{if text(c,k).contains('\0'){return Err(format!("{k} must not contain NUL characters"))}}Ok(())}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let src=text(&cx.cfg,"source");let dst=text(&cx.cfg,"destination");let op=text(&cx.cfg,"operation");let collision=text(&cx.cfg,"collision");let s=Path::new(&src);let d=Path::new(&dst);let m=std::fs::metadata(s).map_err(|e|format!("Could not inspect source file: {e}"))?;if !m.is_file(){return Err("Source must be a regular file".into())};if d.exists()&&collision!="overwrite"{return Err("Destination already exists".into())};if let Some(parent)=d.parent(){if !parent.exists(){return Err("Destination directory does not exist".into())}}
- if op=="copy"{std::fs::copy(s,d).map_err(|e|format!("Copy failed: {e}"))?;}else{if d.exists(){std::fs::remove_file(d).map_err(|e|format!("Could not replace destination: {e}"))?}if let Err(e)=std::fs::rename(s,d){if e.kind()==std::io::ErrorKind::CrossesDevices{std::fs::copy(s,d).map_err(|x|format!("Move copy stage failed: {x}"))?;std::fs::remove_file(s).map_err(|x|format!("Copied but could not remove source: {x}"))?;}else{return Err(format!("Move failed: {e}"))}}}
+ if op=="copy"{std::fs::copy(s,d).map_err(|e|format!("Copy failed: {e}"))?;}else{if d.exists(){std::fs::remove_file(d).map_err(|e|format!("Could not replace destination: {e}"))?}if let Err(e)=std::fs::rename(s,d){if e.raw_os_error()==Some(17){std::fs::copy(s,d).map_err(|x|format!("Move copy stage failed: {x}"))?;std::fs::remove_file(s).map_err(|x|format!("Copied but could not remove source: {x}"))?;}else{return Err(format!("Move failed: {e}"))}}}
  (cx.log)("info",format!("{} '{}' -> '{}'",op,src,dst));Ok(Outcome::Satisfied)}
 }
 
