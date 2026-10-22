@@ -72,7 +72,7 @@ The additional conditions and actions use declarative specs for their editor fie
 
 ### Additional conditions
 
-- **File & Folder Watcher** watches a directory snapshot for matching file creation, modification, deletion, or rename activity. Polling is bounded to 10,000 matching files and is configurable.
+- **File & Folder Watcher** watches a directory snapshot for matching file or folder creation, modification, deletion, or rename activity. The **At least one matching item exists** event supports useful one-shot checks, while other event modes compare against the initial snapshot. Polling is bounded to 10,000 matching items and is configurable.
 - **File Content Condition** compares a bounded-size UTF-8 file by literal text or a time-limited .NET regular expression.
 - **HTTP Status & API Condition** waits for an HTTP endpoint to return a matching status, success status, response text, or dot-separated JSON property value. Requests are capped at 10 seconds per probe and do not log response bodies.
 - **Window State Condition** checks whether an app has a window, is foreground, minimized, maximized, or restored.
@@ -81,13 +81,13 @@ The additional conditions and actions use declarative specs for their editor fie
 
 - **Set Variable**, **Get Variable**, **Increment Variable**, and **Clear Variable** provide per-automation-run workflow variables. Values are isolated by automation run and discarded when the run ends; concurrent automations do not share variable stores.
 - **Send Keyboard Shortcut** dispatches a shortcut to the currently focused app using Windows SendKeys conventions (Ctrl = `^`, Shift = `+`, Alt = `%`).
-- **Mouse Automation** moves/clicks/scrolls using virtual-desktop coordinates. Coordinate scaling and monitor layout can affect which target receives the input.
-- **Extract ZIP Archive** expands a ZIP to a chosen directory with explicit destination collision behavior.
-- **Bulk File Operations** copies, moves, renames, or recycles matching files. The operation refuses to exceed the configured match cap and preflights destination collisions when configured to fail.
+- **Mouse Automation** moves/clicks/scrolls using virtual-desktop coordinates or offsets relative to a selected process window. Coordinate scaling, DPI, and monitor layout can affect which target receives the input.
+- **Extract ZIP Archive** expands a ZIP to a staging directory before installing it. When replacing an existing destination, the action retains a temporary backup and attempts restoration if installation fails.
+- **Bulk File Operations** copies, moves, renames, or recycles matching files. A preview-only mode prints up to 200 planned changes and flags destination collisions without modifying files; actual operations refuse to exceed the configured match cap and can preflight destination collisions.
 - **Set Display Brightness** uses the Windows WMI brightness interface when a monitor supports it.
 - **Set Power Plan** activates an existing Windows power plan.
 - **Ask User / Confirm** displays a blocking Yes/No or Yes/No/Cancel dialog; Yes is satisfied, No/Cancel is not satisfied.
-- **Retry Command** runs PowerShell with bounded attempts and fixed or exponential backoff.
+- **Retry Command** runs PowerShell with bounded attempts and fixed or exponential backoff. A total-timeout setting is available in addition to the retry count.
 
 ### Passing values between blocks
 
@@ -95,4 +95,4 @@ Use `{{variable_name}}` placeholders in supported text settings, including the R
 
 ### Wait until satisfied, polling, and timeouts
 
-Where conditions represent a state that can change over time, they support **Check once**, **Wait until satisfied**, and **Wait until state changes** with poll interval, optional stable-duration debounce, and timeout. This applies to network, CPU, disk, battery, file/folder, active-window, device-presence, lock/idle, application-responsiveness, visible-window-count, process-audio, process-count, service-state, clipboard, environment-variable, file-age, directory-count, file-watcher, file-content, HTTP-status, and window-state conditions. For existing automations that predate the Behavior field, an absent setting defaults to **Check once** to preserve their previous semantics. Interval remains a time gate rather than a polled state condition; Process Running and Time window retain their existing wait-specific modes.
+Where conditions represent a state that can change over time, they support **Check once**, **Wait until satisfied**, and **Wait until state changes** with poll interval, optional stable-duration debounce, and timeout. This applies to network, CPU, disk, battery, file/folder, active-window, device-presence, lock/idle, application-responsiveness, visible-window-count, process-audio, process-count, service-state, clipboard, environment-variable, file-age, directory-count, file-watcher, file-content, HTTP-status, and window-state conditions. The legacy RAM Usage and Process Running conditions, plus Time Window, also expose wait and state-change modes with real polling, stable-duration debounce, and timeout handling. Interval remains a time gate rather than a polled state condition. For existing automations that predate the Behavior field, an absent setting defaults to **Check once** to preserve their previous semantics. Interval remains a time gate rather than a polled state condition.
