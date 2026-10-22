@@ -100,7 +100,7 @@ fn file_watcher_spec() -> Value {
         json!({"key":"pattern","label":"Filename pattern","type":"text","default":"*","required":true,"maxLen":512}),
         json!({"key":"itemType","label":"Watch","type":"select","default":"both","options":[["files","Files"],["folders","Folders"],["both","Files and folders"]]}),
         json!({"key":"recursive","label":"Include subdirectories","type":"bool","default":false}),
-        json!({"key":"event","label":"Event","type":"select","default":"any","options":[["created","Created"],["modified","Modified"],["deleted","Deleted"],["any","Any create / modify / delete / rename"]]}),
+        json!({"key":"event","label":"Event","type":"select","default":"any","options":[["exists","At least one matching item exists"],["created","Created"],["modified","Modified"],["deleted","Deleted"],["any","Any create / modify / delete / rename"]]}),
     ], "Watch {path}: {event}", "A bounded polling snapshot detects matching files and/or folders, including nested items when recursive watching is enabled. Check once usually evaluates false for event-only modes; use Wait until satisfied to wait for an event. Poll interval and timeout are in Behavior.")
 }
 #[async_trait]
@@ -114,7 +114,7 @@ impl Block for FileWatcher {
         no_nul(c, &["path", "pattern"])?;
         if txt(c, "pattern").is_empty() { return Err("Filename pattern is required".into()); }
         if !matches!(txt(c, "itemType").as_str(), "files"|"folders"|"both") { return Err("Unknown watcher item type".into()); }
-        if !matches!(txt(c, "event").as_str(), "created"|"modified"|"deleted"|"any") { return Err("Unknown file event".into()); }
+        if !matches!(txt(c, "event").as_str(), "exists"|"created"|"modified"|"deleted"|"any") { return Err("Unknown file event".into()); }
         extra::wait_settings(c).map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
@@ -126,6 +126,16 @@ impl Block for FileWatcher {
         let event = txt(&cx.cfg, "event");
         if !root.is_dir() { return Err("Watched directory must exist before the block starts".into()); }
         let baseline = folder_snapshot(&root, recursive, &pattern, &item_type)?;
+        if event == "exists" {
+            let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+            return extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+                let root = root.clone(); let pattern = pattern.clone(); let item_type = item_type.clone();
+                Box::pin(async move {
+                    let current = folder_snapshot(&root, recursive, &pattern, &item_type)?;
+                    Ok(!current.is_empty())
+                }) as extra::Probe<'_>
+            }).await;
+        }
         let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
         extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
             let root = root.clone(); let pattern = pattern.clone(); let baseline = baseline.clone();
@@ -877,6 +887,13 @@ mod tests {
             assert_eq!(b.category(), category, "{id}");
             assert!(b.spec().is_some(), "{id} missing declarative UI spec");
         }
+    }
+
+    #[test]
+    fn file_watcher_supports_existence_and_event_modes() {
+        assert!(FileWatcher.validate(&json!({"path":"C:\\\\Temp","pattern":"*.log","itemType":"files","recursive":false,"event":"exists","behavior":"check","onFail":"stop"})).is_ok());
+        assert!(FileWatcher.validate(&json!({"path":"C:\\\\Temp","pattern":"*","itemType":"both","recursive":true,"event":"modified","behavior":"wait","pollSec":1,"stableForSec":0,"timeoutSec":30,"onFail":"stop"})).is_ok());
+        assert!(FileWatcher.validate(&json!({"path":"C:\\\\Temp","pattern":"*","itemType":"other","event":"exists","behavior":"check","onFail":"stop"})).is_err());
     }
 
     #[test]
