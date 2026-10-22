@@ -113,13 +113,13 @@ fn process_count_spec() -> Value {
         json!({"key":"processName","label":"Process name","type":"text","required":true,"maxLen":260}),
         json!({"key":"comparison","label":"Comparison","type":"select","default":"at_least","options":[["equal","Equal to"],["not_equal","Not equal to"],["greater","Greater than"],["at_least","At least"],["less","Less than"],["at_most","At most"]]}),
         json!({"key":"count","label":"Expected instances","type":"number","min":0,"max":100000,"step":1,"default":1}),
-        json!({"preset":"onFail"})
-    ], "Processes {processName}: {comparison} {count}", "Uses the process name without the .exe suffix. Matching is exact; a missing process counts as zero.")
+    ], "Processes {processName}: {comparison} {count}", "Use the process name without .exe. This condition can check once or poll until the count matches.")
 }
 #[async_trait]
 impl Block for ProcessCount {
     fn title(&self) -> &'static str { "Process Count" }
     fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn spec(&self) -> Option<Value> { Some(process_count_spec()) }
     fn validate(&self, c: &Value) -> Result<(), String> {
         spec::validate(&process_count_spec(), c)?;
@@ -128,64 +128,77 @@ impl Block for ProcessCount {
         if !matches!(cmp.as_str(), "equal"|"not_equal"|"greater"|"at_least"|"less"|"at_most") { return Err("Unknown process-count comparison".into()); }
         let n = rng(c, "count", 1.0, 0.0, 100000.0, "Expected process count")?;
         if n.fract() != 0.0 { return Err("Expected process count must be a whole number".into()); }
-        Ok(())
+        extra::wait_settings(c).map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
         let name = text(&cx.cfg, "processName");
-        let script = format!("$ErrorActionPreference='Stop'; $n={}; $p=@(Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object {{$_.ProcessName -eq $n}}); Write-Output ([int]$p.Count)", ps_quote(&name));
-        let out = powershell(cx, &script).await?;
-        let actual = out.trim().parse::<u64>().map_err(|e| format!("Invalid process count: {e}"))?;
         let expected = rng(&cx.cfg, "count", 1.0, 0.0, 100000.0, "Expected process count")? as u64;
-        let matches = comparison_matches(&text(&cx.cfg, "comparison"), actual, expected);
-        (cx.log)("info", format!("Process count for {name}: {actual}"));
-        Ok(if matches { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let comparison = text(&cx.cfg, "comparison");
+        let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+        extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+            let name = name.clone(); let comparison = comparison.clone();
+            Box::pin(async move {
+                let script = format!("$ErrorActionPreference='Stop'; $n={}; $p=@(Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object {{$_.ProcessName -eq $n}}); Write-Output ([int]$p.Count)", ps_quote(&name));
+                let out = powershell(cx, &script).await?;
+                let actual = out.trim().parse::<u64>().map_err(|e| format!("Invalid process count: {e}"))?;
+                (cx.report)("waiting", None, format!("Process count for {name}: {actual}"));
+                Ok(comparison_matches(&comparison, actual, expected))
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
 struct ServiceState;
 fn service_state_spec() -> Value {
-    condition_spec("Service State", "settings", "Checks the status of a Windows service by its service name.", vec![
+    condition_spec("Service State", "settings", "Checks the status of a Windows service by service name.", vec![
         json!({"key":"serviceName","label":"Service name","type":"text","required":true,"maxLen":256}),
         json!({"key":"state","label":"Expected state","type":"select","default":"Running","options":[["Running","Running"],["Stopped","Stopped"],["Paused","Paused"],["StartPending","Start pending"],["StopPending","Stop pending"],["Missing","Not installed / missing"]]}),
-        json!({"preset":"onFail"})
-    ], "Service {serviceName}: {state}", "Enter the service name, not its display name. Service state changes are not polled; this is a single check.")
+    ], "Service {serviceName}: {state}", "Enter the service name rather than its display name. You can wait for the service to reach a desired state.")
 }
 #[async_trait]
 impl Block for ServiceState {
     fn title(&self) -> &'static str { "Service State" }
     fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn spec(&self) -> Option<Value> { Some(service_state_spec()) }
     fn validate(&self, c: &Value) -> Result<(), String> {
         spec::validate(&service_state_spec(), c)?;
         if text(c, "serviceName").contains('\0') { return Err("Service name must not contain NUL characters".into()); }
-        Ok(())
+        extra::wait_settings(c).map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
         let name = text(&cx.cfg, "serviceName");
-        let script = format!("$ErrorActionPreference='Stop'; $n={}; $s=@(Get-Service -Name $n -ErrorAction SilentlyContinue | Where-Object {{$_.Name -eq $n}}); if($s.Count -eq 0){{'Missing'}}else{{$s[0].Status.ToString()}}", ps_quote(&name));
-        let state = powershell(cx, &script).await?;
-        let matches = state.trim().eq_ignore_ascii_case(&text(&cx.cfg, "state"));
-        (cx.log)("info", format!("Service {name} state: {}", state.trim()));
-        Ok(if matches { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let expected = text(&cx.cfg, "state");
+        let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+        extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+            let name = name.clone(); let expected = expected.clone();
+            Box::pin(async move {
+                let script = format!("$ErrorActionPreference='Stop'; $n={}; $s=@(Get-Service -Name $n -ErrorAction SilentlyContinue | Where-Object {{$_.Name -eq $n}}); if($s.Count -eq 0){{'Missing'}}else{{$s[0].Status.ToString()}}", ps_quote(&name));
+                let state = powershell(cx, &script).await?;
+                let matches = state.trim().eq_ignore_ascii_case(&expected);
+                (cx.report)("waiting", None, format!("Service {name}: {}", state.trim()));
+                Ok(matches)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
 struct ClipboardText;
 fn clipboard_spec() -> Value {
-    condition_spec("Clipboard Text", "clipboard", "Checks text currently on the Windows clipboard without logging the clipboard contents.", vec![
+    condition_spec("Clipboard Text", "clipboard", "Checks clipboard text without logging its contents.", vec![
         json!({"key":"mode","label":"Match","type":"select","default":"contains","options":[["empty","Is empty"],["equal","Equals text"],["contains","Contains text"],["starts","Starts with text"]]}),
         json!({"key":"text","label":"Text to compare","type":"text","maxLen":4000,"show":{"key":"mode","eq":"equal"}}),
         json!({"key":"containsText","label":"Text to find","type":"text","maxLen":4000,"show":{"key":"mode","eq":"contains"}}),
         json!({"key":"startsText","label":"Required prefix","type":"text","maxLen":4000,"show":{"key":"mode","eq":"starts"}}),
-        json!({"preset":"onFail"})
-    ], "Clipboard {mode}", "Only the comparison result is returned; clipboard text is never written to the workflow log. This block requires an interactive Windows user session.")
+    ], "Clipboard {mode}", "Only the comparison result is logged. Requires an interactive Windows user session.")
 }
 #[async_trait]
 impl Block for ClipboardText {
     fn title(&self) -> &'static str { "Clipboard Text" }
     fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn spec(&self) -> Option<Value> { Some(clipboard_spec()) }
     fn validate(&self, c: &Value) -> Result<(), String> {
         spec::validate(&clipboard_spec(), c)?;
@@ -194,9 +207,9 @@ impl Block for ClipboardText {
         let key = match mode.as_str() { "equal" => "text", "contains" => "containsText", "starts" => "startsText", _ => "" };
         if !key.is_empty() && raw_text(c, key).is_empty() { return Err("Text to compare is required for this match mode".into()); }
         for key in ["text", "containsText", "startsText"] {
-            if text(c, key).contains('\0') { return Err("Clipboard comparison text must not contain NUL characters".into()); }
+            if raw_text(c, key).contains('\0') { return Err("Clipboard comparison text must not contain NUL characters".into()); }
         }
-        Ok(())
+        extra::wait_settings(c).map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
@@ -205,40 +218,46 @@ impl Block for ClipboardText {
         let script = format!(
             "$ErrorActionPreference='Stop'; $v=[string](Get-Clipboard -Raw -ErrorAction Stop); $e={}; $m={}; $ok=switch($m){{'empty'{{[string]::IsNullOrEmpty($v)}}'equal'{{[string]::Equals($v,$e,[System.StringComparison]::OrdinalIgnoreCase)}}'contains'{{$v.IndexOf($e,[System.StringComparison]::OrdinalIgnoreCase) -ge 0}}'starts'{{$v.StartsWith($e,[System.StringComparison]::OrdinalIgnoreCase)}}default{{$false}}}}; [bool]$ok | ConvertTo-Json -Compress",
             ps_quote(&expected), ps_quote(&mode));
-        let matches = ps_bool(cx, &script).await?;
-        (cx.log)("info", format!("Clipboard text condition ({mode}): {matches}"));
-        Ok(if matches { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+        extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+            let script = script.clone(); let mode = mode.clone();
+            Box::pin(async move {
+                let matches = extra::ps_bool(cx, &script).await?;
+                (cx.report)("waiting", None, format!("Clipboard text condition ({mode}): {matches}"));
+                Ok(matches)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
 struct EnvironmentVariable;
 fn environment_spec() -> Value {
-    condition_spec("Environment Variable", "variable", "Checks whether a process, user, or machine environment variable exists or matches text.", vec![
+    condition_spec("Environment Variable", "variable", "Checks whether a process, user, or machine environment variable matches the configured condition.", vec![
         json!({"key":"name","label":"Variable name","type":"text","required":true,"maxLen":256}),
         json!({"key":"scope","label":"Scope","type":"select","default":"Process","options":[["Process","Current process"],["User","Current user"],["Machine","Local machine"]]}),
         json!({"key":"mode","label":"Match","type":"select","default":"exists","options":[["exists","Exists / is defined"],["equal","Equals text"],["contains","Contains text"]]}),
         json!({"key":"expected","label":"Expected value","type":"text","maxLen":4000,"show":{"key":"mode","eq":"equal"}}),
         json!({"key":"containsValue","label":"Text to find","type":"text","maxLen":4000,"show":{"key":"mode","eq":"contains"}}),
-        json!({"preset":"onFail"})
-    ], "Environment variable {name}", "The variable's contents are not logged. Machine scope is read-only and may return an empty result when the variable is undefined.")
+    ], "Environment variable {name}", "The variable's contents are not logged. Machine scope is read-only.")
 }
 #[async_trait]
 impl Block for EnvironmentVariable {
     fn title(&self) -> &'static str { "Environment Variable" }
     fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn spec(&self) -> Option<Value> { Some(environment_spec()) }
     fn validate(&self, c: &Value) -> Result<(), String> {
         spec::validate(&environment_spec(), c)?;
         for key in ["name", "expected", "containsValue"] {
-            if text(c, key).contains('\0') { return Err("Environment-variable fields must not contain NUL characters".into()); }
+            if raw_text(c, key).contains('\0') { return Err("Environment-variable fields must not contain NUL characters".into()); }
         }
         if text(c, "name").is_empty() { return Err("Variable name is required".into()); }
         if text(c, "name").contains('=') { return Err("Environment-variable names cannot contain an equals sign".into()); }
         let mode = text(c, "mode");
         if !matches!(mode.as_str(), "exists"|"equal"|"contains") { return Err("Unknown environment-variable match mode".into()); }
-        if mode == "equal" && !c.get("expected").and_then(Value::as_str).is_some() { return Err("Expected value is required".into()); }
-        if mode == "contains" && text(c, "containsValue").is_empty() { return Err("Text to find is required".into()); }
-        Ok(())
+        if mode == "equal" && c.get("expected").and_then(Value::as_str).is_none() { return Err("Expected value is required".into()); }
+        if mode == "contains" && raw_text(c, "containsValue").is_empty() { return Err("Text to find is required".into()); }
+        extra::wait_settings(c).map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
@@ -249,60 +268,74 @@ impl Block for EnvironmentVariable {
         let script = format!(
             "$ErrorActionPreference='Stop'; $n={}; $target=[System.EnvironmentVariableTarget]::{scope}; $v=[Environment]::GetEnvironmentVariable($n,$target); $ok=switch({}){{'exists'{{$null -ne $v}}'equal'{{[string]::Equals([string]$v,{},[System.StringComparison]::OrdinalIgnoreCase)}}'contains'{{$null -ne $v -and ([string]$v).IndexOf({},[System.StringComparison]::OrdinalIgnoreCase) -ge 0}}default{{$false}}}}; [bool]$ok | ConvertTo-Json -Compress",
             ps_quote(&name), ps_quote(&mode), ps_quote(&expected), ps_quote(&expected));
-        let matches = ps_bool(cx, &script).await?;
-        (cx.log)("info", format!("Environment variable {name} ({scope}/{mode}): {matches}"));
-        Ok(if matches { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+        extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+            let script = script.clone(); let name = name.clone(); let scope = scope.clone(); let mode = mode.clone();
+            Box::pin(async move {
+                let matches = extra::ps_bool(cx, &script).await?;
+                (cx.report)("waiting", None, format!("Environment variable {name} ({scope}/{mode}): {matches}"));
+                Ok(matches)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
 struct FileAge;
 fn file_age_spec() -> Value {
-    condition_spec("File Age", "calendar-clock", "Checks whether a file or directory was modified before or after a configured age.", vec![
+    condition_spec("File Age", "calendar-clock", "Checks a file or directory's last-modified age in minutes.", vec![
         json!({"key":"path","label":"File or directory path","type":"text","required":true,"maxLen":2048}),
         json!({"key":"mode","label":"Age test","type":"select","default":"older","options":[["older","At least this old"],["newer","Newer than this age"]]}),
         json!({"key":"minutes","label":"Age (minutes)","type":"number","min":0,"max":5256000,"step":1,"default":60}),
-        json!({"preset":"onFail"})
-    ], "File age: {path}", "Uses the last-modified timestamp. A missing path returns Not Satisfied; file and directory paths are both supported.")
+    ], "File age: {path}", "A missing path is not satisfied. Use wait-until when waiting for a file to become old enough or sufficiently recent.")
 }
 #[async_trait]
 impl Block for FileAge {
     fn title(&self) -> &'static str { "File Age" }
     fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn spec(&self) -> Option<Value> { Some(file_age_spec()) }
     fn validate(&self, c: &Value) -> Result<(), String> {
         spec::validate(&file_age_spec(), c)?;
         if text(c, "path").contains('\0') { return Err("Path must not contain NUL characters".into()); }
         if !matches!(text(c, "mode").as_str(), "older"|"newer") { return Err("Unknown file-age mode".into()); }
-        rng(c, "minutes", 60.0, 0.0, 5256000.0, "Age (minutes)").map(|_| ())
+        rng(c, "minutes", 60.0, 0.0, 5256000.0, "Age (minutes)")?;
+        extra::wait_settings(c).map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
         let path = text(&cx.cfg, "path");
-        let meta = match fs::metadata(&path) { Ok(m) => m, Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Outcome::NotSatisfied), Err(e) => return Err(format!("Could not inspect path: {e}")) };
-        let modified = meta.modified().map_err(|e| format!("Could not read last-modified time: {e}"))?;
-        let age = SystemTime::now().duration_since(modified).unwrap_or(Duration::ZERO).as_secs_f64() / 60.0;
+        let mode = text(&cx.cfg, "mode");
         let limit = rng(&cx.cfg, "minutes", 60.0, 0.0, 5256000.0, "Age (minutes)")?;
-        let matches = if text(&cx.cfg, "mode") == "older" { age >= limit } else { age < limit };
-        (cx.log)("info", format!("File age check for {path}: {:.1} minutes", age));
-        Ok(if matches { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+        extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+            let path = path.clone(); let mode = mode.clone();
+            Box::pin(async move {
+                let meta = match fs::metadata(&path) { Ok(m) => m, Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false), Err(e) => return Err(format!("Could not inspect path: {e}")) };
+                let modified = meta.modified().map_err(|e| format!("Could not read last-modified time: {e}"))?;
+                let age = SystemTime::now().duration_since(modified).unwrap_or(Duration::ZERO).as_secs_f64() / 60.0;
+                let matches = if mode == "older" { age >= limit } else { age < limit };
+                (cx.report)("waiting", None, format!("File age for {path}: {:.1} minutes", age));
+                Ok(matches)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
 struct DirectoryCount;
 fn directory_count_spec() -> Value {
-    condition_spec("Directory Item Count", "folder-tree", "Counts files, folders, or both directly or recursively inside a directory.", vec![
+    condition_spec("Directory Item Count", "folder-tree", "Counts files, folders, or both in a directory.", vec![
         json!({"key":"path","label":"Directory path","type":"text","required":true,"maxLen":2048}),
         json!({"key":"kind","label":"Count","type":"select","default":"files","options":[["files","Files"],["folders","Folders"],["both","Files and folders"]]}),
         json!({"key":"recursive","label":"Include subdirectories","type":"bool","default":false}),
         json!({"key":"comparison","label":"Comparison","type":"select","default":"at_least","options":[["equal","Equal to"],["not_equal","Not equal to"],["greater","Greater than"],["at_least","At least"],["less","Less than"],["at_most","At most"]]}),
         json!({"key":"count","label":"Expected count","type":"number","min":0,"max":1000000,"step":1,"default":1}),
-        json!({"preset":"onFail"})
-    ], "Directory item count: {path}", "Recursive scans may take time on large directories. Enumeration errors are reported rather than treated as zero items.")
+    ], "Directory item count: {path}", "Recursive scans may take time on large directories. Use wait-until to wait for a directory to reach the expected count.")
 }
 #[async_trait]
 impl Block for DirectoryCount {
     fn title(&self) -> &'static str { "Directory Item Count" }
     fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn spec(&self) -> Option<Value> { Some(directory_count_spec()) }
     fn validate(&self, c: &Value) -> Result<(), String> {
         spec::validate(&directory_count_spec(), c)?;
@@ -312,7 +345,7 @@ impl Block for DirectoryCount {
         if !matches!(cmp.as_str(), "equal"|"not_equal"|"greater"|"at_least"|"less"|"at_most") { return Err("Unknown item-count comparison".into()); }
         let n = rng(c, "count", 1.0, 0.0, 1000000.0, "Expected count")?;
         if n.fract() != 0.0 { return Err("Expected count must be a whole number".into()); }
-        Ok(())
+        extra::wait_settings(c).map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
@@ -330,12 +363,19 @@ impl Block for DirectoryCount {
             _ => ""
         };
         let script = format!("$ErrorActionPreference='Stop'; $p={}; if(-not (Test-Path -LiteralPath $p -PathType Container)){{throw 'Directory does not exist'}}; $items=@({enumerate}); {filter} Write-Output ([int]$items.Count)", ps_quote(&path));
-        let out = powershell(cx, &script).await?;
-        let actual = out.trim().parse::<u64>().map_err(|e| format!("Invalid directory item count: {e}"))?;
         let expected = rng(&cx.cfg, "count", 1.0, 0.0, 1000000.0, "Expected count")? as u64;
-        let matches = comparison_matches(&text(&cx.cfg, "comparison"), actual, expected);
-        (cx.log)("info", format!("Directory item count for {path}: {actual}"));
-        Ok(if matches { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let comparison = text(&cx.cfg, "comparison");
+        let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+        extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+            let script = script.clone(); let path = path.clone(); let comparison = comparison.clone();
+            Box::pin(async move {
+                let out = powershell(cx, &script).await?;
+                let actual = out.trim().parse::<u64>().map_err(|e| format!("Invalid directory item count: {e}"))?;
+                let matches = comparison_matches(&comparison, actual, expected);
+                (cx.report)("waiting", None, format!("Directory item count for {path}: {actual}"));
+                Ok(matches)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
