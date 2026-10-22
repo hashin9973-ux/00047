@@ -62,7 +62,7 @@ fn wildcard_match(pattern: &str, name: &str) -> bool {
     p == pb.len()
 }
 
-fn folder_snapshot(root: &Path, recursive: bool, pattern: &str) -> Result<BTreeMap<String, (u64, u128)>, String> {
+fn folder_snapshot(root: &Path, recursive: bool, pattern: &str, item_type: &str) -> Result<BTreeMap<String, (bool, u64, u128)>, String> {
     let mut result = BTreeMap::new();
     if !root.exists() { return Ok(result); }
     if !root.is_dir() { return Err("Watched path is not a directory".into()); }
@@ -74,13 +74,17 @@ fn folder_snapshot(root: &Path, recursive: bool, pattern: &str) -> Result<BTreeM
             let path = entry.path();
             let meta = entry.metadata().map_err(|e| format!("Could not inspect {}: {e}", path.display()))?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if meta.is_dir() {
-                if recursive { stack.push(path.clone()); }
-            }
-            if meta.is_file() && wildcard_match(pattern, &name) {
-                if result.len() >= 10000 { return Err("Folder watch limit reached (10,000 matching files)".into()); }
+            let is_dir = meta.is_dir();
+            if is_dir && recursive { stack.push(path.clone()); }
+            let include_kind = match item_type {
+                "files" => meta.is_file(),
+                "folders" => is_dir,
+                _ => meta.is_file() || is_dir,
+            };
+            if include_kind && wildcard_match(pattern, &name) {
+                if result.len() >= 10000 { return Err("Folder watch limit reached (10,000 matching items)".into()); }
                 let stamp = meta.modified().ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
-                result.insert(path.to_string_lossy().to_string(), (meta.len(), stamp));
+                result.insert(path.to_string_lossy().to_string(), (is_dir, meta.len(), stamp));
             }
         }
     }
@@ -91,12 +95,13 @@ fn folder_snapshot(root: &Path, recursive: bool, pattern: &str) -> Result<BTreeM
 
 struct FileWatcher;
 fn file_watcher_spec() -> Value {
-    spec_condition("File & Folder Watcher", "folder-search", "Waits for files to be created, modified, or deleted in a directory.", vec![
+    spec_condition("File & Folder Watcher", "folder-search", "Waits for matching files or folders to be created, modified, deleted, or renamed in a directory.", vec![
         json!({"key":"path","label":"Directory to watch","type":"text","required":true,"maxLen":2048}),
         json!({"key":"pattern","label":"Filename pattern","type":"text","default":"*","required":true,"maxLen":512}),
+        json!({"key":"itemType","label":"Watch","type":"select","default":"both","options":[["files","Files"],["folders","Folders"],["both","Files and folders"]]}),
         json!({"key":"recursive","label":"Include subdirectories","type":"bool","default":false}),
-        json!({"key":"event","label":"Event","type":"select","default":"any","options":[["created","File created"],["modified","File modified"],["deleted","File deleted"],["any","Any create / modify / delete / rename"]]}),
-    ], "Watch {path}: {event}", "A bounded polling snapshot detects changes. Check once usually evaluates false for event-only modes; use Wait until satisfied to wait for an event. Poll interval and timeout are in Behavior.")
+        json!({"key":"event","label":"Event","type":"select","default":"any","options":[["created","Created"],["modified","Modified"],["deleted","Deleted"],["any","Any create / modify / delete / rename"]]}),
+    ], "Watch {path}: {event}", "A bounded polling snapshot detects matching files and/or folders, including nested items when recursive watching is enabled. Check once usually evaluates false for event-only modes; use Wait until satisfied to wait for an event. Poll interval and timeout are in Behavior.")
 }
 #[async_trait]
 impl Block for FileWatcher {
@@ -108,6 +113,7 @@ impl Block for FileWatcher {
         super::spec::validate(&file_watcher_spec(), c)?;
         no_nul(c, &["path", "pattern"])?;
         if txt(c, "pattern").is_empty() { return Err("Filename pattern is required".into()); }
+        if !matches!(txt(c, "itemType").as_str(), "files"|"folders"|"both") { return Err("Unknown watcher item type".into()); }
         if !matches!(txt(c, "event").as_str(), "created"|"modified"|"deleted"|"any") { return Err("Unknown file event".into()); }
         extra::wait_settings(c).map(|_| ())
     }
@@ -116,15 +122,16 @@ impl Block for FileWatcher {
         let root = PathBuf::from(template(cx, &txt(&cx.cfg, "path"))?);
         let pattern = template(cx, &txt(&cx.cfg, "pattern"))?;
         let recursive = boolv(&cx.cfg, "recursive", false);
+        let item_type = txt(&cx.cfg, "itemType");
         let event = txt(&cx.cfg, "event");
         if !root.is_dir() { return Err("Watched directory must exist before the block starts".into()); }
-        let baseline = folder_snapshot(&root, recursive, &pattern)?;
+        let baseline = folder_snapshot(&root, recursive, &pattern, &item_type)?;
         let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
         extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
             let root = root.clone(); let pattern = pattern.clone(); let baseline = baseline.clone();
-            let event = event.clone();
+            let event = event.clone(); let item_type = item_type.clone();
             Box::pin(async move {
-                let current = folder_snapshot(&root, recursive, &pattern)?;
+                let current = folder_snapshot(&root, recursive, &pattern, &item_type)?;
                 let created = current.keys().any(|k| !baseline.contains_key(k));
                 let deleted = baseline.keys().any(|k| !current.contains_key(k));
                 let modified = current.iter().any(|(k, v)| baseline.get(k).is_some_and(|b| b != v));
@@ -166,7 +173,7 @@ impl Block for FileContent {
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
         let path = template(cx, &txt(&cx.cfg, "path"))?;
-        let pattern = raw(&cx.cfg, "pattern");
+        let pattern = template(cx, &raw(&cx.cfg, "pattern"))?;
         let mode = txt(&cx.cfg, "mode");
         let case_sensitive = boolv(&cx.cfg, "caseSensitive", false);
         let max_bytes = (num(&cx.cfg, "maxKb", 1024.0, 1.0, 8192.0, "Maximum file size")? * 1024.0) as u64;
@@ -513,13 +520,15 @@ impl Block for KeyboardShortcut {
 
 struct MouseAutomation;
 fn mouse_spec() -> Value {
-    spec_action("Mouse Automation", "mouse-pointer-2", "Moves the pointer, clicks, double-clicks, right-clicks, or scrolls at virtual-desktop coordinates.", vec![
+    spec_action("Mouse Automation", "mouse-pointer-2", "Moves the pointer, clicks, double-clicks, right-clicks, or scrolls at screen coordinates or offsets within a process window.", vec![
         json!({"key":"operation","label":"Operation","type":"select","default":"click","options":[["move","Move pointer"],["click","Left click"],["double","Double-click"],["right","Right click"],["scroll","Scroll wheel"]]}),
-        json!({"key":"x","label":"X coordinate","type":"number","min":-10000,"max":20000,"step":1,"default":500}),
-        json!({"key":"y","label":"Y coordinate","type":"number","min":-10000,"max":20000,"step":1,"default":300}),
+        json!({"key":"coordinateSpace","label":"Coordinate space","type":"select","default":"screen","options":[["screen","Virtual desktop"],["window","Relative to window"]]}),
+        json!({"key":"processName","label":"Target window process","type":"text","required":true,"maxLen":260,"show":{"key":"coordinateSpace","eq":"window"}}),
+        json!({"key":"x","label":"X coordinate / window offset","type":"number","min":-10000,"max":20000,"step":1,"default":500}),
+        json!({"key":"y","label":"Y coordinate / window offset","type":"number","min":-10000,"max":20000,"step":1,"default":300}),
         json!({"key":"wheel","label":"Scroll delta (positive = up)","type":"number","min":-12000,"max":12000,"step":120,"default":120,"show":{"key":"operation","eq":"scroll"}}),
         json!({"preset":"onFail"})
-    ], "Mouse: {operation} at ({x}, {y})", "Coordinates are relative to the virtual desktop's top-left and can vary by display scaling/layout. Actions require an interactive unlocked desktop and are sent to whichever app is under the pointer.")
+    ], "Mouse: {operation} at ({x}, {y})", "Window-relative offsets are measured from the selected process's outer window top-left. Only the first matching process with a main window is used. Actions require an interactive unlocked desktop; layout changes or incorrect offsets can target the wrong control.")
 }
 #[async_trait]
 impl Block for MouseAutomation {
@@ -530,6 +539,9 @@ impl Block for MouseAutomation {
     fn validate(&self, c: &Value) -> Result<(), String> {
         super::spec::validate(&mouse_spec(), c)?;
         if !matches!(txt(c, "operation").as_str(), "move"|"click"|"double"|"right"|"scroll") { return Err("Unknown mouse operation".into()); }
+        if !matches!(txt(c, "coordinateSpace").as_str(), "screen"|"window") { return Err("Unknown coordinate space".into()); }
+        if txt(c, "coordinateSpace") == "window" && txt(c, "processName").is_empty() { return Err("Target window process is required for window-relative coordinates".into()); }
+        no_nul(c, &["processName"])?;
         num(c, "x", 500.0, -10000.0, 20000.0, "X coordinate")?;
         num(c, "y", 300.0, -10000.0, 20000.0, "Y coordinate")?;
         num(c, "wheel", 120.0, -12000.0, 12000.0, "Scroll delta").map(|_| ())
@@ -539,16 +551,28 @@ impl Block for MouseAutomation {
         let x = num(&cx.cfg, "x", 500.0, -10000.0, 20000.0, "X coordinate")? as i32;
         let y = num(&cx.cfg, "y", 300.0, -10000.0, 20000.0, "Y coordinate")? as i32;
         let op = txt(&cx.cfg, "operation");
+        let space = txt(&cx.cfg, "coordinateSpace");
+        let process = template(cx, &txt(&cx.cfg, "processName"))?;
         let wheel = num(&cx.cfg, "wheel", 120.0, -12000.0, 12000.0, "Scroll delta")? as i32;
-        let code = r#"using System;using System.Runtime.InteropServices; public static class MouseNative { [DllImport("user32.dll",SetLastError=true)] public static extern bool SetCursorPos(int x,int y); [DllImport("user32.dll",SetLastError=true)] public static extern void mouse_event(uint flags,uint dx,uint dy,int data,UIntPtr extra); }"#;
+        let code = r#"using System;using System.Runtime.InteropServices;
+[StructLayout(LayoutKind.Sequential)] public struct MouseRect { public int Left; public int Top; public int Right; public int Bottom; }
+public static class MouseNative {
+ [DllImport("user32.dll",SetLastError=true)] public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll",SetLastError=true)] public static extern void mouse_event(uint flags,uint dx,uint dy,int data,UIntPtr extra);
+ [DllImport("user32.dll",SetLastError=true)] public static extern bool GetWindowRect(IntPtr hWnd,out MouseRect rect);
+}"#;
+        let pos = if space == "window" {
+            format!("$n={}; $p=@(Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object {{$_.MainWindowHandle -ne 0}} | Select-Object -First 1); if($p.Count -eq 0){{throw 'No main window found for the selected process'}}; $rect=New-Object MouseRect; if(-not [MouseNative]::GetWindowRect([IntPtr]$p[0].MainWindowHandle,[ref]$rect)){{throw 'Could not read target window bounds'}}; $px=$rect.Left+({x}); $py=$rect.Top+({y});", extra::ps_quote(&process))
+        } else {
+            format!("$px={x}; $py={y};")
+        };
         let (down, up) = match op.as_str() { "right" => (0x0008u32,0x0010u32), _ => (0x0002u32,0x0004u32) };
-        let script = format!("$ErrorActionPreference='Stop'; Add-Type -TypeDefinition {}; if(-not [MouseNative]::SetCursorPos({x},{y})){{throw 'Could not position mouse pointer'}}; switch({}){{'move'{{}}'click'{{[MouseNative]::mouse_event({down},0,0,0,[UIntPtr]::Zero);[MouseNative]::mouse_event({up},0,0,0,[UIntPtr]::Zero)}}'double'{{1..2|ForEach-Object{{[MouseNative]::mouse_event(2,0,0,0,[UIntPtr]::Zero);[MouseNative]::mouse_event(4,0,0,0,[UIntPtr]::Zero);Start-Sleep -Milliseconds 60}}}}'right'{{[MouseNative]::mouse_event(8,0,0,0,[UIntPtr]::Zero);[MouseNative]::mouse_event(16,0,0,0,[UIntPtr]::Zero)}}'scroll'{{[MouseNative]::mouse_event(2048,0,0,{},[UIntPtr]::Zero)}}}}; 'Mouse action sent.'", extra::ps_quote(code), extra::ps_quote(&op), wheel);
+        let script = format!("$ErrorActionPreference='Stop'; Add-Type -TypeDefinition {}; {pos} if(-not [MouseNative]::SetCursorPos($px,$py)){{throw 'Could not position mouse pointer'}}; switch({}){{'move'{{}}'click'{{[MouseNative]::mouse_event({down},0,0,0,[UIntPtr]::Zero);[MouseNative]::mouse_event({up},0,0,0,[UIntPtr]::Zero)}}'double'{{1..2|ForEach-Object{{[MouseNative]::mouse_event(2,0,0,0,[UIntPtr]::Zero);[MouseNative]::mouse_event(4,0,0,0,[UIntPtr]::Zero);Start-Sleep -Milliseconds 60}}}}'right'{{[MouseNative]::mouse_event(8,0,0,0,[UIntPtr]::Zero);[MouseNative]::mouse_event(16,0,0,0,[UIntPtr]::Zero)}}'scroll'{{[MouseNative]::mouse_event(2048,0,0,{},[UIntPtr]::Zero)}}}}; 'Mouse action sent.'", extra::ps_quote(code), extra::ps_quote(&op), wheel);
         extra::powershell(cx, &script).await?;
         (cx.log)("info", format!("Mouse operation {op} dispatched at ({x}, {y})"));
         Ok(Outcome::Satisfied)
     }
 }
-
 struct ExtractZip;
 fn extract_zip_spec() -> Value {
     spec_action("Extract ZIP Archive", "file-archive", "Extracts a ZIP archive into a selected directory.", vec![
@@ -596,8 +620,9 @@ fn bulk_files_spec() -> Value {
         json!({"key":"suffix","label":"Filename suffix","type":"text","maxLen":256,"show":{"key":"operation","eq":"rename"}}),
         json!({"key":"collision","label":"Name collision","type":"select","default":"fail","options":[["fail","Fail before changes"],["skip","Skip conflicts"],["overwrite","Overwrite existing files"]],"show":{"key":"operation","in":["copy","move","rename"]}}),
         json!({"key":"maxItems","label":"Maximum number of files per run","type":"number","min":1,"max":10000,"step":1,"default":500}),
+        json!({"key":"previewOnly","label":"Preview matching files without changing them","type":"bool","default":false}),
         json!({"preset":"onFail"})
-    ], "Bulk {operation}: {pattern}", "Bulk operations have side effects. Matching is previewed by the action's log count; the configured maximum blocks unexpectedly broad matches. Recycle sends items to the Recycle Bin, not permanent deletion.")
+    ], "Bulk {operation}: {pattern}", "Bulk operations have side effects. Preview mode lists up to 200 planned changes without modifying files; the configured maximum blocks unexpectedly broad matches. Recycle sends items to the Recycle Bin, not permanent deletion.")
 }
 #[async_trait]
 impl Block for BulkFiles {
@@ -626,14 +651,15 @@ impl Block for BulkFiles {
         let recursive = boolv(&cx.cfg, "recursive", false);
         let collision = txt(&cx.cfg, "collision");
         let cap = num(&cx.cfg, "maxItems", 500.0, 1.0, 10000.0, "Maximum number of files")? as usize;
+        let preview_only = boolv(&cx.cfg, "previewOnly", false);
         if !Path::new(&source).is_dir() { return Err("Source folder does not exist".into()); }
         if matches!(operation.as_str(), "copy"|"move") && !Path::new(&destination).is_dir() { return Err("Destination folder must already exist".into()); }
         if matches!(operation.as_str(), "copy"|"move") && (Path::new(&destination) == Path::new(&source)) { return Err("Source and destination folders must differ".into()); }
         let script = format!(
-            "$ErrorActionPreference='Stop'; $s={}; $d={}; $pat={}; $op={}; $prefix={}; $suffix={}; $recursive={}; $collision={}; $limit={}; $items=@(Get-ChildItem -LiteralPath $s -Filter $pat -File -Recurse:$recursive -ErrorAction Stop); if($items.Count -gt $limit){{throw ('Matched '+$items.Count+' files, above safety limit '+$limit)}}; if($items.Count -eq 0){{'No matching files.'; exit 0}}; $plan=@(); foreach($f in $items){{$target=if($op -eq 'rename'){{Join-Path $f.DirectoryName ($prefix+$f.BaseName+$suffix+$f.Extension)}}elseif($op -in @('copy','move')){{Join-Path $d $f.Name}}else{{$null}}; if($target -and (Test-Path -LiteralPath $target) -and $target -ne $f.FullName -and $collision -eq 'fail'){{throw ('Conflict detected before changes: '+$target)}}; $plan+=,[pscustomobject]@{{source=$f.FullName;target=$target;conflict=($target -and (Test-Path -LiteralPath $target) -and $target -ne $f.FullName)}}}}; Add-Type -AssemblyName Microsoft.VisualBasic; $done=0; $skipped=0; foreach($x in $plan){{if($x.conflict -and $collision -eq 'skip'){{$skipped++;continue}}; switch($op){{'copy'{{Copy-Item -LiteralPath $x.source -Destination $x.target -Force:($collision -eq 'overwrite') -ErrorAction Stop}}'move'{{Move-Item -LiteralPath $x.source -Destination $x.target -Force:($collision -eq 'overwrite') -ErrorAction Stop}}'rename'{{if($x.target -ne $x.source){{Rename-Item -LiteralPath $x.source -NewName ([IO.Path]::GetFileName($x.target)) -Force:($collision -eq 'overwrite') -ErrorAction Stop}}}}'recycle'{{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($x.source,'OnlyErrorDialogs','SendToRecycleBin')}}}}; $done++}}; 'Processed '+$done+' file(s); skipped '+$skipped+'.'",
+            "$ErrorActionPreference='Stop'; $s={}; $d={}; $pat={}; $op={}; $prefix={}; $suffix={}; $recursive={}; $collision={}; $limit={}; $previewOnly={}; $items=@(Get-ChildItem -LiteralPath $s -Filter $pat -File -Recurse:$recursive -ErrorAction Stop); if($items.Count -gt $limit){{throw ('Matched '+$items.Count+' files, above safety limit '+$limit)}}; if($items.Count -eq 0){{'No matching files.'; exit 0}}; $plan=@(); foreach($f in $items){{$target=if($op -eq 'rename'){{Join-Path $f.DirectoryName ($prefix+$f.BaseName+$suffix+$f.Extension)}}elseif($op -in @('copy','move')){{Join-Path $d $f.Name}}else{{$null}}; if($target -and (Test-Path -LiteralPath $target) -and $target -ne $f.FullName -and $collision -eq 'fail'){{throw ('Conflict detected before changes: '+$target)}}; $plan+=,[pscustomobject]@{{source=$f.FullName;target=$target;conflict=($target -and (Test-Path -LiteralPath $target) -and $target -ne $f.FullName)}}}}; if($previewOnly){{'Preview: '+$plan.Count+' matching file(s); no changes made.'; $shown=0; foreach($x in $plan){{if($shown -ge 200){{break}}; if($x.target){{[Console]::WriteLine($x.source+' -> '+$x.target)}}else{{[Console]::WriteLine($x.source+' -> Recycle Bin')}}; $shown++}}; if($plan.Count -gt $shown){{'Omitted '+($plan.Count-$shown)+' item(s) from preview output.'}}; exit 0}}; Add-Type -AssemblyName Microsoft.VisualBasic; $done=0; $skipped=0; foreach($x in $plan){{if($x.conflict -and $collision -eq 'skip'){{$skipped++;continue}}; switch($op){{'copy'{{Copy-Item -LiteralPath $x.source -Destination $x.target -Force:($collision -eq 'overwrite') -ErrorAction Stop}}'move'{{Move-Item -LiteralPath $x.source -Destination $x.target -Force:($collision -eq 'overwrite') -ErrorAction Stop}}'rename'{{if($x.target -ne $x.source){{Rename-Item -LiteralPath $x.source -NewName ([IO.Path]::GetFileName($x.target)) -Force:($collision -eq 'overwrite') -ErrorAction Stop}}}}'recycle'{{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($x.source,'OnlyErrorDialogs','SendToRecycleBin')}}}}; $done++}}; 'Processed '+$done+' file(s); skipped '+$skipped+'.'",
             extra::ps_quote(&source), extra::ps_quote(&destination), extra::ps_quote(&pattern), extra::ps_quote(&operation),
             extra::ps_quote(&prefix), extra::ps_quote(&suffix), if recursive { "$true" } else { "$false" },
-            extra::ps_quote(&collision), cap);
+            extra::ps_quote(&collision), cap, if preview_only { "$true" } else { "$false" });
         let out = extra::powershell(cx, &script).await?;
         (cx.log)("info", format!("Bulk file operation completed in {source}: {}", out.trim()));
         Ok(Outcome::Satisfied)
@@ -865,6 +891,9 @@ mod tests {
         assert!(SetVariable.validate(&json!({"name":"1bad","source":"literal","valueType":"text","value":"42","onFail":"stop"})).is_err());
         assert!(IncrementVariable.validate(&json!({"name":"count","amount":1,"createIfMissing":true,"onFail":"stop"})).is_ok());
         assert!(KeyboardShortcut.validate(&json!({"shortcut":"^s","delayMs":100,"onFail":"stop"})).is_ok());
+        assert!(MouseAutomation.validate(&json!({"operation":"click","coordinateSpace":"window","processName":"notepad","x":10,"y":20,"onFail":"stop"})).is_ok());
+        assert!(MouseAutomation.validate(&json!({"operation":"click","coordinateSpace":"window","x":10,"y":20,"onFail":"stop"})).is_err());
+        assert!(BulkFiles.validate(&json!({"sourceFolder":"C:\\\\Temp","pattern":"*.log","operation":"recycle","recursive":false,"collision":"fail","maxItems":100,"previewOnly":true,"onFail":"stop"})).is_ok());
         assert!(ExtractZip.validate(&json!({"sourcePath":"C:\\\\Temp\\\\a.zip","destinationPath":"C:\\\\Temp\\\\out","collision":"fail","onFail":"stop"})).is_ok());
         assert!(ExtractZip.validate(&json!({"sourcePath":"C:\\\\Temp\\\\a.txt","destinationPath":"C:\\\\Temp\\\\out","collision":"fail","onFail":"stop"})).is_err());
         assert!(HttpStatus.validate(&json!({"url":"https://example.com","method":"GET","mode":"success","expectedStatus":200,"behavior":"check","pollSec":2,"stableForSec":0,"timeoutSec":0,"onFail":"stop"})).is_ok());
