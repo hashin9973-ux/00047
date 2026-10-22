@@ -1027,7 +1027,7 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
 
   nodeMenu(cx, cy, id) {
     const n = this.node(id), m = this.menu, isT = BLOCKS[n.kind]?.cat === 'tgt';
-    m.className = 'ctx glass';
+    m.className = 'ctx glass'; m.style.width = '300px'; m.style.maxHeight = '390px';
     m.innerHTML = `<div class="ml">
       <div class="mi" data-a="test"><span><b>Test this block</b><small>Runs it once with its current settings and wired inputs</small></span></div>
       ${isT ? '' : `<div class="mi" data-a="off"><span><b>${n.disabled ? 'Enable' : 'Disable'} block</b><small>B · a disabled block is skipped; only its AFTER wires continue</small></span></div>`}
@@ -1049,7 +1049,7 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
 
   openMenu(cx, cy, pending) {
     const wp = this.toWorld(cx, cy), m = this.menu;
-    m.className = 'ctx glass'; m.onclick = null;
+    m.className = 'ctx glass'; m.onclick = null; m.style.width = '340px'; m.style.maxHeight = '470px';
     m.innerHTML = `<input class="mq" placeholder="Search blocks…" spellcheck="false" aria-label="Search blocks">
       <div class="mfilters" role="group" aria-label="Block category">
         <button class="mfilter active" data-filter="all" type="button">All</button>
