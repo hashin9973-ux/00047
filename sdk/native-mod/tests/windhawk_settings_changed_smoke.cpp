@@ -12,7 +12,9 @@ BOOL Wh_ModInit(void) {
 
 void Wh_ModAfterInit(void) {}
 
-void Wh_ModSettingsChanged(void) {
+BOOL Wh_ModSettingsChanged(BOOL* bReload) {
+    if (!bReload) return FALSE;
+    *bReload = FALSE;
     const unsigned long previous =
         g_settings_changed_count.fetch_add(1, std::memory_order_relaxed);
     if (previous == 0) {
@@ -23,7 +25,10 @@ void Wh_ModSettingsChanged(void) {
             std::ofstream file(path, std::ios::binary | std::ios::trunc);
             file << R"json({"intSetting":103})json";
         }
+    } else if (previous == 1) {
+        *bReload = TRUE;
     }
+    return TRUE;
 }
 
 void Wh_ModBeforeUninit(void) {}

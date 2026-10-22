@@ -135,7 +135,7 @@ The first command builds a deterministic ZIP and validates it before publishing 
 
 ## Native code warning
 
-Native mods execute inside their target process without a sandbox. This template includes a limited non-hook subset of the Windhawk API (logging, settings, and simple local values); it does not provide Windhawk function hooks, symbol APIs, or a compatible Windhawk runtime. Keep WmodShutdownV1 responsible for releasing resources owned by your mod, test in a disposable Windows environment, and enable only code you trust.
+Native mods execute inside their target process without a sandbox. This template includes the limited non-hook API subset plus x64 function-hook registration/application and bounded instruction decoding. It is not a drop-in replacement for every Windhawk runtime detail: hook state is per DLL, cross-mod hook ordering is not coordinated, and disassembly text is approximate. The optional settings-change adapter supports both callback forms, but callbacks run on a worker thread rather than a Windhawk/UI thread. Keep WmodShutdownV1 responsible for releasing resources owned by your mod, test in a disposable Windows environment, and enable only code you trust.
 ''',
     }
 

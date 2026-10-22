@@ -173,10 +173,11 @@ def audit_text(path: str, source: str) -> list[dict]:
             )
         )
         if settings_reload_variant:
-            category = "unsupported"
+            category = "adapter-available-lifecycle"
             reason = (
-                "The opt-in adapter only supports void Wh_ModSettingsChanged(void); "
-                "the BOOL(BOOL* bReload) reload/unload protocol is not implemented."
+                "The opt-in settings adapter supports BOOL Wh_ModSettingsChanged(BOOL* bReload). "
+                "A successful callback setting *bReload to TRUE requests a safe unload/reload on "
+                "the next enabled-mod scan; callback thread affinity differs from Windhawk."
             )
         elif name in SUPPORTED:
             category, reason = "supported-with-limitations", SUPPORTED[name]

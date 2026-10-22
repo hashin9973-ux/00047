@@ -68,7 +68,7 @@ class WindhawkAuditTests(unittest.TestCase):
     def test_sarif_cli_emits_parseable_sarif(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "mod.cpp"
-            source.write_text("BOOL Wh_ModSettingsChanged(BOOL* bReload) { *bReload = TRUE; return TRUE; }", encoding="utf-8")
+            source.write_text("Wh_MadeUpThing();", encoding="utf-8")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 result = main([str(source), "--sarif"])
@@ -85,7 +85,7 @@ class WindhawkAuditTests(unittest.TestCase):
             root = Path(temp)
             source = root / "mod.cpp"
             output_path = root / "windhawk-audit.sarif"
-            source.write_text("BOOL Wh_ModSettingsChanged(BOOL* bReload) { *bReload = TRUE; return TRUE; }", encoding="utf-8")
+            source.write_text("Wh_MadeUpThing();", encoding="utf-8")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 result = main([str(source), "--sarif", "--output", str(output_path)])
@@ -99,7 +99,7 @@ class WindhawkAuditTests(unittest.TestCase):
     def test_fail_on_unsupported_still_emits_valid_sarif(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "mod.cpp"
-            source.write_text("BOOL Wh_ModSettingsChanged(BOOL* bReload) { *bReload = TRUE; return TRUE; }", encoding="utf-8")
+            source.write_text("Wh_MadeUpThing();", encoding="utf-8")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 result = main([str(source), "--sarif", "--fail-on-unsupported"])
@@ -173,11 +173,11 @@ class WindhawkAuditTests(unittest.TestCase):
         report = audit_text("mod.cpp", "void Wh_ModSettingsChanged() {}")
         self.assertEqual(report[0]["category"], "adapter-available-lifecycle")
 
-    def test_settings_changed_reload_variant_is_blocked(self):
+    def test_settings_changed_reload_variant_has_opt_in_adapter(self):
         report = audit_text("mod.cpp", "BOOL Wh_ModSettingsChanged(BOOL* bReload) { *bReload = TRUE; return TRUE; }")
         finding = next(item for item in report if item["name"] == "Wh_ModSettingsChanged")
-        self.assertEqual(finding["category"], "unsupported")
-        self.assertIn("reload/unload protocol is not implemented", finding["reason"])
+        self.assertEqual(finding["category"], "adapter-available-lifecycle")
+        self.assertIn("requests a safe unload/reload", finding["reason"])
 
 
 if __name__ == "__main__":

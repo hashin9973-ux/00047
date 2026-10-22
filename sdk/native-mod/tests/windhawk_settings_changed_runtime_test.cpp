@@ -13,6 +13,7 @@ using ShutdownFn = void (WINAPI*)();
 using IsInitializedFn = BOOL (WINAPI*)();
 using CanUnloadFn = BOOL (WINAPI*)();
 using CountFn = unsigned long (WINAPI*)();
+using ReloadRequestedFn = BOOL (WINAPI*)();
 
 bool WriteText(const std::filesystem::path& path, const char* text) {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
@@ -81,6 +82,9 @@ int wmain(int argc, wchar_t** argv) {
     CountFn getCount = module
         ? reinterpret_cast<CountFn>(GetProcAddress(module, "AdapterSettingsChangedCount"))
         : nullptr;
+    ReloadRequestedFn isReloadRequested = module
+        ? reinterpret_cast<ReloadRequestedFn>(GetProcAddress(module, "WmodIsReloadRequestedV1"))
+        : nullptr;
     bool initialized = false;
     bool retainPackageDir = false;
 
@@ -105,7 +109,7 @@ int wmain(int argc, wchar_t** argv) {
         return 1;
     };
 
-    if (!module || !initialize || !shutdown || !isInitialized || !canUnload || !getCount) {
+    if (!module || !initialize || !shutdown || !isInitialized || !canUnload || !getCount || !isReloadRequested) {
         return fail(L"Settings-change smoke DLL is missing required lifecycle/query exports.");
     }
     if (!initialize()) {
@@ -129,6 +133,10 @@ int wmain(int argc, wchar_t** argv) {
     const unsigned long callbackCount = getCount();
     if (callbackCount < 2) {
         return fail(L"Settings-change callback did not re-arm after its own settings write.");
+    }
+    // The request is non-consuming so the host can retry a safe unload later.
+    if (isReloadRequested() != TRUE || isReloadRequested() != TRUE) {
+        return fail(L"BOOL Wh_ModSettingsChanged(BOOL*) did not persist its reload request.");
     }
 
     shutdown();
