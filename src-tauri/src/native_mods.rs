@@ -1287,9 +1287,14 @@ mod win {
     }
 
     static INDETERMINATE_PIDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+    static TARGET_OPERATION_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn indeterminate_pids() -> &'static Mutex<HashSet<u32>> {
         INDETERMINATE_PIDS.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    fn target_operation_gate() -> &'static Mutex<()> {
+        TARGET_OPERATION_GATE.get_or_init(|| Mutex::new(()))
     }
 
     pub fn target_operation_is_indeterminate(pid: u32) -> bool {
@@ -1563,6 +1568,11 @@ mod win {
     }
 
     pub fn inject(pid: u32, executable: &str, module_path: &Path) -> Result<(), String> {
+        // Serialize the full load/validate/initialize sequence so user actions and
+        // periodic discovery cannot interleave lifecycle calls for native modules.
+        let _operation = target_operation_gate()
+            .lock()
+            .map_err(|_| "Native-mod operation gate is unavailable.".to_string())?;
         verify_target_pid(pid, executable)?;
         if process_architecture(pid)? != "x64" {
             return Err("target process is not x64; only x64 native mods are supported".into());
@@ -1645,6 +1655,11 @@ mod win {
     }
 
     pub fn unload(pid: u32, executable: &str, module_path: &Path) -> Result<bool, String> {
+        // Keep shutdown and FreeLibrary together; another operation must not race
+        // the target between those two stages.
+        let _operation = target_operation_gate()
+            .lock()
+            .map_err(|_| "Native-mod operation gate is unavailable.".to_string())?;
         verify_target_pid(pid, executable)?;
         let Some(module) = module_for_path(pid, module_path)? else { return Ok(false) };
         unsafe {
