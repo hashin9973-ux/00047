@@ -331,6 +331,7 @@ inline Watcher& Instance() {
         auto& state = ::wmod::windhawk_adapter::LifecycleState(); \
         if (!state.compare_exchange_strong(expected, 1)) return expected == 2 ? TRUE : FALSE; \
         if (!::wmod::windhawk_hook_compat::BeginHookOperations()) { state.store(0); return FALSE; } \
+        ::wmod::windhawk_settings_watch::ClearReloadRequest(); \
         bool init_succeeded = false; \
         try { \
             if (!(init_callback)()) { \
@@ -347,7 +348,6 @@ inline Watcher& Instance() {
                 return FALSE; \
             } \
             (after_init_callback)(); \
-            ::wmod::windhawk_settings_watch::ClearReloadRequest(); \
             if (!::wmod::windhawk_settings_watch::Instance().Start(settings_changed_callback)) { \
                 try { (before_uninit_callback)(); } catch (...) {} \
                 ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
