@@ -348,47 +348,40 @@ fn read_mb(cx: &NodeCx) -> Result<(f64, String), String> {
 }
 #[async_trait]
 impl Block for Ram {
-    fn title(&self) -> &'static str {
-        "RAM Usage"
-    }
-    fn category(&self) -> Cat {
-        Cat::Condition
-    }
-    fn supports_timeout(&self) -> bool {
-        true
-    }
+    fn title(&self) -> &'static str { "RAM Usage" }
+    fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn validate(&self, c: &Value) -> Result<(), String> {
         rng(c, "thresholdMb", 800.0, 1.0, 1_048_576.0, "Threshold")?;
-        if text(c, "mode") == "wait" {
+        let mode = text(c, "mode");
+        if !matches!(mode.as_str(), "" | "check" | "wait" | "wait_change") {
+            return Err("Unknown RAM usage mode".into());
+        }
+        if mode != "check" && !mode.is_empty() {
             rng(c, "pollSec", 1.0, 0.25, 3600.0, "Poll interval")?;
+            rng(c, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
             check_timeout(c)?;
         }
         Ok(())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        self.validate(&cx.cfg)?;
         let above = text(&cx.cfg, "op") != "below";
         let thr = rng(&cx.cfg, "thresholdMb", 800.0, 1.0, 1_048_576.0, "Threshold")?;
-        let wait = text(&cx.cfg, "mode") == "wait";
+        let mode = text(&cx.cfg, "mode");
+        let behavior = match mode.as_str() { "wait" => "wait", "wait_change" => "change", _ => "check" };
         let poll = rng(&cx.cfg, "pollSec", 1.0, 0.25, 3600.0, "Poll interval")?;
-        loop {
-            let (cur, scope) = read_mb(cx)?;
-            let ok = if above { cur > thr } else { cur < thr };
-            (cx.report)(
-                if wait { "waiting" } else { "running" },
-                None,
-                format!("{scope}: {cur:.0} MB (needs {} {thr:.0} MB)", if above { "above" } else { "below" }),
-            );
-            if ok {
-                return Ok(Outcome::Satisfied);
-            }
-            if !wait {
-                return Ok(Outcome::NotSatisfied);
-            }
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs_f64(poll)) => {},
-                _ = cx.token.cancelled() => return Err("cancelled".into()),
-            }
-        }
+        let stable = rng(&cx.cfg, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
+        let timeout = rng(&cx.cfg, "timeoutSec", 0.0, 0.0, 86400.0, "Timeout")?;
+        extra::poll_condition(cx, behavior, poll, stable, timeout, || {
+            Box::pin(async move {
+                let (cur, scope) = read_mb(cx)?;
+                let ok = if above { cur > thr } else { cur < thr };
+                (cx.report)(if behavior == "check" { "running" } else { "waiting" }, None,
+                    format!("{scope}: {cur:.0} MB (needs {} {thr:.0} MB)", if above { "above" } else { "below" }));
+                Ok(ok)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
@@ -401,40 +394,34 @@ impl Block for ProcRunning {
     fn validate(&self, c: &Value) -> Result<(), String> {
         if text(c, "name").is_empty() { return Err("Process name is required".into()); }
         let mode = text(c, "mode");
-        if !matches!(mode.as_str(), "" | "check" | "wait_start" | "wait_stop") {
+        if !matches!(mode.as_str(), "" | "check" | "wait_start" | "wait_stop" | "wait_change") {
             return Err("Unknown mode".into());
         }
         if mode.starts_with("wait") {
             rng(c, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
+            rng(c, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
             check_timeout(c)?;
         }
         Ok(())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
-        let name = text(&cx.cfg, "name");
+        self.validate(&cx.cfg)?;
+        let name = cx.expand_template(&text(&cx.cfg, "name"))?;
         let mode = text(&cx.cfg, "mode");
+        let behavior = match mode.as_str() { "wait_start" | "wait_stop" => "wait", "wait_change" => "change", _ => "check" };
         let poll = rng(&cx.cfg, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
-        let wait_start = mode == "wait_start";
-        let wait_stop = mode == "wait_stop";
-        loop {
-            let running = sys::find_pid_by_name(&name).is_ok();
-            (cx.report)(
-                if wait_start || wait_stop { "waiting" } else { "running" },
-                None,
-                format!("{name}: {}", if running { "running" } else { "not running" }),
-            );
-            if wait_start {
-                if running { return Ok(Outcome::Satisfied); }
-            } else if wait_stop {
-                if !running { return Ok(Outcome::Satisfied); }
-            } else {
-                return Ok(if running { Outcome::Satisfied } else { Outcome::NotSatisfied });
-            }
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs_f64(poll)) => {},
-                _ = cx.token.cancelled() => return Err("cancelled".into()),
-            }
-        }
+        let stable = rng(&cx.cfg, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
+        let timeout = rng(&cx.cfg, "timeoutSec", 0.0, 0.0, 86400.0, "Timeout")?;
+        extra::poll_condition(cx, behavior, poll, stable, timeout, || {
+            let name = name.clone();
+            let mode = mode.clone();
+            Box::pin(async move {
+                let running = sys::find_pid_by_name(&name).is_ok();
+                (cx.report)(if behavior == "check" { "running" } else { "waiting" }, None,
+                    format!("{name}: {}", if running { "running" } else { "not running" }));
+                Ok(if mode == "wait_stop" { !running } else { running })
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
@@ -447,13 +434,14 @@ fn schedule_spec() -> Value {
             {"key":"start","label":"From","type":"time","default":"09:00","required":true},
             {"key":"end","label":"Until","type":"time","default":"17:00","required":true},
             {"key":"days","label":"Days","type":"select","default":"all","options":[["all","Every day"],["weekdays","Mon–Fri"],["weekends","Sat–Sun"]]},
-            {"key":"mode","label":"Mode","type":"select","default":"check","options":[["check","Check once (IF / ELSE)"],["wait","Wait until inside the window"]]},
-            {"key":"pollSec","label":"Check every","type":"number","min":1,"max":3600,"step":1,"unit":"s","default":5,"show":{"key":"mode","eq":"wait"}},
-            {"preset":"timeout","show":{"key":"mode","eq":"wait"}},
+            {"key":"mode","label":"Mode","type":"select","default":"check","options":[["check","Check once (IF / ELSE)"],["wait","Wait until inside the window"],["wait_change","Wait until window state changes"]]},
+            {"key":"pollSec","label":"Check every","type":"number","min":1,"max":3600,"step":1,"unit":"s","default":5,"show":{"key":"mode","ne":"check"}},
+            {"key":"stableForSec","label":"Require condition to remain satisfied for","type":"number","min":0,"max":3600,"step":0.5,"unit":"s","default":0,"show":{"key":"mode","ne":"check"}},
+            {"preset":"timeout","show":{"key":"mode","ne":"check"}},
             {"preset":"onFail"}
         ],
         "summary": "{start}–{end} · {days}",
-        "help": "Uses this PC's local time. If Until is earlier than From the window crosses midnight (for example 22:00 to 06:00). From = Until means the whole day. Days is checked at the moment the block runs."
+        "help": "Uses this PC's local time. If Until is earlier than From the window crosses midnight (for example 22:00 to 06:00). From = Until means the whole day. Wait can debounce the inside-window state; Wait for state change notices either entry or exit."
     })
 }
 
@@ -492,22 +480,20 @@ impl Block for Schedule {
         spec::validate(&schedule_spec(), c)
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
-        let wait = text(&cx.cfg, "mode") == "wait";
+        self.validate(&cx.cfg)?;
+        let mode = text(&cx.cfg, "mode");
+        let behavior = match mode.as_str() { "wait" => "wait", "wait_change" => "change", _ => "check" };
         let poll = rng(&cx.cfg, "pollSec", 5.0, 1.0, 3600.0, "Check interval")?;
-        loop {
-            let inside = in_window(&cx.cfg)?;
-            (cx.report)(if wait { "waiting" } else { "running" }, None, if inside { "inside the window".to_string() } else { "outside the window".to_string() });
-            if inside {
-                return Ok(Outcome::Satisfied);
-            }
-            if !wait {
-                return Ok(Outcome::NotSatisfied);
-            }
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs_f64(poll)) => {},
-                _ = cx.token.cancelled() => return Err("cancelled".into()),
-            }
-        }
+        let stable = rng(&cx.cfg, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
+        let timeout = rng(&cx.cfg, "timeoutSec", 0.0, 0.0, 86400.0, "Timeout")?;
+        extra::poll_condition(cx, behavior, poll, stable, timeout, || {
+            Box::pin(async {
+                let inside = in_window(&cx.cfg)?;
+                (cx.report)(if behavior == "check" { "running" } else { "waiting" }, None,
+                    if inside { "inside the window".to_string() } else { "outside the window".to_string() });
+                Ok(inside)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 struct Trim;
