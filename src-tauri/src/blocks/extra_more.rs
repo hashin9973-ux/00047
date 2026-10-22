@@ -227,7 +227,7 @@ impl Block for ClipboardText {
         extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
             let script = script.clone(); let mode = mode.clone();
             Box::pin(async move {
-                let matches = extra::ps_bool(cx, &script).await?;
+                let matches = ps_bool(cx, &script).await?;
                 (cx.report)("waiting", None, format!("Clipboard text condition ({mode}): {matches}"));
                 Ok(matches)
             }) as extra::Probe<'_>
@@ -278,7 +278,7 @@ impl Block for EnvironmentVariable {
         extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
             let script = script.clone(); let name = name.clone(); let scope = scope.clone(); let mode = mode.clone();
             Box::pin(async move {
-                let matches = extra::ps_bool(cx, &script).await?;
+                let matches = ps_bool(cx, &script).await?;
                 (cx.report)("waiting", None, format!("Environment variable {name} ({scope}/{mode}): {matches}"));
                 Ok(matches)
             }) as extra::Probe<'_>
