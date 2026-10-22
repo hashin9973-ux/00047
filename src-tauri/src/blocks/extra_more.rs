@@ -132,7 +132,7 @@ impl Block for ProcessCount {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let name = text(&cx.cfg, "processName");
+        let name = template(cx, &text(&cx.cfg, "processName"))?;
         let expected = rng(&cx.cfg, "count", 1.0, 0.0, 100000.0, "Expected process count")? as u64;
         let comparison = text(&cx.cfg, "comparison");
         let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
@@ -169,7 +169,7 @@ impl Block for ServiceState {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let name = text(&cx.cfg, "serviceName");
+        let name = template(cx, &text(&cx.cfg, "serviceName"))?;
         let expected = text(&cx.cfg, "state");
         let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
         extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
@@ -214,7 +214,8 @@ impl Block for ClipboardText {
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
         let mode = text(&cx.cfg, "mode");
-        let expected = match mode.as_str() { "equal" => raw_text(&cx.cfg, "text"), "contains" => raw_text(&cx.cfg, "containsText"), "starts" => raw_text(&cx.cfg, "startsText"), _ => String::new() };
+        let expected_raw = match mode.as_str() { "equal" => raw_text(&cx.cfg, "text"), "contains" => raw_text(&cx.cfg, "containsText"), "starts" => raw_text(&cx.cfg, "startsText"), _ => String::new() };
+        let expected = template(cx, &expected_raw)?;
         let script = format!(
             "$ErrorActionPreference='Stop'; $v=[string](Get-Clipboard -Raw -ErrorAction Stop); $e={}; $m={}; $ok=switch($m){{'empty'{{[string]::IsNullOrEmpty($v)}}'equal'{{[string]::Equals($v,$e,[System.StringComparison]::OrdinalIgnoreCase)}}'contains'{{$v.IndexOf($e,[System.StringComparison]::OrdinalIgnoreCase) -ge 0}}'starts'{{$v.StartsWith($e,[System.StringComparison]::OrdinalIgnoreCase)}}default{{$false}}}}; [bool]$ok | ConvertTo-Json -Compress",
             ps_quote(&expected), ps_quote(&mode));
@@ -261,10 +262,11 @@ impl Block for EnvironmentVariable {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let name = text(&cx.cfg, "name");
+        let name = template(cx, &text(&cx.cfg, "name"))?;
         let scope = text(&cx.cfg, "scope");
         let mode = text(&cx.cfg, "mode");
-        let expected = match mode.as_str() { "equal" => raw_text(&cx.cfg, "expected"), "contains" => raw_text(&cx.cfg, "containsValue"), _ => String::new() };
+        let expected_raw = match mode.as_str() { "equal" => raw_text(&cx.cfg, "expected"), "contains" => raw_text(&cx.cfg, "containsValue"), _ => String::new() };
+        let expected = template(cx, &expected_raw)?;
         let script = format!(
             "$ErrorActionPreference='Stop'; $n={}; $target=[System.EnvironmentVariableTarget]::{scope}; $v=[Environment]::GetEnvironmentVariable($n,$target); $ok=switch({}){{'exists'{{$null -ne $v}}'equal'{{[string]::Equals([string]$v,{},[System.StringComparison]::OrdinalIgnoreCase)}}'contains'{{$null -ne $v -and ([string]$v).IndexOf({},[System.StringComparison]::OrdinalIgnoreCase) -ge 0}}default{{$false}}}}; [bool]$ok | ConvertTo-Json -Compress",
             ps_quote(&name), ps_quote(&mode), ps_quote(&expected), ps_quote(&expected));
@@ -303,7 +305,7 @@ impl Block for FileAge {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let path = text(&cx.cfg, "path");
+        let path = template(cx, &text(&cx.cfg, "path"))?;
         let mode = text(&cx.cfg, "mode");
         let limit = rng(&cx.cfg, "minutes", 60.0, 0.0, 5256000.0, "Age (minutes)")?;
         let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
@@ -349,7 +351,7 @@ impl Block for DirectoryCount {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let path = text(&cx.cfg, "path");
+        let path = template(cx, &text(&cx.cfg, "path"))?;
         let kind = text(&cx.cfg, "kind");
         let recurse = flag(&cx.cfg, "recursive", false);
         let enumerate = if recurse {
@@ -401,7 +403,7 @@ impl Block for CreateFolder {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let path = text(&cx.cfg, "path");
+        let path = template(cx, &text(&cx.cfg, "path"))?;
         if Path::new(&path).exists() && !Path::new(&path).is_dir() { return Err("A file already exists at the requested folder path".into()); }
         fs::create_dir_all(&path).map_err(|e| format!("Could not create folder: {e}"))?;
         (cx.log)("info", format!("Folder is ready: {path}"));
@@ -432,8 +434,8 @@ impl Block for WriteTextFile {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let path = text(&cx.cfg, "path");
-        let content = cx.cfg.get("content").and_then(Value::as_str).unwrap_or("");
+        let path = template(cx, &text(&cx.cfg, "path"))?;
+        let content = template(cx, cx.cfg.get("content").and_then(Value::as_str).unwrap_or(""))?;
         let mode = text(&cx.cfg, "mode");
         let mut opts = OpenOptions::new();
         if mode == "append" { opts.create(true).append(true); } else { opts.create(true).write(true).truncate(true); }
@@ -476,8 +478,8 @@ impl Block for ZipArchive {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let source = PathBuf::from(text(&cx.cfg, "sourcePath"));
-        let destination = PathBuf::from(text(&cx.cfg, "destinationPath"));
+        let source = PathBuf::from(template(cx, &text(&cx.cfg, "sourcePath"))?);
+        let destination = PathBuf::from(template(cx, &text(&cx.cfg, "destinationPath"))?);
         if !source.exists() { return Err("Archive source does not exist".into()); }
         let source_abs = fs::canonicalize(&source).map_err(|e| format!("Could not resolve source path: {e}"))?;
         let destination_abs = archive_destination(&destination)?;
@@ -516,7 +518,7 @@ impl Block for OpenFolder {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let path = text(&cx.cfg, "path");
+        let path = template(cx, &text(&cx.cfg, "path"))?;
         if !Path::new(&path).is_dir() { return Err("Folder does not exist".into()); }
         let open_path = path.clone();
         tokio::task::spawn_blocking(move || super::super::sys::start_file(&open_path, ""))
@@ -553,11 +555,11 @@ impl Block for CreateShortcut {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let dest = text(&cx.cfg, "shortcutPath");
-        let target = text(&cx.cfg, "targetPath");
-        let args = text(&cx.cfg, "arguments");
-        let work = text(&cx.cfg, "workingDirectory");
-        let icon = text(&cx.cfg, "iconPath");
+        let dest = template(cx, &text(&cx.cfg, "shortcutPath"))?;
+        let target = template(cx, &text(&cx.cfg, "targetPath"))?;
+        let args = template(cx, &text(&cx.cfg, "arguments"))?;
+        let work = template(cx, &text(&cx.cfg, "workingDirectory"))?;
+        let icon = template(cx, &text(&cx.cfg, "iconPath"))?;
         if let Some(parent) = Path::new(&dest).parent().filter(|p| !p.as_os_str().is_empty()) {
             if !parent.is_dir() { return Err("Shortcut parent directory must exist".into()); }
         }
@@ -588,7 +590,7 @@ impl Block for TypeText {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let value = raw_text(&cx.cfg, "text");
+        let value = template(cx, &raw_text(&cx.cfg, "text"))?;
         let code = r#"
 using System;
 using System.Runtime.InteropServices;
@@ -638,7 +640,7 @@ impl Block for CaptureScreenshot {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let path = text(&cx.cfg, "path");
+        let path = template(cx, &text(&cx.cfg, "path"))?;
         let overwrite = text(&cx.cfg, "overwrite") == "replace";
         if Path::new(&path).exists() && !overwrite { return Err("Screenshot file already exists; choose Replace or a different path".into()); }
         if let Some(parent) = Path::new(&path).parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -673,7 +675,7 @@ impl Block for SetWallpaper {
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let path = text(&cx.cfg, "path");
+        let path = template(cx, &text(&cx.cfg, "path"))?;
         if !Path::new(&path).is_file() { return Err("Wallpaper image does not exist".into()); }
         let code = r#"
 using System;
