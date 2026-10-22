@@ -617,6 +617,23 @@ impl Block for ExtractZip {
         let destination = template(cx, &txt(&cx.cfg, "destinationPath"))?;
         let replace = txt(&cx.cfg, "collision") == "replace";
         if !Path::new(&source).is_file() { return Err("ZIP archive does not exist".into()); }
+        let source_abs = fs::canonicalize(&source).map_err(|e| format!("Could not resolve ZIP path: {e}"))?;
+        let destination_path = Path::new(&destination);
+        let destination_abs = if destination_path.exists() {
+            let absolute = fs::canonicalize(destination_path).map_err(|e| format!("Could not resolve destination: {e}"))?;
+            if !absolute.is_dir() { return Err("Existing extraction destination is not a directory".into()); }
+            absolute
+        } else {
+            let name = destination_path.file_name().ok_or("Destination must name a directory")?;
+            let parent = destination_path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+            fs::canonicalize(parent).map_err(|e| format!("Extraction destination parent must exist: {e}"))?.join(name)
+        };
+        if destination_abs.parent().is_none() {
+            return Err("A filesystem root cannot be used as an extraction destination".into());
+        }
+        if replace && source_abs.starts_with(&destination_abs) {
+            return Err("The ZIP archive cannot be inside a destination directory that will be replaced".into());
+        }
         let script = format!("$ErrorActionPreference='Stop'; $s={}; $d={}; $replace={}; if((Test-Path -LiteralPath $d) -and -not $replace){{throw 'Destination already exists'}}; $parent=Split-Path -Parent $d; if(-not $parent){{$parent='.'}}; $tmp=Join-Path $parent ([IO.Path]::GetFileName($d)+'.extract-'+[Guid]::NewGuid().ToString('N')); $backup=$d+'.backup-'+[Guid]::NewGuid().ToString('N'); New-Item -ItemType Directory -Path $tmp -ErrorAction Stop | Out-Null; try{{Expand-Archive -LiteralPath $s -DestinationPath $tmp -ErrorAction Stop; if(Test-Path -LiteralPath $d){{Move-Item -LiteralPath $d -Destination $backup -ErrorAction Stop; try{{Move-Item -LiteralPath $tmp -Destination $d -ErrorAction Stop; Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue}}catch{{if(Test-Path -LiteralPath $d){{Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue}}; if(Test-Path -LiteralPath $backup){{Move-Item -LiteralPath $backup -Destination $d -ErrorAction SilentlyContinue}}; throw}}}}else{{Move-Item -LiteralPath $tmp -Destination $d -ErrorAction Stop}}}}finally{{if(Test-Path -LiteralPath $tmp){{Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue}}}}; 'ZIP archive extracted.'", extra::ps_quote(&source), extra::ps_quote(&destination), if replace { "$true" } else { "$false" });
         extra::powershell(cx, &script).await?;
         (cx.log)("info", format!("Extracted ZIP archive into {destination}"));
@@ -672,8 +689,14 @@ impl Block for BulkFiles {
         let cap = num(&cx.cfg, "maxItems", 500.0, 1.0, 10000.0, "Maximum number of files")? as usize;
         let preview_only = boolv(&cx.cfg, "previewOnly", false);
         if !Path::new(&source).is_dir() { return Err("Source folder does not exist".into()); }
-        if matches!(operation.as_str(), "copy"|"move") && !Path::new(&destination).is_dir() { return Err("Destination folder must already exist".into()); }
-        if matches!(operation.as_str(), "copy"|"move") && (Path::new(&destination) == Path::new(&source)) { return Err("Source and destination folders must differ".into()); }
+        if matches!(operation.as_str(), "copy"|"move") {
+            if !Path::new(&destination).is_dir() { return Err("Destination folder must already exist".into()); }
+            let source_abs = fs::canonicalize(&source).map_err(|e| format!("Could not resolve source folder: {e}"))?;
+            let destination_abs = fs::canonicalize(&destination).map_err(|e| format!("Could not resolve destination folder: {e}"))?;
+            if destination_abs == source_abs || destination_abs.starts_with(&source_abs) || source_abs.starts_with(&destination_abs) {
+                return Err("Source and destination folders must not be the same or overlap; choose separate folders".into());
+            }
+        }
         let script = format!(
             "$ErrorActionPreference='Stop'; $s={}; $d={}; $pat={}; $op={}; $prefix={}; $suffix={}; $recursive={}; $collision={}; $limit={}; $previewOnly={}; $items=@(Get-ChildItem -LiteralPath $s -Filter $pat -File -Recurse:$recursive -ErrorAction Stop); if($items.Count -gt $limit){{throw ('Matched '+$items.Count+' files, above safety limit '+$limit)}}; if($items.Count -eq 0){{'No matching files.'; exit 0}}; $plan=@(); foreach($f in $items){{$target=if($op -eq 'rename'){{Join-Path $f.DirectoryName ($prefix+$f.BaseName+$suffix+$f.Extension)}}elseif($op -in @('copy','move')){{Join-Path $d $f.Name}}else{{$null}}; if($target -and (Test-Path -LiteralPath $target) -and $target -ne $f.FullName -and $collision -eq 'fail' -and -not $previewOnly){{throw ('Conflict detected before changes: '+$target)}}; $plan+=,[pscustomobject]@{{source=$f.FullName;target=$target;conflict=($target -and (Test-Path -LiteralPath $target) -and $target -ne $f.FullName)}}}}; if($previewOnly){{'Preview: '+$plan.Count+' matching file(s); no changes made.'; $shown=0; foreach($x in $plan){{if($shown -ge 200){{break}}; if($x.target){{[Console]::WriteLine($x.source+' -> '+$x.target+$(if($x.conflict){' [CONFLICT]'}else{''}))}}else{{[Console]::WriteLine($x.source+' -> Recycle Bin')}}; $shown++}}; if($plan.Count -gt $shown){{'Omitted '+($plan.Count-$shown)+' item(s) from preview output.'}}; exit 0}}; Add-Type -AssemblyName Microsoft.VisualBasic; $done=0; $skipped=0; foreach($x in $plan){{if($x.conflict -and $collision -eq 'skip'){{$skipped++;continue}}; switch($op){{'copy'{{Copy-Item -LiteralPath $x.source -Destination $x.target -Force:($collision -eq 'overwrite') -ErrorAction Stop}}'move'{{Move-Item -LiteralPath $x.source -Destination $x.target -Force:($collision -eq 'overwrite') -ErrorAction Stop}}'rename'{{if($x.target -ne $x.source){{Rename-Item -LiteralPath $x.source -NewName ([IO.Path]::GetFileName($x.target)) -Force:($collision -eq 'overwrite') -ErrorAction Stop}}}}'recycle'{{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($x.source,'OnlyErrorDialogs','SendToRecycleBin')}}}}; $done++}}; 'Processed '+$done+' file(s); skipped '+$skipped+'.'",
             extra::ps_quote(&source), extra::ps_quote(&destination), extra::ps_quote(&pattern), extra::ps_quote(&operation),
