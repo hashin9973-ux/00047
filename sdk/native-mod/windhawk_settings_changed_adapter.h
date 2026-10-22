@@ -22,12 +22,14 @@
 
 #include <Windows.h>
 #include <array>
+#include <atomic>
 #include <cwchar>
 #include <mutex>
 #include <string>
 
 namespace wmod::windhawk_settings_watch {
 using Callback = void (*)();
+using ReloadCallback = BOOL (*)(BOOL*);
 
 constexpr DWORD kWatchFilter =
     FILE_NOTIFY_CHANGE_LAST_WRITE |
@@ -35,6 +37,19 @@ constexpr DWORD kWatchFilter =
     FILE_NOTIFY_CHANGE_FILE_NAME |
     FILE_NOTIFY_CHANGE_ATTRIBUTES;
 constexpr DWORD kWatchBufferBytes = 64 * 1024;
+
+inline std::atomic<bool>& ReloadRequestFlag() noexcept {
+    static std::atomic<bool> requested{false};
+    return requested;
+}
+
+inline BOOL IsReloadRequested() noexcept {
+    return ReloadRequestFlag().load(std::memory_order_acquire) ? TRUE : FALSE;
+}
+
+inline void ClearReloadRequest() noexcept {
+    ReloadRequestFlag().store(false, std::memory_order_release);
+}
 
 class Watcher final {
 public:
@@ -44,11 +59,35 @@ public:
 
     ~Watcher() { Stop(); }
 
-    bool Start(Callback callback) noexcept {
+    bool Start(Callback callback) noexcept { return StartImpl(callback, nullptr); }
+
+    bool Start(ReloadCallback callback) noexcept { return StartImpl(nullptr, callback); }
+
+    void Stop() noexcept {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (!worker_) return;
+
+        if (stopEvent_) SetEvent(stopEvent_);
+        if (directory_ != INVALID_HANDLE_VALUE) CancelIoEx(directory_, nullptr);
+        WaitForSingleObject(worker_, INFINITE);
+
+        CloseHandle(worker_);
+        CloseHandle(readyEvent_);
+        CloseHandle(stopEvent_);
+        CloseHandle(directory_);
+        worker_ = nullptr;
+        readyEvent_ = nullptr;
+        stopEvent_ = nullptr;
+        directory_ = INVALID_HANDLE_VALUE;
+        callback_ = nullptr;
+    }
+
+private:
+    bool StartImpl(Callback callback, ReloadCallback reloadCallback) noexcept {
         try {
-            if (!callback) return false;
+            if (!callback && !reloadCallback) return false;
             std::lock_guard<std::mutex> guard(mutex_);
-            if (worker_) return callback_ == callback;
+            if (worker_) return callback_ == callback && reloadCallback_ == reloadCallback;
 
             const auto package = wmod::PackageDirectory();
             if (package.empty()) return false;
@@ -76,6 +115,7 @@ public:
             stopEvent_ = stop;
             readyEvent_ = ready;
             callback_ = callback;
+            reloadCallback_ = reloadCallback;
             worker_ = CreateThread(nullptr, 0, &Watcher::ThreadMain, this, 0, nullptr);
             if (!worker_) {
                 CloseHandle(readyEvent_);
@@ -85,6 +125,7 @@ public:
                 stopEvent_ = nullptr;
                 directory_ = INVALID_HANDLE_VALUE;
                 callback_ = nullptr;
+                reloadCallback_ = nullptr;
                 return false;
             }
             // Do not report a successful start until the first directory watch
@@ -102,6 +143,7 @@ public:
                 stopEvent_ = nullptr;
                 directory_ = INVALID_HANDLE_VALUE;
                 callback_ = nullptr;
+                reloadCallback_ = nullptr;
                 return false;
             }
             return true;
@@ -110,26 +152,7 @@ public:
         }
     }
 
-    void Stop() noexcept {
-        std::lock_guard<std::mutex> guard(mutex_);
-        if (!worker_) return;
 
-        if (stopEvent_) SetEvent(stopEvent_);
-        if (directory_ != INVALID_HANDLE_VALUE) CancelIoEx(directory_, nullptr);
-        WaitForSingleObject(worker_, INFINITE);
-
-        CloseHandle(worker_);
-        CloseHandle(readyEvent_);
-        CloseHandle(stopEvent_);
-        CloseHandle(directory_);
-        worker_ = nullptr;
-        readyEvent_ = nullptr;
-        stopEvent_ = nullptr;
-        directory_ = INVALID_HANDLE_VALUE;
-        callback_ = nullptr;
-    }
-
-private:
     static bool ContainsSettingsChange(
         const BYTE* bytes, DWORD byteCount) noexcept {
         try {
@@ -209,10 +232,20 @@ private:
             // this worker temporarily stopped listening for directory events.
             if (notifyPending) {
                 notifyPending = false;
-                const Callback callback = self->callback_;
-                if (callback) {
-                    try { callback(); } catch (...) {
-                        // No C++ exception may escape a Windows thread entrypoint.
+                if (WaitForSingleObject(stop, 0) != WAIT_OBJECT_0) {
+                    const Callback callback = self->callback_;
+                    const ReloadCallback reloadCallback = self->reloadCallback_;
+                    if (reloadCallback) {
+                        BOOL reload = FALSE;
+                        BOOL succeeded = FALSE;
+                        try { succeeded = reloadCallback(&reload); } catch (...) {}
+                        if (succeeded && reload) {
+                            ReloadRequestFlag().store(true, std::memory_order_release);
+                        }
+                    } else if (callback) {
+                        try { callback(); } catch (...) {
+                            // No C++ exception may escape a Windows thread entrypoint.
+                        }
                     }
                 }
             }
@@ -263,6 +296,7 @@ private:
     HANDLE readyEvent_ = nullptr;
     HANDLE worker_ = nullptr;
     Callback callback_ = nullptr;
+    ReloadCallback reloadCallback_ = nullptr;
 };
 
 inline Watcher& Instance() {
@@ -287,6 +321,9 @@ inline Watcher& Instance() {
     WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) { \
         return ::wmod::windhawk_hook_compat::CanUnload(); \
     } \
+    WMOD_00047_EXPORT BOOL WINAPI WmodIsReloadRequestedV1(void) { \
+        return ::wmod::windhawk_settings_watch::IsReloadRequested(); \
+    } \
     WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void) { \
         int expected = 0; \
         auto& state = ::wmod::windhawk_adapter::LifecycleState(); \
@@ -308,6 +345,7 @@ inline Watcher& Instance() {
                 return FALSE; \
             } \
             (after_init_callback)(); \
+            ::wmod::windhawk_settings_watch::ClearReloadRequest(); \
             if (!::wmod::windhawk_settings_watch::Instance().Start(settings_changed_callback)) { \
                 try { (before_uninit_callback)(); } catch (...) {} \
                 ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
