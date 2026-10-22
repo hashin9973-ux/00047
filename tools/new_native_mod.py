@@ -67,17 +67,29 @@ WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) {
 }
 ''',
         "CMakeLists.txt": f'''cmake_minimum_required(VERSION 3.21)
-project({module_name} LANGUAGES CXX)
+project({module_name} LANGUAGES C CXX)
 
 set(WMOD_SDK_DIR "" CACHE PATH "Path to the 00047 repository sdk/native-mod directory")
 if(NOT EXISTS "${{WMOD_SDK_DIR}}/00047_mod_api.h")
   message(FATAL_ERROR "Set WMOD_SDK_DIR to the 00047 sdk/native-mod directory")
 endif()
 
-add_library({module_name} SHARED mod.cpp)
+set(WMOD_HOOK_ENGINE_SOURCES
+  "${{WMOD_SDK_DIR}}/windhawk_hook_compat.cpp"
+  "${{WMOD_SDK_DIR}}/third_party/minhook/src/buffer.c"
+  "${{WMOD_SDK_DIR}}/third_party/minhook/src/hook.c"
+  "${{WMOD_SDK_DIR}}/third_party/minhook/src/trampoline.c"
+  "${{WMOD_SDK_DIR}}/third_party/minhook/src/hde/hde64.c"
+)
+add_library({module_name} SHARED mod.cpp ${{WMOD_HOOK_ENGINE_SOURCES}})
 target_compile_features({module_name} PRIVATE cxx_std_17)
 target_compile_definitions({module_name} PRIVATE WMOD_BUILD_DLL WIN32_LEAN_AND_MEAN NOMINMAX)
-target_include_directories({module_name} PRIVATE "${{WMOD_SDK_DIR}}")
+target_include_directories({module_name} PRIVATE
+  "${{WMOD_SDK_DIR}}"
+  "${{WMOD_SDK_DIR}}/third_party/minhook/include"
+  "${{WMOD_SDK_DIR}}/third_party/minhook/src"
+  "${{WMOD_SDK_DIR}}/third_party/minhook/src/hde"
+)
 set_target_properties({module_name} PROPERTIES
   PREFIX ""
   OUTPUT_NAME "{module_name}"

@@ -950,5 +950,6 @@ inline void Wh_FreeUrlContent(const WH_URL_CONTENT* content) {
 
 // Optional WinDbg/DbgHelp-based symbol enumeration helpers. This does not enable hooks.
 #include "windhawk_symbol_compat.h"
+#include "windhawk_hook_compat.h"
 
 #endif // WMOD_00047_WINDHAWK_NONHOOK_COMPAT_H

@@ -16,18 +16,15 @@ The scanner reads C/C++ source/header files, masks comments and ordinary/raw str
 
 ## Supported subset
 
-The current source-level helpers cover `Wh_Log`, `Wh_GetIntSetting`, `Wh_GetStringSetting`, `Wh_FreeStringSetting`, scalar/string/binary local-storage APIs, `Wh_DeleteValue`, `Wh_GetModStoragePath`, dynamic-select option management, bounded HTTP(S) retrieval through `Wh_GetUrlContent` / `Wh_FreeUrlContent`, and bounded `Wh_FindFirstSymbol` / `Wh_FindNextSymbol` / `Wh_FindCloseSymbol` enumeration using Windows DbgHelp. `Wh_ModSettingsChanged` can be wired through a separate opt-in lifecycle adapter.
+The source-level helpers also provide x64 function-hook registration/application through the bundled MinHook backend and limited instruction-length/disassembly reporting through HDE64. The non-hook helpers cover `Wh_Log`, `Wh_GetIntSetting`, `Wh_GetStringSetting`, `Wh_FreeStringSetting`, scalar/string/binary local-storage APIs, `Wh_DeleteValue`, `Wh_GetModStoragePath`, dynamic-select option management, bounded HTTP(S) retrieval through `Wh_GetUrlContent` / `Wh_FreeUrlContent`, and bounded `Wh_FindFirstSymbol` / `Wh_FindNextSymbol` / `Wh_FindCloseSymbol` enumeration using Windows DbgHelp. `Wh_ModSettingsChanged` can be wired through a separate opt-in lifecycle adapter.
 
 “Supported with limitations” deliberately does not mean binary compatibility. Storage is package-scoped; URL retrieval is bounded and rejects credential-bearing URLs; settings use 00047's manifest/settings files; and runtime callbacks are different. Symbol enumeration is a DbgHelp-backed snapshot capped at 100,000 records and approximately 4 million stored name characters, depends on matching PDB/symbol availability, and may perform network I/O when a symbol server is selected. DbgHelp state is process-global, so lookup can fail or conflict when another component initialized DbgHelp incompatibly. Use an empty `symbolServer` in tests to suppress remote retrieval. Review [NATIVE_MODS.md](NATIVE_MODS.md) before porting.
 
 ## Unsupported runtime APIs
 
-The current SDK does not implement these Windhawk runtime operations:
+The SDK now provides source-level implementations of `Wh_SetFunctionHook`, `Wh_RemoveFunctionHook`, and `Wh_ApplyHookOperations` using the bundled x64 MinHook backend. Registration and removal are queued; the opt-in lifecycle adapter applies pending hooks after `Wh_ModInit` and removes tracked hooks after `Wh_ModBeforeUninit`. `Wh_Disasm` uses HDE64 to validate instruction boundaries and returns a limited mnemonic plus encoded bytes; it does not reproduce Windhawk's operand-aware disassembly text.
 
-- `Wh_SetFunctionHook`, `Wh_RemoveFunctionHook`, and `Wh_ApplyHookOperations`.
-- `Wh_Disasm`.
-
-A detected call to one of these APIs is a blocker, not a warning that can be ignored. Rewrite the mod around public Windows APIs or an independently supported alternative, or use an actual compatible Windhawk runtime. The auditor intentionally does not replace missing runtime implementations with no-op stubs.
+These APIs are supported with limitations, not a claim of full runtime equivalence. Hook state is scoped to each mod DLL, so multiple mods that patch the same address can conflict and hook ordering is not coordinated across mod DLLs. The backend is x64-only and expects a valid executable target address. Use the lifecycle adapter or explicitly remove all hooks before DLL unload. A passing source audit cannot certify ABI equivalence, mod behavior, or safety.
 
 ## Lifecycle migration
 

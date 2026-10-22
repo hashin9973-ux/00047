@@ -18,9 +18,9 @@ class WindhawkAuditTests(unittest.TestCase):
             "files_scanned": 1,
             "findings": [
                 {
-                    "name": "Wh_SetFunctionHook",
+                    "name": "Wh_ModSettingsChanged",
                     "category": "unsupported",
-                    "reason": "Hook engine is unavailable.",
+                    "reason": "Reload/unload callback variant is unsupported.",
                     "locations": [{"file": "mod.cpp", "line": 17}],
                 },
                 {
@@ -37,7 +37,7 @@ class WindhawkAuditTests(unittest.TestCase):
         self.assertEqual(sarif["version"], "2.1.0")
         results = sarif["runs"][0]["results"]
         self.assertEqual(len(results), 2)
-        hook = next(item for item in results if "Wh_SetFunctionHook" in item["message"]["text"])
+        hook = next(item for item in results if "Wh_ModSettingsChanged" in item["message"]["text"])
         self.assertEqual(hook["level"], "error")
         self.assertEqual(hook["locations"][0]["physicalLocation"]["region"]["startLine"], 17)
         supported = next(item for item in results if "Wh_GetIntSetting" in item["message"]["text"])
@@ -68,7 +68,7 @@ class WindhawkAuditTests(unittest.TestCase):
     def test_sarif_cli_emits_parseable_sarif(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "mod.cpp"
-            source.write_text("Wh_SetFunctionHook(target, hook, &original);", encoding="utf-8")
+            source.write_text("BOOL Wh_ModSettingsChanged(BOOL* bReload) { *bReload = TRUE; return TRUE; }", encoding="utf-8")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 result = main([str(source), "--sarif"])
@@ -85,7 +85,7 @@ class WindhawkAuditTests(unittest.TestCase):
             root = Path(temp)
             source = root / "mod.cpp"
             output_path = root / "windhawk-audit.sarif"
-            source.write_text("Wh_SetFunctionHook(target, hook, &original);", encoding="utf-8")
+            source.write_text("BOOL Wh_ModSettingsChanged(BOOL* bReload) { *bReload = TRUE; return TRUE; }", encoding="utf-8")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 result = main([str(source), "--sarif", "--output", str(output_path)])
@@ -99,7 +99,7 @@ class WindhawkAuditTests(unittest.TestCase):
     def test_fail_on_unsupported_still_emits_valid_sarif(self):
         with tempfile.TemporaryDirectory() as temp:
             source = Path(temp) / "mod.cpp"
-            source.write_text("Wh_SetFunctionHook(target, hook, &original);", encoding="utf-8")
+            source.write_text("BOOL Wh_ModSettingsChanged(BOOL* bReload) { *bReload = TRUE; return TRUE; }", encoding="utf-8")
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 result = main([str(source), "--sarif", "--fail-on-unsupported"])
@@ -121,7 +121,7 @@ class WindhawkAuditTests(unittest.TestCase):
         '''
         findings = {item["name"]: item for item in audit_text("mod.cpp", source)}
         self.assertEqual(findings["Wh_GetIntSetting"]["category"], "supported-with-limitations")
-        self.assertEqual(findings["Wh_SetFunctionHook"]["category"], "unsupported")
+        self.assertEqual(findings["Wh_SetFunctionHook"]["category"], "supported-with-limitations")
         self.assertEqual(findings["Wh_ModInit"]["category"], "adapter-available-lifecycle")
         self.assertEqual(findings["Wh_MadeUpThing"]["category"], "unknown-api")
         self.assertEqual(findings["Wh_FindFirstSymbol"]["category"], "supported-with-limitations")
@@ -160,6 +160,7 @@ class WindhawkAuditTests(unittest.TestCase):
         headers = [
             root / "sdk" / "native-mod" / "windhawk_nonhook_compat.h",
             root / "sdk" / "native-mod" / "windhawk_symbol_compat.h",
+            root / "sdk" / "native-mod" / "windhawk_hook_compat.h",
         ]
         code = "\\n".join(mask_cpp_noncode(header.read_text(encoding="utf-8")) for header in headers)
         identifiers = set(IDENTIFIER.findall(code))

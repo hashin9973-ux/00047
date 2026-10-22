@@ -101,6 +101,9 @@ jobs:
           $testExe = Join-Path $build "Release/00047_native_mod_compat_test.exe"
           if (-not (Test-Path $testExe)) { throw "Native SDK compatibility test executable was not created." }
           & $testExe
+          $hookTestExe = Join-Path $build "Release/00047_windhawk_hook_runtime_test.exe"
+          if (-not (Test-Path $hookTestExe)) { throw "Native hook runtime test executable was not created." }
+          & $hookTestExe
           $symbolTestExe = Join-Path $build "Release/00047_windhawk_symbol_compat_test.exe"
           if (-not (Test-Path $symbolTestExe)) { throw "Symbol compatibility test executable was not created." }
           & $symbolTestExe

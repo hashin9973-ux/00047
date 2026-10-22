@@ -18,7 +18,7 @@ IGNORED_PARTS = {
     ".git", ".vs", "build", "dist", "node_modules", "out", "target", "vendor",
 }
 IGNORED_FILENAMES = {
-    "mods_api.h", "mods_api_internal.h", "windhawk_nonhook_compat.h", "windhawk_symbol_compat.h",
+    "mods_api.h", "mods_api_internal.h", "windhawk_nonhook_compat.h", "windhawk_symbol_compat.h", "windhawk_hook_compat.h",
 }
 
 SUPPORTED = {
@@ -42,13 +42,12 @@ SUPPORTED = {
     "Wh_FindFirstSymbol": "Bounded DbgHelp enumeration of symbols for a loaded module; PDB/network behavior is limited and must be reviewed.",
     "Wh_FindNextSymbol": "Iterates a bounded snapshot returned by Wh_FindFirstSymbol; result pointers are owned by the search handle.",
     "Wh_FindCloseSymbol": "Releases a symbol search snapshot returned by Wh_FindFirstSymbol.",
+    "Wh_SetFunctionHook": "Queues an x64 inline detour through the bundled MinHook backend; hook state is scoped to the individual mod DLL.",
+    "Wh_RemoveFunctionHook": "Queues removal of a hook registered by this mod DLL; cross-mod hook ordering is not coordinated.",
+    "Wh_ApplyHookOperations": "Applies this mod DLLs queued hook additions and removals; rollback is best-effort if a Windows patch operation fails.",
+    "Wh_Disasm": "Uses HDE64 for validated x64 instruction length and a limited mnemonic/byte display; operand formatting is not Windhawk-identical.",
 }
-UNSUPPORTED = {
-    "Wh_SetFunctionHook": "No 00047 function-hook engine is available.",
-    "Wh_RemoveFunctionHook": "No 00047 function-hook engine is available.",
-    "Wh_ApplyHookOperations": "No 00047 hook-operation queue is available.",
-    "Wh_Disasm": "The Windhawk disassembly API is not provided.",
-}
+UNSUPPORTED = {}
 CALLBACK_PREFIX = "Wh_Mod"
 IDENTIFIER = re.compile(r"\bWh_[A-Za-z0-9_]+\b")
 ADAPTER_CALLBACKS = {
