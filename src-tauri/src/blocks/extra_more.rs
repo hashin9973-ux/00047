@@ -371,7 +371,7 @@ impl Block for DirectoryCount {
             "folders" => "$items=@($items | Where-Object { $_.PSIsContainer });",
             _ => ""
         };
-        let script = format!("$ErrorActionPreference='Stop'; $p={}; if(-not (Test-Path -LiteralPath $p -PathType Container)){{throw 'Directory does not exist'}}; $items=@({enumerate}); {filter} Write-Output ([int]$items.Count)", ps_quote(&path));
+        let script = format!("$ErrorActionPreference='Stop'; $p={}; if(-not (Test-Path -LiteralPath $p -PathType Container)){{Write-Output 0; exit 0}}; $items=@({enumerate}); {filter} Write-Output ([int]$items.Count)", ps_quote(&path));
         let expected = rng(&cx.cfg, "count", 1.0, 0.0, 1000000.0, "Expected count")? as u64;
         let comparison = text(&cx.cfg, "comparison");
         let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
