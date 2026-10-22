@@ -564,13 +564,17 @@ impl NativeModManager {
     }
 
     pub fn apply_enabled_mods(&self) {
-        // Serialize reconciliation with install/enable/disable/uninstall. Otherwise
-        // a stale five-second scan could load a mod after the user disabled it.
-        let Ok(_transition) = self.lifecycle_gate.lock() else {
-            return;
-        };
+        // Serialize each reconciliation with install/enable/disable/uninstall.
+        // Re-check persisted intent after acquiring the gate, so a stale scan
+        // cannot load a mod the user disabled while this scan was queued.
         let enabled = self.enabled_snapshot();
         for id in enabled {
+            let Ok(_transition) = self.lifecycle_gate.lock() else {
+                return;
+            };
+            if !self.enabled_snapshot().contains(&id) {
+                continue;
+            }
             match self.apply_one(&id) {
                 Ok(status) => self.set_status(&id, status),
                 Err(e) => self.disable_after_load_failure(&id, &e),
