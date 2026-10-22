@@ -116,6 +116,7 @@ class WindhawkAuditTests(unittest.TestCase):
         Wh_SetFunctionHook(target, hook, &original);
         HANDLE symbols = Wh_FindFirstSymbol(module, nullptr, &symbolInfo);
         Wh_FindCloseSymbol(symbols);
+        Wh_HookSymbols(module, &hooks, 1, nullptr);
         Wh_ModInit();
         Wh_MadeUpThing();
         '''
@@ -125,6 +126,7 @@ class WindhawkAuditTests(unittest.TestCase):
         self.assertEqual(findings["Wh_ModInit"]["category"], "adapter-available-lifecycle")
         self.assertEqual(findings["Wh_MadeUpThing"]["category"], "unknown-api")
         self.assertEqual(findings["Wh_FindFirstSymbol"]["category"], "supported-with-limitations")
+        self.assertEqual(findings["Wh_HookSymbols"]["category"], "supported-with-limitations")
         self.assertNotIn("Wh_Disasm", findings)
 
     def test_preserves_line_numbers_while_masking_comments_and_literals(self):
