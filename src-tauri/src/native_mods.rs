@@ -82,6 +82,33 @@ pub struct NativeTarget {
     pub detail: String,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeModTargetState {
+    Detected,
+    Loading,
+    Initializing,
+    Initialized,
+    // Retained as a defensive legacy state for older internal state transitions.
+    Running,
+    Stopping,
+    Ineligible,
+    Failed,
+    Indeterminate,
+    Unloaded,
+    NotLoaded,
+    RolledBack,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeModTargetStatus {
+    pub pid: u32,
+    pub executable: String,
+    pub state: NativeModTargetState,
+    pub detail: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeModRecord {
@@ -94,6 +121,7 @@ pub struct NativeModRecord {
     pub targets: Vec<String>,
     pub enabled: bool,
     pub status: String,
+    pub target_statuses: Vec<NativeModTargetStatus>,
 }
 
 #[derive(Serialize)]
@@ -109,10 +137,53 @@ struct ReadPackage {
     manifest: ModManifest,
 }
 
+struct NativeUnloadReport {
+    unloaded: usize,
+    target_statuses: Vec<NativeModTargetStatus>,
+    errors: Vec<String>,
+}
+
 pub struct NativeModManager {
     root: PathBuf,
     state: Mutex<PersistedState>,
     statuses: Mutex<HashMap<String, String>>,
+    target_statuses: Mutex<HashMap<String, Vec<NativeModTargetStatus>>>,
+    lifecycle_gate: Mutex<()>,
+}
+
+fn merge_rollback_statuses(
+    previous: &[NativeModTargetStatus],
+    rollback: &[NativeModTargetStatus],
+) -> Vec<NativeModTargetStatus> {
+    rollback
+        .iter()
+        .map(|current| {
+            let Some(old) = previous.iter().find(|old| old.pid == current.pid) else {
+                return current.clone();
+            };
+            match (&old.state, &current.state) {
+                (NativeModTargetState::Failed, NativeModTargetState::Indeterminate)
+                | (NativeModTargetState::Indeterminate, NativeModTargetState::Indeterminate) => {
+                    current.clone()
+                }
+                (NativeModTargetState::Failed, _) => old.clone(),
+                (
+                    NativeModTargetState::Initialized
+                    | NativeModTargetState::Running
+                    | NativeModTargetState::Loading
+                    | NativeModTargetState::Initializing
+                    | NativeModTargetState::Stopping,
+                    NativeModTargetState::Unloaded | NativeModTargetState::NotLoaded,
+                ) => NativeModTargetStatus {
+                    pid: current.pid,
+                    executable: current.executable.clone(),
+                    state: NativeModTargetState::RolledBack,
+                    detail: "This target's load was rolled back after another target failed.".into(),
+                },
+                _ => current.clone(),
+            }
+        })
+        .collect()
 }
 
 impl NativeModManager {
@@ -123,6 +194,8 @@ impl NativeModManager {
             root,
             state: Mutex::new(state),
             statuses: Mutex::new(HashMap::new()),
+            target_statuses: Mutex::new(HashMap::new()),
+            lifecycle_gate: Mutex::new(()),
         }
     }
 
@@ -193,11 +266,114 @@ impl NativeModManager {
         }
     }
 
+    fn target_status_snapshot(&self, id: &str) -> Vec<NativeModTargetStatus> {
+        self.target_statuses
+            .lock()
+            .ok()
+            .and_then(|statuses| statuses.get(id).cloned())
+            .unwrap_or_default()
+    }
+
+    fn set_target_statuses(&self, id: &str, statuses: Vec<NativeModTargetStatus>) {
+        if let Ok(mut stored) = self.target_statuses.lock() {
+            if statuses.is_empty() {
+                stored.remove(id);
+            } else {
+                stored.insert(id.to_string(), statuses);
+            }
+        }
+    }
+
+    fn set_target_status(&self, id: &str, status: NativeModTargetStatus) {
+        if let Ok(mut stored) = self.target_statuses.lock() {
+            let statuses = stored.entry(id.to_string()).or_default();
+            if let Some(existing) = statuses.iter_mut().find(|existing| existing.pid == status.pid) {
+                *existing = status;
+            } else {
+                statuses.push(status);
+                statuses.sort_by_key(|entry| entry.pid);
+            }
+        }
+    }
+
+    fn mark_loaded_targets_stopping(&self, id: &str) {
+        let statuses = self.target_status_snapshot(id)
+            .into_iter()
+            .map(|target| {
+                if matches!(
+                    target.state,
+                    NativeModTargetState::Initialized
+                        | NativeModTargetState::Running
+                        | NativeModTargetState::Loading
+                        | NativeModTargetState::Initializing
+                ) {
+                    NativeModTargetStatus {
+                        state: NativeModTargetState::Stopping,
+                        detail: "Shutdown and unload are in progress.".into(),
+                        ..target
+                    }
+                } else {
+                    target
+                }
+            })
+            .collect();
+        self.set_target_statuses(id, statuses);
+    }
+
+    fn mark_running_targets_indeterminate(&self, id: &str, reason: &str) {
+        let unresolved = self
+            .target_status_snapshot(id)
+            .into_iter()
+            .map(|target| {
+                if matches!(
+                    target.state,
+                    NativeModTargetState::Initialized
+                        | NativeModTargetState::Running
+                        | NativeModTargetState::Loading
+                        | NativeModTargetState::Initializing
+                        | NativeModTargetState::Stopping
+                        | NativeModTargetState::Failed
+                ) {
+                    NativeModTargetStatus {
+                        state: NativeModTargetState::Indeterminate,
+                        detail: format!(
+                            "Unload/load completion could not be confirmed: {reason}. The DLL may still be present; restart this target process to guarantee recovery."
+                        ),
+                        ..target
+                    }
+                } else {
+                    target
+                }
+            })
+            .collect();
+        self.set_target_statuses(id, unresolved);
+    }
+
     pub fn list(&self) -> NativeModList {
         let enabled = self.enabled_snapshot();
         let statuses = self.statuses.lock().map(|s| s.clone()).unwrap_or_default();
         let mut mods = Vec::new();
         let mut errors = Vec::new();
+
+        // Keep per-process lifecycle state only while the corresponding PID is still
+        // present. If process discovery fails, preserve the last known state instead
+        // of incorrectly treating every target as exited.
+        let (targets, discovery_succeeded) = match discover_targets() {
+            Ok(targets) => (targets, true),
+            Err(e) => {
+                errors.push(e);
+                (Vec::new(), false)
+            }
+        };
+        if discovery_succeeded {
+            let active_pids: HashSet<u32> = targets.iter().map(|target| target.pid).collect();
+            if let Ok(mut stored) = self.target_statuses.lock() {
+                stored.retain(|_, per_target| {
+                    per_target.retain(|status| active_pids.contains(&status.pid));
+                    !per_target.is_empty()
+                });
+            }
+        }
 
         let mut folders: Vec<PathBuf> = match fs::read_dir(self.packages_dir()) {
             Ok(entries) => entries.filter_map(Result::ok).map(|e| e.path())
@@ -246,13 +422,9 @@ impl NativeModManager {
                 targets: manifest.targets,
                 enabled: is_enabled,
                 status,
+                target_statuses: self.target_status_snapshot(&manifest.id),
             });
         }
-
-        let targets = match discover_targets() {
-            Ok(targets) => targets,
-            Err(e) => { errors.push(e); Vec::new() }
-        };
 
         NativeModList {
             dir: self.root.to_string_lossy().to_string(),
@@ -280,6 +452,9 @@ impl NativeModManager {
     }
 
     pub fn install(&self, path: &Path) -> Result<String, String> {
+        let _transition = self.lifecycle_gate
+            .lock()
+            .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
         let read = read_package(path)?;
         let id = read.manifest.id.clone();
         if self.enabled_snapshot().contains(&id) {
@@ -325,11 +500,15 @@ impl NativeModManager {
             return Err(format!("install mod: {e}"));
         }
         if backup.exists() { let _ = fs::remove_dir_all(&backup); }
+        self.set_target_statuses(&id, Vec::new());
         self.set_status(&id, "Installed; disabled".into());
         Ok(id)
     }
 
     pub fn enable(&self, id: &str) -> Result<String, String> {
+        let _transition = self.lifecycle_gate
+            .lock()
+            .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
         let folder = self.package_dir(id)?;
         let manifest = load_manifest(&folder)?;
         if manifest.id != id {
@@ -363,6 +542,13 @@ impl NativeModManager {
     }
 
     pub fn disable(&self, id: &str) -> Result<String, String> {
+        let _transition = self.lifecycle_gate
+            .lock()
+            .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
+        self.disable_inner(id)
+    }
+
+    fn disable_inner(&self, id: &str) -> Result<String, String> {
         let folder = self.package_dir(id)?;
         let manifest = load_manifest(&folder)?;
         {
@@ -380,17 +566,33 @@ impl NativeModManager {
             Ok(path) => path,
             Err(e) => {
                 let status = format!("Disabled; unload skipped because the module path is unsafe: {e}");
+                self.mark_running_targets_indeterminate(id, &e);
                 self.set_status(id, status.clone());
                 return Err(status);
             }
         };
+        self.mark_loaded_targets_stopping(id);
         match unload_from_targets(&manifest.targets, &dll) {
-            Ok(count) => {
-                let status = format!("Disabled; unloaded from {count} process(es)");
-                self.set_status(id, status.clone());
-                Ok(status)
+            Ok(report) => {
+                self.set_target_statuses(id, report.target_statuses);
+                if report.errors.is_empty() {
+                    let status = format!("Disabled; unloaded from {} process(es)", report.unloaded);
+                    self.set_status(id, status.clone());
+                    Ok(status)
+                } else {
+                    let details = report.errors.join("; ");
+                    self.mark_running_targets_indeterminate(id, &details);
+                    let status = format!(
+                        "Disabled; unloaded from {} process(es); unload warning: {}",
+                        report.unloaded,
+                        details
+                    );
+                    self.set_status(id, status.clone());
+                    Err(status)
+                }
             }
             Err(e) => {
+                self.mark_running_targets_indeterminate(id, &e);
                 let status = format!("Disabled; unload warning: {e}");
                 self.set_status(id, status.clone());
                 Err(status)
@@ -399,9 +601,12 @@ impl NativeModManager {
     }
 
     pub fn uninstall(&self, id: &str) -> Result<(), String> {
+        let _transition = self.lifecycle_gate
+            .lock()
+            .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
         let folder = self.package_dir(id)?;
         if self.enabled_snapshot().contains(id) {
-            self.disable(id)?;
+            self.disable_inner(id)?;
         }
         if folder.exists() {
             fs::remove_dir_all(&folder).map_err(|e| format!("remove native mod package: {e}"))?;
@@ -409,12 +614,24 @@ impl NativeModManager {
         if let Ok(mut statuses) = self.statuses.lock() {
             statuses.remove(id);
         }
+        if let Ok(mut statuses) = self.target_statuses.lock() {
+            statuses.remove(id);
+        }
         Ok(())
     }
 
     pub fn apply_enabled_mods(&self) {
+        // Serialize each reconciliation with install/enable/disable/uninstall.
+        // Re-check persisted intent after acquiring the gate, so a stale scan
+        // cannot load a mod the user disabled while this scan was queued.
         let enabled = self.enabled_snapshot();
         for id in enabled {
+            let Ok(_transition) = self.lifecycle_gate.lock() else {
+                return;
+            };
+            if !self.enabled_snapshot().contains(&id) {
+                continue;
+            }
             match self.apply_one(&id) {
                 Ok(status) => self.set_status(&id, status),
                 Err(e) => self.disable_after_load_failure(&id, &e),
@@ -433,13 +650,34 @@ impl NativeModManager {
             persistence_warning = Some("native mod state lock is unavailable".into());
         }
 
-        let cleanup_warning = self.package_dir(id)
-            .and_then(|folder| load_manifest(&folder).map(|manifest| (folder, manifest)))
-            .and_then(|(folder, manifest)| {
-                module_file_path(&folder, &manifest.module)
-                    .and_then(|dll| unload_from_targets(&manifest.targets, &dll).map(|_| ()))
-            })
-            .err();
+        let previous_target_statuses = self.target_status_snapshot(id);
+        self.mark_loaded_targets_stopping(id);
+        let cleanup_warning = match self.package_dir(id) {
+            Ok(folder) => match load_manifest(&folder) {
+                Ok(manifest) => match module_file_path(&folder, &manifest.module) {
+                    Ok(dll) => match unload_from_targets(&manifest.targets, &dll) {
+                        Ok(report) => {
+                            self.set_target_statuses(
+                                id,
+                                merge_rollback_statuses(&previous_target_statuses, &report.target_statuses),
+                            );
+                            if report.errors.is_empty() {
+                                None
+                            } else {
+                                Some(report.errors.join("; "))
+                            }
+                        }
+                        Err(error) => Some(error),
+                    },
+                    Err(error) => Some(error),
+                },
+                Err(error) => Some(error),
+            },
+            Err(error) => Some(error),
+        };
+        if let Some(warning) = cleanup_warning.as_deref() {
+            self.mark_running_targets_indeterminate(id, warning);
+        }
 
         let mut status = format!("Disabled after load failure: {reason}");
         if let Some(warning) = cleanup_warning {
@@ -462,21 +700,77 @@ impl NativeModManager {
             .collect();
 
         if matching.is_empty() {
+            self.set_target_statuses(id, Vec::new());
             return Ok("Enabled; waiting for a supported target process".into());
         }
 
         let mut successes = 0usize;
         let mut failures = Vec::new();
+        let mut per_target = Vec::new();
         for target in matching {
             if !target.eligible {
                 failures.push(format!("{} (PID {}): {}", target.executable, target.pid, target.detail));
+                per_target.push(NativeModTargetStatus {
+                    pid: target.pid,
+                    executable: target.executable,
+                    state: NativeModTargetState::Ineligible,
+                    detail: target.detail,
+                });
                 continue;
             }
-            match inject_into_process(target.pid, &target.executable, &dll) {
-                Ok(()) => successes += 1,
-                Err(e) => failures.push(format!("{} (PID {}): {e}", target.executable, target.pid)),
+            let pid = target.pid;
+            let executable = target.executable.clone();
+            self.set_target_status(
+                id,
+                NativeModTargetStatus {
+                    pid,
+                    executable: executable.clone(),
+                    state: NativeModTargetState::Detected,
+                    detail: "Supported target discovered; preparing native mod load.".into(),
+                },
+            );
+            let status_id = id.to_string();
+            let status_executable = executable.clone();
+            let mut on_phase = |state: NativeModTargetState, detail: String| {
+                self.set_target_status(
+                    &status_id,
+                    NativeModTargetStatus {
+                        pid,
+                        executable: status_executable.clone(),
+                        state,
+                        detail,
+                    },
+                );
+            };
+            let result = inject_into_process(pid, &executable, &dll, &mut on_phase);
+            drop(on_phase);
+            match result {
+                Ok(()) => {
+                    successes += 1;
+                    per_target.push(NativeModTargetStatus {
+                        pid,
+                        executable,
+                        state: NativeModTargetState::Initialized,
+                        detail: "The DLL is present and the loader completed successfully.".into(),
+                    });
+                }
+                Err(e) => {
+                    let indeterminate = target_operation_is_indeterminate(pid);
+                    failures.push(format!("{executable} (PID {pid}): {e}"));
+                    per_target.push(NativeModTargetStatus {
+                        pid,
+                        executable,
+                        state: if indeterminate {
+                            NativeModTargetState::Indeterminate
+                        } else {
+                            NativeModTargetState::Failed
+                        },
+                        detail: e,
+                    });
+                }
             }
         }
+        self.set_target_statuses(id, per_target);
         if !failures.is_empty() {
             return Err(format!("loaded into {successes} process(es); {}", failures.join("; ")));
         }
@@ -940,28 +1234,94 @@ fn discover_targets() -> Result<Vec<NativeTarget>, String> {
 }
 
 #[cfg(windows)]
-fn inject_into_process(pid: u32, executable: &str, module: &Path) -> Result<(), String> {
-    win::inject(pid, executable, module)
+fn inject_into_process(
+    pid: u32,
+    executable: &str,
+    module: &Path,
+    on_phase: &mut dyn FnMut(NativeModTargetState, String),
+) -> Result<(), String> {
+    win::inject(pid, executable, module, on_phase)
 }
 #[cfg(not(windows))]
-fn inject_into_process(_pid: u32, _executable: &str, _module: &Path) -> Result<(), String> {
+fn inject_into_process(
+    _pid: u32,
+    _executable: &str,
+    _module: &Path,
+    _on_phase: &mut dyn FnMut(NativeModTargetState, String),
+) -> Result<(), String> {
     Err("native shell mods can only be loaded on Windows".into())
 }
 
-fn unload_from_targets(targets: &[String], module: &Path) -> Result<usize, String> {
+fn target_operation_is_indeterminate(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        win::target_operation_is_indeterminate(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+fn unload_from_targets(targets: &[String], module: &Path) -> Result<NativeUnloadReport, String> {
     #[cfg(windows)]
     {
         let running = win::discover_targets()?;
-        let mut count = 0;
-        let mut errors = Vec::new();
-        for p in running.into_iter().filter(|p| targets.iter().any(|t| t.eq_ignore_ascii_case(&p.executable))) {
-            match win::unload(p.pid, &p.executable, module) {
-                Ok(true) => count += 1,
-                Ok(false) => {}
-                Err(e) => errors.push(format!("{} (PID {}): {e}", p.executable, p.pid)),
+        let mut report = NativeUnloadReport {
+            unloaded: 0,
+            target_statuses: Vec::new(),
+            errors: Vec::new(),
+        };
+        for target in running
+            .into_iter()
+            .filter(|p| targets.iter().any(|t| t.eq_ignore_ascii_case(&p.executable)))
+        {
+            if !target.eligible {
+                report.target_statuses.push(NativeModTargetStatus {
+                    pid: target.pid,
+                    executable: target.executable,
+                    state: NativeModTargetState::Ineligible,
+                    detail: target.detail,
+                });
+                continue;
+            }
+            match win::unload(target.pid, &target.executable, module) {
+                Ok(true) => {
+                    report.unloaded += 1;
+                    report.target_statuses.push(NativeModTargetStatus {
+                        pid: target.pid,
+                        executable: target.executable,
+                        state: NativeModTargetState::Unloaded,
+                        detail: "Shutdown completed and the DLL was unloaded.".into(),
+                    });
+                }
+                Ok(false) => report.target_statuses.push(NativeModTargetStatus {
+                    pid: target.pid,
+                    executable: target.executable,
+                    state: NativeModTargetState::NotLoaded,
+                    detail: "The DLL was not loaded in this process.".into(),
+                }),
+                Err(error) => {
+                    let indeterminate = target_operation_is_indeterminate(target.pid);
+                    report.errors.push(format!(
+                        "{} (PID {}): {error}",
+                        target.executable, target.pid
+                    ));
+                    report.target_statuses.push(NativeModTargetStatus {
+                        pid: target.pid,
+                        executable: target.executable,
+                        state: if indeterminate {
+                            NativeModTargetState::Indeterminate
+                        } else {
+                            NativeModTargetState::Failed
+                        },
+                        detail: error,
+                    });
+                }
             }
         }
-        if errors.is_empty() { Ok(count) } else { Err(errors.join("; ")) }
+        Ok(report)
     }
     #[cfg(not(windows))]
     {
@@ -972,12 +1332,14 @@ fn unload_from_targets(targets: &[String], module: &Path) -> Result<usize, Strin
 
 #[cfg(windows)]
 mod win {
-    use super::{validate_pe_file, NativeTarget, SUPPORTED_TARGETS};
+    use super::{validate_pe_file, NativeModTargetState, NativeTarget, SUPPORTED_TARGETS};
     use std::{
+        collections::HashSet,
         ffi::{c_char, c_void, OsStr, OsString},
         os::windows::ffi::{OsStrExt, OsStringExt},
         path::Path,
         ptr,
+        sync::{Mutex, OnceLock},
     };
 
     type Handle = *mut c_void;
@@ -987,6 +1349,7 @@ mod win {
     const TH32CS_SNAPMODULE: u32 = 0x0000_0008;
     const TH32CS_SNAPMODULE32: u32 = 0x0000_0010;
     const PROCESS_CREATE_THREAD: u32 = 0x0002;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
     const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     const PROCESS_VM_OPERATION: u32 = 0x0008;
@@ -1069,6 +1432,72 @@ mod win {
     }
     fn is_invalid(h: Handle) -> bool {
         h.is_null() || h as isize == INVALID_HANDLE_VALUE
+    }
+
+    static INDETERMINATE_PIDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+    static TARGET_OPERATION_GATE: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn indeterminate_pids() -> &'static Mutex<HashSet<u32>> {
+        INDETERMINATE_PIDS.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    fn target_operation_gate() -> &'static Mutex<()> {
+        TARGET_OPERATION_GATE.get_or_init(|| Mutex::new(()))
+    }
+
+    pub fn target_operation_is_indeterminate(pid: u32) -> bool {
+        // Fail closed if the registry is poisoned: overlapping remote operations
+        // are riskier than requiring a target-process restart.
+        indeterminate_pids()
+            .lock()
+            .map(|pids| pids.contains(&pid))
+            .unwrap_or(true)
+    }
+
+    fn quarantine_until_target_exit(pid: u32, process: Handle) {
+        // The target may have exited between the failed wait and quarantine setup.
+        // The original process handle identifies that exact process object and lets
+        // us avoid retaining a stale quarantine for a PID that may later be reused.
+        if unsafe { WaitForSingleObject(process, 0) } == WAIT_OBJECT_0 {
+            return;
+        }
+
+        let inserted = match indeterminate_pids().lock() {
+            Ok(mut pids) => pids.insert(pid),
+            Err(_) => return,
+        };
+        if !inserted {
+            return;
+        }
+
+        // Keep the quarantine until this exact process object exits. If opening a
+        // watcher or spawning its thread fails, leave this PID quarantined for the
+        // rest of the app session rather than risking another operation.
+        let watcher = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+        if is_invalid(watcher) {
+            if unsafe { WaitForSingleObject(process, 0) } == WAIT_OBJECT_0 {
+                if let Ok(mut pids) = indeterminate_pids().lock() {
+                    pids.remove(&pid);
+                }
+            }
+            return;
+        }
+        let watcher_value = watcher as isize;
+        let spawned = std::thread::Builder::new()
+            .name(format!("00047-native-target-watch-{pid}"))
+            .spawn(move || {
+                let watcher = watcher_value as Handle;
+                let outcome = unsafe { WaitForSingleObject(watcher, INFINITE) };
+                unsafe { CloseHandle(watcher); }
+                if outcome == WAIT_OBJECT_0 {
+                    if let Ok(mut pids) = indeterminate_pids().lock() {
+                        pids.remove(&pid);
+                    }
+                }
+            });
+        if spawned.is_err() {
+            unsafe { CloseHandle(watcher); }
+        }
     }
 
     fn processes() -> Result<Vec<(u32, String)>, String> {
@@ -1204,24 +1633,37 @@ mod win {
 
     fn open_modifiable_process(pid: u32) -> Result<Handle, String> {
         unsafe {
-            let access = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ;
+            let access = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | SYNCHRONIZE;
             let h = OpenProcess(access, 0, pid);
             if is_invalid(h) { Err(last_error("OpenProcess(modification)")) } else { Ok(h) }
         }
     }
 
-    fn remote_call(process: Handle, start: *mut c_void, parameter: *mut c_void) -> Result<u32, String> {
+    fn remote_call(pid: u32, process: Handle, start: *mut c_void, parameter: *mut c_void) -> Result<u32, String> {
+        if target_operation_is_indeterminate(pid) {
+            return Err(format!(
+                "PID {pid} is quarantined after an earlier remote-operation timeout; restart the target process before retrying."
+            ));
+        }
         unsafe {
             let thread = CreateRemoteThread(process, ptr::null_mut(), 0, start, parameter, 0, ptr::null_mut());
             if is_invalid(thread) { return Err(last_error("CreateRemoteThread")); }
             let wait = WaitForSingleObject(thread, 10_000);
-            if wait == WAIT_TIMEOUT {
-                CloseHandle(thread);
-                return Err("remote thread timed out; the target process was not terminated".into());
-            }
             if wait != WAIT_OBJECT_0 {
+                // A timeout or wait failure does not prove that the remote thread
+                // stopped. Do not issue rollback calls against a possibly active
+                // initializer/unloader. Quarantine this target until its process
+                // exits; process exit also reclaims any remote path buffer.
+                let wait_error = if wait == WAIT_TIMEOUT {
+                    "remote thread exceeded the 10-second wait limit".to_string()
+                } else {
+                    last_error("WaitForSingleObject(remote thread)")
+                };
+                quarantine_until_target_exit(pid, process);
                 CloseHandle(thread);
-                return Err(last_error("WaitForSingleObject(remote thread)"));
+                return Err(format!(
+                    "{wait_error}; the operation outcome is indeterminate. PID {pid} is quarantined and no further mod operations will run in it until the process exits. Restart the target process to recover."
+                ));
             }
             let mut code = 0;
             let ok = GetExitCodeThread(thread, &mut code);
@@ -1266,6 +1708,11 @@ mod win {
     }
 
     fn verify_target_pid(pid: u32, requested_name: &str) -> Result<(), String> {
+        if target_operation_is_indeterminate(pid) {
+            return Err(format!(
+                "PID {pid} has an indeterminate remote operation; further native-mod actions are blocked until that process exits. Restart the target process to recover."
+            ));
+        }
         if !SUPPORTED_TARGETS.iter().any(|t| t.eq_ignore_ascii_case(requested_name)) {
             return Err("target executable is not on the native shell allow-list".into());
         }
@@ -1280,7 +1727,17 @@ mod win {
         Ok(())
     }
 
-    pub fn inject(pid: u32, executable: &str, module_path: &Path) -> Result<(), String> {
+    pub fn inject(
+        pid: u32,
+        executable: &str,
+        module_path: &Path,
+        on_phase: &mut dyn FnMut(NativeModTargetState, String),
+    ) -> Result<(), String> {
+        // Serialize the full load/validate/initialize sequence so user actions and
+        // periodic discovery cannot interleave lifecycle calls for native modules.
+        let _operation = target_operation_gate()
+            .lock()
+            .map_err(|_| "Native-mod operation gate is unavailable.".to_string())?;
         verify_target_pid(pid, executable)?;
         if process_architecture(pid)? != "x64" {
             return Err("target process is not x64; only x64 native mods are supported".into());
@@ -1288,8 +1745,15 @@ mod win {
         validate_pe_file(module_path)?;
 
         if module_for_path(pid, module_path)?.is_some() {
+            on_phase(
+                NativeModTargetState::Initialized,
+                "The DLL is already loaded in this target; initialization was not repeated.".into(),
+            );
             return Ok(());
         }
+        let canonical_module_path = module_path
+            .canonicalize()
+            .map_err(|error| format!("Cannot resolve native mod DLL before loading: {error}"))?;
 
         unsafe {
             let local_module = local_map_module(module_path)?;
@@ -1306,7 +1770,7 @@ mod win {
             let process = match open_modifiable_process(pid) {
                 Ok(h) => h, Err(e) => { free_local_map(local_module); return Err(e); }
             };
-            let remote_path = match write_remote_utf16(process, &module_path.canonicalize().map_err(|e| e.to_string())?.to_string_lossy()) {
+            let remote_path = match write_remote_utf16(process, &canonical_module_path.to_string_lossy()) {
                 Ok(p) => p,
                 Err(e) => { CloseHandle(process); free_local_map(local_module); return Err(e); }
             };
@@ -1314,7 +1778,11 @@ mod win {
                 Ok(p) => p,
                 Err(e) => { VirtualFreeEx(process, remote_path, 0, MEM_RELEASE); CloseHandle(process); free_local_map(local_module); return Err(e); }
             };
-            let loaded = remote_call(process, load_library, remote_path);
+            on_phase(
+                NativeModTargetState::Loading,
+                "Loading the DLL in the target process.".into(),
+            );
+            let loaded = remote_call(pid, process, load_library, remote_path);
             if loaded.is_ok() { VirtualFreeEx(process, remote_path, 0, MEM_RELEASE); }
             let result = match loaded {
                 Ok(code) if code != 0 => Ok(()),
@@ -1325,25 +1793,45 @@ mod win {
                 CloseHandle(process); free_local_map(local_module); return Err(e);
             }
 
-            let remote_module = match module_for_path(pid, module_path)? {
-                Some(m) => m.mod_base_addr as usize,
-                None => { CloseHandle(process); free_local_map(local_module); return Err("DLL loaded but was not found in the target module list".into()); }
+            let remote_module = match module_for_path(pid, module_path) {
+                Ok(Some(module)) => module.mod_base_addr as usize,
+                Ok(None) => {
+                    CloseHandle(process);
+                    free_local_map(local_module);
+                    return Err("DLL loaded but was not found in the target module list".into());
+                }
+                Err(error) => {
+                    CloseHandle(process);
+                    free_local_map(local_module);
+                    return Err(format!("DLL loaded but its target module could not be verified: {error}"));
+                }
             };
-            let api_version = remote_call(process, (remote_module + api_rva) as *mut c_void, ptr::null_mut());
+            on_phase(
+                NativeModTargetState::Initializing,
+                "DLL loaded; checking its ABI and running initialization.".into(),
+            );
+            let api_version = remote_call(pid, process, (remote_module + api_rva) as *mut c_void, ptr::null_mut());
             if api_version != Ok(1) {
-                let _ = remote_call(process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
-                if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\0") {
-                    let _ = remote_call(process, free_library, remote_module as *mut c_void);
+                // Only attempt rollback if the version-call thread is known to have
+                // completed. A timeout leaves its execution state unknown.
+                if !target_operation_is_indeterminate(pid) {
+                    let _ = remote_call(pid, process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
+                    if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\0") {
+                        let _ = remote_call(pid, process, free_library, remote_module as *mut c_void);
+                    }
                 }
                 CloseHandle(process); free_local_map(local_module);
                 return Err(format!("mod ABI mismatch: expected version 1, got {}", api_version.map(|v| v.to_string()).unwrap_or_else(|e| e)));
             }
 
-            let init = remote_call(process, (remote_module + init_rva) as *mut c_void, ptr::null_mut());
+            let init = remote_call(pid, process, (remote_module + init_rva) as *mut c_void, ptr::null_mut());
             if !matches!(init, Ok(code) if code != 0) {
-                let _ = remote_call(process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
-                if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\0") {
-                    let _ = remote_call(process, free_library, remote_module as *mut c_void);
+                // Don't race an initializer that may still be executing after timeout.
+                if !target_operation_is_indeterminate(pid) {
+                    let _ = remote_call(pid, process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
+                    if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\0") {
+                        let _ = remote_call(pid, process, free_library, remote_module as *mut c_void);
+                    }
                 }
                 CloseHandle(process); free_local_map(local_module);
                 return Err(format!("WmodInitializeV1 failed: {}", init.map(|v| v.to_string()).unwrap_or_else(|e| e)));
@@ -1351,11 +1839,20 @@ mod win {
 
             CloseHandle(process);
             free_local_map(local_module);
+            on_phase(
+                NativeModTargetState::Initialized,
+                "ABI validation and mod initialization completed.".into(),
+            );
             Ok(())
         }
     }
 
     pub fn unload(pid: u32, executable: &str, module_path: &Path) -> Result<bool, String> {
+        // Keep shutdown and FreeLibrary together; another operation must not race
+        // the target between those two stages.
+        let _operation = target_operation_gate()
+            .lock()
+            .map_err(|_| "Native-mod operation gate is unavailable.".to_string())?;
         verify_target_pid(pid, executable)?;
         let Some(module) = module_for_path(pid, module_path)? else { return Ok(false) };
         unsafe {
@@ -1363,7 +1860,7 @@ mod win {
             let shutdown_rva = exported_rva(local_module, b"WmodShutdownV1\0")?;
             let base = module.mod_base_addr as usize;
             let process = open_modifiable_process(pid)?;
-            let shutdown_result = remote_call(process, (base + shutdown_rva) as *mut c_void, ptr::null_mut());
+            let shutdown_result = remote_call(pid, process, (base + shutdown_rva) as *mut c_void, ptr::null_mut());
             if let Err(e) = shutdown_result {
                 CloseHandle(process); free_local_map(local_module);
                 return Err(format!("WmodShutdownV1 failed: {e}"));
@@ -1372,7 +1869,7 @@ mod win {
                 Ok(p) => p,
                 Err(e) => { CloseHandle(process); free_local_map(local_module); return Err(e); }
             };
-            let free_result = remote_call(process, free_library, base as *mut c_void);
+            let free_result = remote_call(pid, process, free_library, base as *mut c_void);
             CloseHandle(process);
             free_local_map(local_module);
             match free_result {
@@ -1776,6 +2273,73 @@ mod tests {
         assert_eq!(fs::read(&outside).unwrap(), b"do not overwrite");
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_rollback_marks_successes_and_preserves_target_failures() {
+        let previous = vec![
+            NativeModTargetStatus {
+                pid: 10,
+                executable: "explorer.exe".into(),
+                state: NativeModTargetState::Initialized,
+                detail: "initialized".into(),
+            },
+            NativeModTargetStatus {
+                pid: 11,
+                executable: "SearchHost.exe".into(),
+                state: NativeModTargetState::Failed,
+                detail: "initialization failed".into(),
+            },
+            NativeModTargetStatus {
+                pid: 12,
+                executable: "ShellExperienceHost.exe".into(),
+                state: NativeModTargetState::Indeterminate,
+                detail: "remote call timed out".into(),
+            },
+        ];
+        let rollback = vec![
+            NativeModTargetStatus {
+                pid: 10,
+                executable: "explorer.exe".into(),
+                state: NativeModTargetState::Unloaded,
+                detail: "unloaded".into(),
+            },
+            NativeModTargetStatus {
+                pid: 11,
+                executable: "SearchHost.exe".into(),
+                state: NativeModTargetState::NotLoaded,
+                detail: "not loaded".into(),
+            },
+            NativeModTargetStatus {
+                pid: 12,
+                executable: "ShellExperienceHost.exe".into(),
+                state: NativeModTargetState::Indeterminate,
+                detail: "still quarantined".into(),
+            },
+        ];
+
+        let merged = merge_rollback_statuses(&previous, &rollback);
+        assert_eq!(merged[0].state, NativeModTargetState::RolledBack);
+        assert!(merged[0].detail.contains("rolled back"));
+        assert_eq!(merged[1].state, NativeModTargetState::Failed);
+        assert_eq!(merged[1].detail, "initialization failed");
+        assert_eq!(merged[2].state, NativeModTargetState::Indeterminate);
+        assert_eq!(merged[2].detail, "still quarantined");
+    }
+
+    #[test]
+    fn native_mod_target_lifecycle_states_serialize_as_stable_lower_camel_case() {
+        for (state, expected) in [
+            (NativeModTargetState::Detected, "\"detected\""),
+            (NativeModTargetState::Loading, "\"loading\""),
+            (NativeModTargetState::Initializing, "\"initializing\""),
+            (NativeModTargetState::Initialized, "\"initialized\""),
+            (NativeModTargetState::Stopping, "\"stopping\""),
+            (NativeModTargetState::Indeterminate, "\"indeterminate\""),
+            (NativeModTargetState::NotLoaded, "\"notLoaded\""),
+        ] {
+            assert_eq!(serde_json::to_string(&state).unwrap(), expected);
+        }
     }
 
     #[test]

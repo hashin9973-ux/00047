@@ -502,7 +502,8 @@ fn native_mod_uninstall(mods: State<'_, Arc<native_mods::NativeModManager>>, id:
 
 #[tauri::command]
 fn native_mod_refresh(mods: State<'_, Arc<native_mods::NativeModManager>>) -> native_mods::NativeModList {
-    mods.apply_enabled_mods();
+    // Reconciliation runs in the background monitor. Keep this command read-only
+    // so the UI can poll and display intermediate per-target lifecycle states.
     mods.list()
 }
 
