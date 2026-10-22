@@ -374,7 +374,7 @@ fn write_text_spec() -> Value {
     action_spec("Write Text File", "file-pen", "Creates or updates a UTF-8 text file, replacing its contents or appending text.", vec![
         json!({"key":"path","label":"File path","type":"text","required":true,"maxLen":2048}),
         json!({"key":"mode","label":"Write mode","type":"select","default":"overwrite","options":[["overwrite","Replace file contents"],["append","Append to file"]]}),
-        json!({"key":"content","label":"Text to write","type":"text","required":true,"maxLen":32768}),
+        json!({"key":"content","label":"Text to write","type":"textarea","rows":6,"required":true,"maxLen":32768}),
         json!({"preset":"onFail"})
     ], "Write text file: {path}", "The parent directory must already exist. The text content is not copied to workflow logs. Appending does not add a newline automatically.")
 }
