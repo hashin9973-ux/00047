@@ -1611,13 +1611,13 @@ mod win {
                 Some(m) => m.mod_base_addr as usize,
                 None => { CloseHandle(process); free_local_map(local_module); return Err("DLL loaded but was not found in the target module list".into()); }
             };
-            let api_version = remote_call(process, (remote_module + api_rva) as *mut c_void, ptr::null_mut());
+            let api_version = remote_call(pid, process, (remote_module + api_rva) as *mut c_void, ptr::null_mut());
             if api_version != Ok(1) {
                 // Only attempt rollback if the version-call thread is known to have
                 // completed. A timeout leaves its execution state unknown.
                 if !target_operation_is_indeterminate(pid) {
                     let _ = remote_call(pid, process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
-                    if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\\0") {
+                    if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\0") {
                         let _ = remote_call(pid, process, free_library, remote_module as *mut c_void);
                     }
                 }
@@ -1625,12 +1625,12 @@ mod win {
                 return Err(format!("mod ABI mismatch: expected version 1, got {}", api_version.map(|v| v.to_string()).unwrap_or_else(|e| e)));
             }
 
-            let init = remote_call(process, (remote_module + init_rva) as *mut c_void, ptr::null_mut());
+            let init = remote_call(pid, process, (remote_module + init_rva) as *mut c_void, ptr::null_mut());
             if !matches!(init, Ok(code) if code != 0) {
                 // Don't race an initializer that may still be executing after timeout.
                 if !target_operation_is_indeterminate(pid) {
                     let _ = remote_call(pid, process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
-                    if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\\0") {
+                    if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\0") {
                         let _ = remote_call(pid, process, free_library, remote_module as *mut c_void);
                     }
                 }
@@ -1652,7 +1652,7 @@ mod win {
             let shutdown_rva = exported_rva(local_module, b"WmodShutdownV1\0")?;
             let base = module.mod_base_addr as usize;
             let process = open_modifiable_process(pid)?;
-            let shutdown_result = remote_call(process, (base + shutdown_rva) as *mut c_void, ptr::null_mut());
+            let shutdown_result = remote_call(pid, process, (base + shutdown_rva) as *mut c_void, ptr::null_mut());
             if let Err(e) = shutdown_result {
                 CloseHandle(process); free_local_map(local_module);
                 return Err(format!("WmodShutdownV1 failed: {e}"));
@@ -1661,7 +1661,7 @@ mod win {
                 Ok(p) => p,
                 Err(e) => { CloseHandle(process); free_local_map(local_module); return Err(e); }
             };
-            let free_result = remote_call(process, free_library, base as *mut c_void);
+            let free_result = remote_call(pid, process, free_library, base as *mut c_void);
             CloseHandle(process);
             free_local_map(local_module);
             match free_result {
