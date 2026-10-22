@@ -39,3 +39,30 @@ Polling blocks use the configured poll interval, cancellation token, optional st
 These blocks are Windows-specific and launch hidden PowerShell helpers for Windows facilities that do not have an existing native wrapper. Commands are not a sandbox and execute as the current user. HTTP requests may access private/internal endpoints; avoid storing secrets in block fields and review workflow exports. File deletion can be irreversible, process-priority/window changes may be denied by Windows, and service/power operations may require elevated rights or hardware support. The power block gives shutdown/restart a configurable delay (default 60 seconds) to leave time to cancel.
 
 Network throughput uses adapter byte-counter deltas between polls, not a speed-test of the ISP connection. The internet check probes TCP port 443 on a host (or URL host); it is not a full DNS/HTTP certificate or application-health check. Bluetooth/USB/audio presence uses Plug and Play enumeration and may lag hardware events briefly. Workstation lock detection can be unavailable in restricted desktop/session environments.
+
+
+## Additional utilities
+
+The next utility batch adds these built-in blocks:
+
+### Conditions
+
+- **Process Count** compares the number of running instances of a process to a configured value.
+- **Service State** checks whether a Windows service is running, stopped, paused, pending, or missing.
+- **Clipboard Text** checks whether clipboard text is empty, equal to a string, contains text, or starts with a prefix. It never logs clipboard contents and requires an interactive user session.
+- **Environment Variable** checks process-, user-, or machine-scope variables without logging their values.
+- **File Age** compares a file or directory's last-modified age in minutes.
+- **Directory Item Count** counts files, directories, or both, with optional recursive enumeration and numeric comparisons.
+
+### Actions
+
+- **Create Folder** creates a directory including missing parent directories.
+- **Write Text File** creates, replaces, or appends UTF-8 text without logging the content.
+- **Create ZIP Archive** compresses a file or directory and requires explicit destination-overwrite behavior.
+- **Open Folder** opens an existing directory in File Explorer.
+- **Create Windows Shortcut** creates a .lnk shortcut with optional arguments, working directory, and icon.
+- **Type Text into Active Window** sends Unicode text to the currently focused application. It does not select or activate the target window.
+- **Capture Screenshot** saves the full virtual desktop as PNG and requires a user-selected overwrite policy.
+- **Set Desktop Wallpaper** changes the desktop wallpaper to an existing image.
+
+The additional conditions and actions use declarative specs for their editor fields. PowerShell-backed blocks are Windows-only; file-system blocks follow the current user's permissions. Typing text and capturing screenshots require an interactive desktop, and screenshots can contain private information. ZIP overwrite and screenshot overwrite are explicit settings rather than silent defaults.
