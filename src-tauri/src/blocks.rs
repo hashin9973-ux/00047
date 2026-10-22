@@ -11,6 +11,8 @@ use std::{
 use std::process::Stdio;
 use tokio_util::sync::CancellationToken;
 
+mod extra;
+
 #[cfg(windows)]
 const MAX_COMMAND_OUTPUT_BYTES: usize = 16 * 1024;
 
@@ -816,6 +818,7 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         m.insert("tgt.process", Box::new(ProcessTarget));
         m.insert("tgt.file", Box::new(FileTarget));
         m.insert("cond.schedule", Box::new(Schedule));
+        extra::register_into(&mut m);
         crate::custom::load_into(&mut m);
         m
     })
