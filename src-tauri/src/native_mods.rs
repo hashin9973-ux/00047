@@ -140,6 +140,19 @@ struct ReadPackage {
     manifest: ModManifest,
 }
 
+fn target_has_pending_reload(statuses: &[NativeModTargetStatus], pid: u32) -> bool {
+    statuses.iter().any(|status| {
+        status.pid == pid
+            && (status.state == NativeModTargetState::ReloadPending
+                || (status.state == NativeModTargetState::Indeterminate
+                    && status.detail.contains("reload pending")))
+    })
+}
+
+fn should_defer_reload_failure(error: &str, was_reload_pending: bool) -> bool {
+    error.starts_with("reload pending:") || was_reload_pending
+}
+
 struct NativeUnloadReport {
     unloaded: usize,
     target_statuses: Vec<NativeModTargetStatus>,
@@ -725,12 +738,7 @@ impl NativeModManager {
             }
             let pid = target.pid;
             let executable = target.executable.clone();
-            let retrying_reload = previous_target_statuses.iter().any(|old| {
-                old.pid == pid
-                    && (old.state == NativeModTargetState::ReloadPending
-                        || (old.state == NativeModTargetState::Indeterminate
-                            && old.detail.to_ascii_lowercase().contains("reload pending")))
-            });
+            let retrying_reload = target_has_pending_reload(&previous_target_statuses, pid);
             self.set_target_status(
                 id,
                 NativeModTargetStatus {
@@ -767,7 +775,7 @@ impl NativeModManager {
                 }
                 Err(e) => {
                     let indeterminate = target_operation_is_indeterminate(pid);
-                    let defer_reload = e.starts_with("reload pending:") || retrying_reload;
+                    let defer_reload = should_defer_reload_failure(&e, retrying_reload);
                     let detail = if defer_reload && !e.starts_with("reload pending:") {
                         format!("reload pending: waiting for target recovery before retrying: {e}")
                     } else {
@@ -2643,6 +2651,38 @@ mod tests {
         assert_eq!(merged[1].detail, "initialization failed");
         assert_eq!(merged[2].state, NativeModTargetState::Indeterminate);
         assert_eq!(merged[2].detail, "still quarantined");
+    }
+
+    #[test]
+    fn native_mod_reload_pending_survives_a_quarantined_target_scan() {
+        let previous = vec![
+            NativeModTargetStatus {
+                pid: 42,
+                executable: "explorer.exe".into(),
+                state: NativeModTargetState::ReloadPending,
+                detail: "reload pending: quiescence check timed out".into(),
+            },
+            NativeModTargetStatus {
+                pid: 43,
+                executable: "SearchHost.exe".into(),
+                state: NativeModTargetState::Indeterminate,
+                detail: "reload pending: PID quarantined until exit".into(),
+            },
+            NativeModTargetStatus {
+                pid: 44,
+                executable: "ShellExperienceHost.exe".into(),
+                state: NativeModTargetState::Indeterminate,
+                detail: "remote initializer timed out".into(),
+            },
+        ];
+
+        assert!(target_has_pending_reload(&previous, 42));
+        assert!(target_has_pending_reload(&previous, 43));
+        assert!(!target_has_pending_reload(&previous, 44));
+        assert!(!target_has_pending_reload(&previous, 99));
+        assert!(should_defer_reload_failure("reload pending: retry later", false));
+        assert!(should_defer_reload_failure("PID quarantined until exit", true));
+        assert!(!should_defer_reload_failure("native mod initialization failed", false));
     }
 
     #[test]
