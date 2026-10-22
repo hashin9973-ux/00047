@@ -281,17 +281,36 @@ inline Watcher& Instance() {
     WMOD_00047_EXPORT std::uint32_t WINAPI WmodGetApiVersion(void) { \
         return WMOD_00047_ABI_VERSION; \
     } \
+    WMOD_00047_EXPORT BOOL WINAPI WmodIsInitializedV1(void) { \
+        return ::wmod::windhawk_adapter::LifecycleState().load() == 2 ? TRUE : FALSE; \
+    } \
+    WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) { \
+        return ::wmod::windhawk_hook_compat::CanUnload(); \
+    } \
     WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void) { \
         int expected = 0; \
         auto& state = ::wmod::windhawk_adapter::LifecycleState(); \
         if (!state.compare_exchange_strong(expected, 1)) return expected == 2 ? TRUE : FALSE; \
+        if (!::wmod::windhawk_hook_compat::BeginHookOperations()) { state.store(0); return FALSE; } \
         bool init_succeeded = false; \
         try { \
-            if (!(init_callback)()) { state.store(0); return FALSE; } \
+            if (!(init_callback)()) { \
+                ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
+                state.store(0); \
+                return FALSE; \
+            } \
             init_succeeded = true; \
+            if (!::wmod::windhawk_hook_compat::ApplyHookOperations()) { \
+                try { (before_uninit_callback)(); } catch (...) {} \
+                ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
+                try { (uninit_callback)(); } catch (...) {} \
+                state.store(0); \
+                return FALSE; \
+            } \
             (after_init_callback)(); \
             if (!::wmod::windhawk_settings_watch::Instance().Start(settings_changed_callback)) { \
                 try { (before_uninit_callback)(); } catch (...) {} \
+                ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
                 try { (uninit_callback)(); } catch (...) {} \
                 state.store(0); \
                 return FALSE; \
@@ -302,7 +321,10 @@ inline Watcher& Instance() {
             ::wmod::windhawk_settings_watch::Instance().Stop(); \
             if (init_succeeded) { \
                 try { (before_uninit_callback)(); } catch (...) {} \
+                ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
                 try { (uninit_callback)(); } catch (...) {} \
+            } else { \
+                ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
             } \
             state.store(0); \
             return FALSE; \
@@ -311,9 +333,13 @@ inline Watcher& Instance() {
     WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) { \
         int expected = 2; \
         auto& state = ::wmod::windhawk_adapter::LifecycleState(); \
-        if (!state.compare_exchange_strong(expected, 3)) return; \
+        if (!state.compare_exchange_strong(expected, 3)) { \
+            if (expected == 0) ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
+            return; \
+        } \
         ::wmod::windhawk_settings_watch::Instance().Stop(); \
         try { (before_uninit_callback)(); } catch (...) {} \
+        ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
         try { (uninit_callback)(); } catch (...) {} \
         state.store(0); \
     }

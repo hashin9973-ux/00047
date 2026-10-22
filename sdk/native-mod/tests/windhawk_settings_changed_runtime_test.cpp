@@ -10,6 +10,8 @@
 namespace {
 using InitializeFn = BOOL (WINAPI*)();
 using ShutdownFn = void (WINAPI*)();
+using IsInitializedFn = BOOL (WINAPI*)();
+using CanUnloadFn = BOOL (WINAPI*)();
 using CountFn = unsigned long (WINAPI*)();
 
 bool WriteText(const std::filesystem::path& path, const char* text) {
@@ -70,10 +72,17 @@ int wmain(int argc, wchar_t** argv) {
     ShutdownFn shutdown = module
         ? reinterpret_cast<ShutdownFn>(GetProcAddress(module, "WmodShutdownV1"))
         : nullptr;
+    IsInitializedFn isInitialized = module
+        ? reinterpret_cast<IsInitializedFn>(GetProcAddress(module, "WmodIsInitializedV1"))
+        : nullptr;
+    CanUnloadFn canUnload = module
+        ? reinterpret_cast<CanUnloadFn>(GetProcAddress(module, "WmodCanUnloadV1"))
+        : nullptr;
     CountFn getCount = module
         ? reinterpret_cast<CountFn>(GetProcAddress(module, "AdapterSettingsChangedCount"))
         : nullptr;
     bool initialized = false;
+    bool retainPackageDir = false;
 
     auto fail = [&](const wchar_t* message) -> int {
         std::wcerr << message << L"\n";
@@ -82,20 +91,30 @@ int wmain(int argc, wchar_t** argv) {
             initialized = false;
         }
         if (module) {
-            FreeLibrary(module);
-            module = nullptr;
+            if (canUnload && canUnload()) {
+                FreeLibrary(module);
+                module = nullptr;
+            } else {
+                // Fail closed: don't unmap a test DLL if the lifecycle query
+                // cannot confirm it has no in-flight callback frames.
+                retainPackageDir = true;
+                module = nullptr;
+            }
         }
-        std::filesystem::remove_all(packageDir, ec);
+        if (!retainPackageDir) std::filesystem::remove_all(packageDir, ec);
         return 1;
     };
 
-    if (!module || !initialize || !shutdown || !getCount) {
-        return fail(L"Settings-change smoke DLL is missing expected exports.");
+    if (!module || !initialize || !shutdown || !isInitialized || !canUnload || !getCount) {
+        return fail(L"Settings-change smoke DLL is missing required lifecycle/query exports.");
     }
     if (!initialize()) {
         return fail(L"WmodInitializeV1 rejected the settings-change watcher.");
     }
     initialized = true;
+    if (!isInitialized()) {
+        return fail(L"WmodIsInitializedV1 did not report the active lifecycle.");
+    }
 
     // WmodInitializeV1 returns only after ReadDirectoryChangesW is armed. Modify
     // the settings file; the smoke callback performs a second write itself.
