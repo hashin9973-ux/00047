@@ -1186,10 +1186,12 @@ fn unload_from_targets(targets: &[String], module: &Path) -> Result<NativeUnload
 mod win {
     use super::{validate_pe_file, NativeTarget, SUPPORTED_TARGETS};
     use std::{
+        collections::HashSet,
         ffi::{c_char, c_void, OsStr, OsString},
         os::windows::ffi::{OsStrExt, OsStringExt},
         path::Path,
         ptr,
+        sync::{Mutex, OnceLock},
     };
 
     type Handle = *mut c_void;
@@ -1199,6 +1201,7 @@ mod win {
     const TH32CS_SNAPMODULE: u32 = 0x0000_0008;
     const TH32CS_SNAPMODULE32: u32 = 0x0000_0010;
     const PROCESS_CREATE_THREAD: u32 = 0x0002;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
     const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
     const PROCESS_VM_OPERATION: u32 = 0x0008;
@@ -1281,6 +1284,55 @@ mod win {
     }
     fn is_invalid(h: Handle) -> bool {
         h.is_null() || h as isize == INVALID_HANDLE_VALUE
+    }
+
+    static INDETERMINATE_PIDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+
+    fn indeterminate_pids() -> &'static Mutex<HashSet<u32>> {
+        INDETERMINATE_PIDS.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    pub fn target_operation_is_indeterminate(pid: u32) -> bool {
+        // Fail closed if the registry is poisoned: overlapping remote operations
+        // are riskier than requiring a target-process restart.
+        indeterminate_pids()
+            .lock()
+            .map(|pids| pids.contains(&pid))
+            .unwrap_or(true)
+    }
+
+    fn quarantine_until_target_exit(pid: u32) {
+        let inserted = match indeterminate_pids().lock() {
+            Ok(mut pids) => pids.insert(pid),
+            Err(_) => return,
+        };
+        if !inserted {
+            return;
+        }
+
+        // Keep the quarantine until this exact process object exits. If opening a
+        // watcher or spawning its thread fails, leave this PID quarantined for the
+        // rest of the app session rather than risking another operation.
+        let watcher = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+        if is_invalid(watcher) {
+            return;
+        }
+        let watcher_value = watcher as isize;
+        let spawned = std::thread::Builder::new()
+            .name(format!("00047-native-target-watch-{pid}"))
+            .spawn(move || {
+                let watcher = watcher_value as Handle;
+                let outcome = unsafe { WaitForSingleObject(watcher, INFINITE) };
+                unsafe { CloseHandle(watcher); }
+                if outcome == WAIT_OBJECT_0 {
+                    if let Ok(mut pids) = indeterminate_pids().lock() {
+                        pids.remove(&pid);
+                    }
+                }
+            });
+        if spawned.is_err() {
+            unsafe { CloseHandle(watcher); }
+        }
     }
 
     fn processes() -> Result<Vec<(u32, String)>, String> {
@@ -1422,18 +1474,31 @@ mod win {
         }
     }
 
-    fn remote_call(process: Handle, start: *mut c_void, parameter: *mut c_void) -> Result<u32, String> {
+    fn remote_call(pid: u32, process: Handle, start: *mut c_void, parameter: *mut c_void) -> Result<u32, String> {
+        if target_operation_is_indeterminate(pid) {
+            return Err(format!(
+                "PID {pid} is quarantined after an earlier remote-operation timeout; restart the target process before retrying."
+            ));
+        }
         unsafe {
             let thread = CreateRemoteThread(process, ptr::null_mut(), 0, start, parameter, 0, ptr::null_mut());
             if is_invalid(thread) { return Err(last_error("CreateRemoteThread")); }
             let wait = WaitForSingleObject(thread, 10_000);
-            if wait == WAIT_TIMEOUT {
-                CloseHandle(thread);
-                return Err("remote thread timed out; the target process was not terminated".into());
-            }
             if wait != WAIT_OBJECT_0 {
+                // A timeout or wait failure does not prove that the remote thread
+                // stopped. Do not issue rollback calls against a possibly active
+                // initializer/unloader. Quarantine this target until its process
+                // exits; process exit also reclaims any remote path buffer.
+                let wait_error = if wait == WAIT_TIMEOUT {
+                    "remote thread exceeded the 10-second wait limit".to_string()
+                } else {
+                    last_error("WaitForSingleObject(remote thread)")
+                };
+                quarantine_until_target_exit(pid);
                 CloseHandle(thread);
-                return Err(last_error("WaitForSingleObject(remote thread)"));
+                return Err(format!(
+                    "{wait_error}; the operation outcome is indeterminate. PID {pid} is quarantined and no further mod operations will run in it until the process exits. Restart the target process to recover."
+                ));
             }
             let mut code = 0;
             let ok = GetExitCodeThread(thread, &mut code);
@@ -1478,6 +1543,11 @@ mod win {
     }
 
     fn verify_target_pid(pid: u32, requested_name: &str) -> Result<(), String> {
+        if target_operation_is_indeterminate(pid) {
+            return Err(format!(
+                "PID {pid} has an indeterminate remote operation; further native-mod actions are blocked until that process exits. Restart the target process to recover."
+            ));
+        }
         if !SUPPORTED_TARGETS.iter().any(|t| t.eq_ignore_ascii_case(requested_name)) {
             return Err("target executable is not on the native shell allow-list".into());
         }
@@ -1526,7 +1596,7 @@ mod win {
                 Ok(p) => p,
                 Err(e) => { VirtualFreeEx(process, remote_path, 0, MEM_RELEASE); CloseHandle(process); free_local_map(local_module); return Err(e); }
             };
-            let loaded = remote_call(process, load_library, remote_path);
+            let loaded = remote_call(pid, process, load_library, remote_path);
             if loaded.is_ok() { VirtualFreeEx(process, remote_path, 0, MEM_RELEASE); }
             let result = match loaded {
                 Ok(code) if code != 0 => Ok(()),
@@ -1543,9 +1613,13 @@ mod win {
             };
             let api_version = remote_call(process, (remote_module + api_rva) as *mut c_void, ptr::null_mut());
             if api_version != Ok(1) {
-                let _ = remote_call(process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
-                if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\0") {
-                    let _ = remote_call(process, free_library, remote_module as *mut c_void);
+                // Only attempt rollback if the version-call thread is known to have
+                // completed. A timeout leaves its execution state unknown.
+                if !target_operation_is_indeterminate(pid) {
+                    let _ = remote_call(pid, process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
+                    if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\\0") {
+                        let _ = remote_call(pid, process, free_library, remote_module as *mut c_void);
+                    }
                 }
                 CloseHandle(process); free_local_map(local_module);
                 return Err(format!("mod ABI mismatch: expected version 1, got {}", api_version.map(|v| v.to_string()).unwrap_or_else(|e| e)));
@@ -1553,9 +1627,12 @@ mod win {
 
             let init = remote_call(process, (remote_module + init_rva) as *mut c_void, ptr::null_mut());
             if !matches!(init, Ok(code) if code != 0) {
-                let _ = remote_call(process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
-                if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\0") {
-                    let _ = remote_call(process, free_library, remote_module as *mut c_void);
+                // Don't race an initializer that may still be executing after timeout.
+                if !target_operation_is_indeterminate(pid) {
+                    let _ = remote_call(pid, process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
+                    if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\\0") {
+                        let _ = remote_call(pid, process, free_library, remote_module as *mut c_void);
+                    }
                 }
                 CloseHandle(process); free_local_map(local_module);
                 return Err(format!("WmodInitializeV1 failed: {}", init.map(|v| v.to_string()).unwrap_or_else(|e| e)));
