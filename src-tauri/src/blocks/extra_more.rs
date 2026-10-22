@@ -80,7 +80,10 @@ async fn ps_bool(cx: &NodeCx, script: &str) -> Result<bool, String> {
     serde_json::from_str::<bool>(out.trim()).map_err(|e| format!("Could not parse Windows condition result: {e}"))
 }
 
-fn condition_spec(title: &str, icon: &str, description: &str, fields: Vec<Value>, summary: &str, help: &str) -> Value {
+fn condition_spec(title: &str, icon: &str, description: &str, mut fields: Vec<Value>, summary: &str, help: &str) -> Value {
+    // Conditions use the shared wait controls. Strip any old onFail preset before re-adding the ordered shared fields.
+    fields.retain(|f| f.get("preset").and_then(Value::as_str) != Some("onFail"));
+    fields.extend(extra::behavior_fields());
     json!({"category":"condition","title":title,"icon":icon,"description":description,"fields":fields,"summary":summary,"help":help})
 }
 
