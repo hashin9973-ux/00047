@@ -94,6 +94,7 @@ pub enum NativeModTargetState {
     // Retained as a defensive legacy state for older internal state transitions.
     Running,
     Stopping,
+    ReloadPending,
     Ineligible,
     Failed,
     Indeterminate,
@@ -696,6 +697,7 @@ impl NativeModManager {
         let manifest = load_manifest(&folder)?;
         let dll = module_file_path(&folder, &manifest.module)?;
         validate_pe_file(&dll)?;
+        let previous_target_statuses = self.target_status_snapshot(id);
         let targets = discover_targets()?;
         let matching: Vec<NativeTarget> = targets.into_iter()
             .filter(|p| manifest.targets.iter().any(|t| t.eq_ignore_ascii_case(&p.executable)))
@@ -708,6 +710,7 @@ impl NativeModManager {
 
         let mut successes = 0usize;
         let mut failures = Vec::new();
+        let mut reload_pending = Vec::new();
         let mut per_target = Vec::new();
         for target in matching {
             if !target.eligible {
@@ -722,6 +725,12 @@ impl NativeModManager {
             }
             let pid = target.pid;
             let executable = target.executable.clone();
+            let retrying_reload = previous_target_statuses.iter().any(|old| {
+                old.pid == pid
+                    && (old.state == NativeModTargetState::ReloadPending
+                        || (old.state == NativeModTargetState::Indeterminate
+                            && old.detail.to_ascii_lowercase().contains("reload pending")))
+            });
             self.set_target_status(
                 id,
                 NativeModTargetStatus {
@@ -758,16 +767,29 @@ impl NativeModManager {
                 }
                 Err(e) => {
                     let indeterminate = target_operation_is_indeterminate(pid);
-                    failures.push(format!("{executable} (PID {pid}): {e}"));
+                    let defer_reload = e.starts_with("reload pending:") || retrying_reload;
+                    let detail = if defer_reload && !e.starts_with("reload pending:") {
+                        format!("reload pending: waiting for target recovery before retrying: {e}")
+                    } else {
+                        e
+                    };
+                    let target_error = format!("{executable} (PID {pid}): {detail}");
+                    if defer_reload {
+                        reload_pending.push(target_error);
+                    } else {
+                        failures.push(target_error);
+                    }
                     per_target.push(NativeModTargetStatus {
                         pid,
                         executable,
                         state: if indeterminate {
                             NativeModTargetState::Indeterminate
+                        } else if defer_reload {
+                            NativeModTargetState::ReloadPending
                         } else {
                             NativeModTargetState::Failed
                         },
-                        detail: e,
+                        detail,
                     });
                 }
             }
@@ -775,6 +797,13 @@ impl NativeModManager {
         self.set_target_statuses(id, per_target);
         if !failures.is_empty() {
             return Err(format!("loaded into {successes} process(es); {}", failures.join("; ")));
+        }
+        if !reload_pending.is_empty() {
+            return Ok(format!(
+                "Enabled in {successes} process(es); safe reload pending on {} target(s), retrying on later scans: {}",
+                reload_pending.len(),
+                reload_pending.join("; ")
+            ));
         }
         Ok(format!("Enabled in {successes} process(es); new shell processes are monitored"))
     }
@@ -1858,7 +1887,7 @@ mod win {
                     Err(error) => {
                         CloseHandle(process);
                         free_local_map(local_module);
-                        return Err(format!("could not query the mod's reload request: {error}"));
+                        return Err(format!("reload pending: could not query the mod's reload request: {error}"));
                     }
                     Ok(code) if code != 0 => {
                         on_phase(
@@ -1873,7 +1902,7 @@ mod win {
                             CloseHandle(process);
                             free_local_map(local_module);
                             return Err(format!(
-                                "reload requested but shutdown failed; DLL remains mapped: {error}"
+                                "reload pending: reload was requested but shutdown failed; DLL remains mapped: {error}"
                             ));
                         }
                         if let Err(error) = wait_for_safe_unload(
@@ -1883,7 +1912,7 @@ mod win {
                             CloseHandle(process);
                             free_local_map(local_module);
                             return Err(format!(
-                                "reload requested but the DLL was retained for safety: {error}"
+                                "reload pending: reload was requested but the DLL was retained for safety: {error}"
                             ));
                         }
                         let free_library = match remote_system_proc(pid, b"FreeLibrary\0") {
@@ -1892,7 +1921,7 @@ mod win {
                                 CloseHandle(process);
                                 free_local_map(local_module);
                                 return Err(format!(
-                                    "reload requested but FreeLibrary could not be resolved: {error}"
+                                    "reload pending: FreeLibrary could not be resolved: {error}"
                                 ));
                             }
                         };
@@ -1901,25 +1930,50 @@ mod win {
                             Ok(_) => {
                                 CloseHandle(process);
                                 free_local_map(local_module);
-                                return Err("reload requested but FreeLibrary returned FALSE; DLL remains mapped".into());
+                                return Err("reload pending: FreeLibrary returned FALSE; DLL remains mapped".into());
                             }
                             Err(error) => {
                                 CloseHandle(process);
                                 free_local_map(local_module);
-                                return Err(format!("reload requested but DLL unload was indeterminate: {error}"));
+                                return Err(format!("reload pending: DLL unload was indeterminate: {error}"));
                             }
                         }
                         match module_for_path(pid, module_path) {
                             Ok(None) => {}
                             Ok(Some(_)) => {
+                                // FreeLibrary succeeded but another reference keeps
+                                // the same image mapped. Reinitialize that image
+                                // instead of decrementing another owner's reference.
+                                let init = remote_call(
+                                    pid, process,
+                                    (base + init_rva) as *mut c_void,
+                                    ptr::null_mut(),
+                                );
                                 CloseHandle(process);
                                 free_local_map(local_module);
-                                return Err("reload requested, but another reference kept the DLL mapped; refusing to initialize it as a fresh image".into());
+                                if matches!(init, Ok(code) if code != 0) {
+                                    on_phase(
+                                        NativeModTargetState::Initialized,
+                                        "The DLL remained mapped by another reference and was safely reinitialized in place.".into(),
+                                    );
+                                    return Ok(());
+                                }
+                                return Err(format!(
+                                    "reload pending: the DLL remained mapped by another reference and reinitialization failed: {}",
+                                    init.map(|code| code.to_string()).unwrap_or_else(|error| error)
+                                ));
                             }
                             Err(error) => {
+                                // FreeLibrary already returned success, but the
+                                // image's remaining state is ambiguous. Quarantine
+                                // the PID so another scan cannot decrement a
+                                // reference owned by another component.
+                                quarantine_until_target_exit(pid, process);
                                 CloseHandle(process);
                                 free_local_map(local_module);
-                                return Err(format!("reload completed but the module list could not be verified: {error}"));
+                                return Err(format!(
+                                    "reload pending: FreeLibrary completed but the module state could not be verified; target quarantined until exit: {error}"
+                                ));
                             }
                         }
                         CloseHandle(process);
