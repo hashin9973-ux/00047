@@ -330,6 +330,7 @@ impl NativeModManager {
                         | NativeModTargetState::Loading
                         | NativeModTargetState::Initializing
                         | NativeModTargetState::Stopping
+                        | NativeModTargetState::Failed
                 ) {
                     NativeModTargetStatus {
                         state: NativeModTargetState::Indeterminate,
@@ -1746,6 +1747,9 @@ mod win {
             );
             return Ok(());
         }
+        let canonical_module_path = module_path
+            .canonicalize()
+            .map_err(|error| format!("Cannot resolve native mod DLL before loading: {error}"))?;
 
         unsafe {
             let local_module = local_map_module(module_path)?;
@@ -1762,7 +1766,7 @@ mod win {
             let process = match open_modifiable_process(pid) {
                 Ok(h) => h, Err(e) => { free_local_map(local_module); return Err(e); }
             };
-            let remote_path = match write_remote_utf16(process, &module_path.canonicalize().map_err(|e| e.to_string())?.to_string_lossy()) {
+            let remote_path = match write_remote_utf16(process, &canonical_module_path.to_string_lossy()) {
                 Ok(p) => p,
                 Err(e) => { CloseHandle(process); free_local_map(local_module); return Err(e); }
             };
@@ -1785,9 +1789,18 @@ mod win {
                 CloseHandle(process); free_local_map(local_module); return Err(e);
             }
 
-            let remote_module = match module_for_path(pid, module_path)? {
-                Some(m) => m.mod_base_addr as usize,
-                None => { CloseHandle(process); free_local_map(local_module); return Err("DLL loaded but was not found in the target module list".into()); }
+            let remote_module = match module_for_path(pid, module_path) {
+                Ok(Some(module)) => module.mod_base_addr as usize,
+                Ok(None) => {
+                    CloseHandle(process);
+                    free_local_map(local_module);
+                    return Err("DLL loaded but was not found in the target module list".into());
+                }
+                Err(error) => {
+                    CloseHandle(process);
+                    free_local_map(local_module);
+                    return Err(format!("DLL loaded but its target module could not be verified: {error}"));
+                }
             };
             on_phase(
                 NativeModTargetState::Initializing,
