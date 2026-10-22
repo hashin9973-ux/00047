@@ -576,7 +576,7 @@ impl Block for LaunchFile {
         if !std::path::Path::new(&path).exists() {
             return Err(format!("file not found: {path}"));
         }
-        let args = text(&cx.cfg, "args");
+        let args = cx.expand_template(&text(&cx.cfg, "args"))?;
         (cx.report)("running", None, format!("Launching {path}"));
         let p2 = path.clone();
         tokio::task::spawn_blocking(move || sys::start_file(&p2, &args))
@@ -658,7 +658,7 @@ impl Block for RunCommand {
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
 
-            let working_directory = text(&cx.cfg, "workingDirectory");
+            let working_directory = cx.expand_template(&text(&cx.cfg, "workingDirectory"))?;
             if !working_directory.is_empty() {
                 cmd.current_dir(&working_directory);
             }
@@ -735,7 +735,7 @@ impl Block for StopProc {
         let (pid, name) = if text(&cx.cfg, "mode") == "target" {
             first_process(cx)?
         } else {
-            let n = text(&cx.cfg, "name");
+            let n = cx.expand_template(&text(&cx.cfg, "name"))?;
             (sys::find_pid_by_name(&n)?, n)
         };
         if pid == sys::own_pid() { return Err("refusing to stop 00047 itself".into()); }
@@ -762,7 +762,13 @@ impl Block for Notify {
         Ok(())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
-        let (t, b, s) = (text(&cx.cfg, "title"), text(&cx.cfg, "body"), flag(&cx.cfg, "sound", true));
+        let t = cx.expand_template(&text(&cx.cfg, "title"))?;
+        let b = cx.expand_template(&text(&cx.cfg, "body"))?;
+        let s = flag(&cx.cfg, "sound", true);
+        if t.is_empty() || b.is_empty() { return Err("Title and message are required after variable expansion".into()); }
+        if t.chars().count() > 64 || b.chars().count() > 256 {
+            return Err("Expanded title max 64 and message max 256 characters".into());
+        }
         tokio::task::spawn_blocking(move || sys::show_notification(&t, &b, s))
             .await.map_err(|e| e.to_string())??;
         Ok(Outcome::Satisfied)
@@ -806,7 +812,10 @@ impl Block for LogMsg {
             "error" => "error",
             _ => "info",
         };
-        (cx.log)(lvl, text(&cx.cfg, "message"));
+        let message = cx.expand_template(&text(&cx.cfg, "message"))?;
+        if message.is_empty() { return Err("Message is required after variable expansion".into()); }
+        if message.chars().count() > 500 { return Err("Expanded message must be 500 characters or fewer".into()); }
+        (cx.log)(lvl, message);
         Ok(Outcome::Satisfied)
     }
 }
