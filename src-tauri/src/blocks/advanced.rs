@@ -248,11 +248,17 @@ impl Block for HttpStatus {
         no_nul(c, &["url", "containsText", "jsonPath", "expectedValue"])?;
         let url = txt(c, "url");
         if !(url.starts_with("http://") || url.starts_with("https://")) { return Err("URL must start with http:// or https://".into()); }
-        if !matches!(txt(c, "method").as_str(), "GET"|"HEAD") { return Err("Unsupported HTTP method".into()); }
-        if !matches!(txt(c, "mode").as_str(), "status"|"success"|"contains"|"json_equals") { return Err("Unknown HTTP match mode".into()); }
-        if txt(c, "mode") == "contains" && raw(c, "containsText").is_empty() { return Err("Response text to find is required".into()); }
-        if txt(c, "mode") == "json_equals" && (txt(c, "jsonPath").is_empty() || !c.get("expectedValue").and_then(Value::as_str).is_some()) { return Err("JSON property path and expected value are required".into()); }
-        num(c, "expectedStatus", 200.0, 100.0, 599.0, "Expected status code")?;
+        let method = txt(c, "method");
+        let mode = txt(c, "mode");
+        if !matches!(method.as_str(), "GET"|"HEAD") { return Err("Unsupported HTTP method".into()); }
+        if !matches!(mode.as_str(), "status"|"success"|"contains"|"json_equals") { return Err("Unknown HTTP match mode".into()); }
+        if mode == "contains" && method == "HEAD" { return Err("Use GET when matching response text".into()); }
+        if mode == "contains" && raw(c, "containsText").is_empty() { return Err("Response text to find is required".into()); }
+        if mode == "json_equals" && (method == "HEAD" || txt(c, "jsonPath").is_empty() || c.get("expectedValue").and_then(Value::as_str).is_none()) { return Err("GET, a JSON property path, and an expected value are required for JSON matching".into()); }
+        if mode == "status" {
+            let status = num(c, "expectedStatus", 200.0, 100.0, 599.0, "Expected status code")?;
+            if status.fract() != 0.0 { return Err("HTTP status code must be a whole number".into()); }
+        }
         extra::wait_settings(c).map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
@@ -260,7 +266,7 @@ impl Block for HttpStatus {
         let url = txt(&cx.cfg, "url");
         let method = txt(&cx.cfg, "method");
         let mode = txt(&cx.cfg, "mode");
-        let code = num(&cx.cfg, "expectedStatus", 200.0, 100.0, 599.0, "Expected status code")? as u16;
+        let code = if mode == "status" { num(&cx.cfg, "expectedStatus", 200.0, 100.0, 599.0, "Expected status code")? as u16 } else { 200u16 };
         let contains = raw(&cx.cfg, "containsText");
         let path = txt(&cx.cfg, "jsonPath");
         let expected = raw(&cx.cfg, "expectedValue");
@@ -490,7 +496,7 @@ impl Block for ClearVariable {
 struct KeyboardShortcut;
 fn keyboard_spec() -> Value {
     spec_action("Send Keyboard Shortcut", "keyboard", "Sends a Windows SendKeys shortcut to the currently focused application.", vec![
-        json!({"key":"shortcut","label":"SendKeys shortcut (for example ^s or %{{F4}})","type":"text","required":true,"maxLen":128}),
+        json!({"key":"shortcut","label":"SendKeys shortcut (for example ^s or %{F4})","type":"text","required":true,"maxLen":128}),
         json!({"key":"delayMs","label":"Delay before sending (ms)","type":"number","min":0,"max":60000,"step":50,"default":100}),
         json!({"preset":"onFail"})
     ], "Keyboard shortcut: {shortcut}", "Uses Windows Forms SendKeys. ^ means Ctrl, + means Shift, % means Alt. The foreground app receives the keys; do not send shortcuts while passwords or unintended dialogs have focus.")
@@ -871,6 +877,24 @@ mod tests {
     }
 
     #[test]
+    fn workflow_variables_expand_and_missing_values_fail_closed() {
+        let cx = NodeCx {
+            cfg: json!({}),
+            token: tokio_util::sync::CancellationToken::new(),
+            visit: 1,
+            report: Box::new(|_: &str, _: Option<f64>, _: String| {}),
+            log: Box::new(|_: &str, _: String| {}),
+            resolve: Box::new(|| Ok(Vec::new())),
+            visible: Box::new(|| false),
+            variables: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+        };
+        cx.set_variable("folder".into(), json!("C:\\Temp\\logs")).unwrap();
+        cx.set_variable("count".into(), json!(3)).unwrap();
+        assert_eq!(cx.expand_template("{{folder}}\\run-{{count}}.txt").unwrap(), "C:\\Temp\\logs\\run-3.txt");
+        assert!(cx.expand_template("{{unset}}").is_err());
+    }
+
+    #[test]
     fn variable_names_and_wildcards_are_validated() {
         assert!(valid_name("file.count_1"));
         assert!(!valid_name("1bad"));
@@ -891,6 +915,9 @@ mod tests {
         assert!(SetVariable.validate(&json!({"name":"1bad","source":"literal","valueType":"text","value":"42","onFail":"stop"})).is_err());
         assert!(IncrementVariable.validate(&json!({"name":"count","amount":1,"createIfMissing":true,"onFail":"stop"})).is_ok());
         assert!(KeyboardShortcut.validate(&json!({"shortcut":"^s","delayMs":100,"onFail":"stop"})).is_ok());
+        assert!(MouseAutomation.validate(&json!({"operation":"click","coordinateSpace":"window","processName":"notepad","x":10,"y":20,"onFail":"stop"})).is_ok());
+        assert!(MouseAutomation.validate(&json!({"operation":"click","coordinateSpace":"window","x":10,"y":20,"onFail":"stop"})).is_err());
+        assert!(BulkFiles.validate(&json!({"sourceFolder":"C:\\Temp","pattern":"*.log","operation":"recycle","recursive":false,"collision":"fail","maxItems":100,"previewOnly":true,"onFail":"stop"})).is_ok());
         assert!(MouseAutomation.validate(&json!({"operation":"click","coordinateSpace":"window","processName":"notepad","x":10,"y":20,"onFail":"stop"})).is_ok());
         assert!(MouseAutomation.validate(&json!({"operation":"click","coordinateSpace":"window","x":10,"y":20,"onFail":"stop"})).is_err());
         assert!(BulkFiles.validate(&json!({"sourceFolder":"C:\\\\Temp","pattern":"*.log","operation":"recycle","recursive":false,"collision":"fail","maxItems":100,"previewOnly":true,"onFail":"stop"})).is_ok());
