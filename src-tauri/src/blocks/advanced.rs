@@ -67,10 +67,16 @@ fn folder_snapshot(root: &Path, recursive: bool, pattern: &str, item_type: &str)
     if !root.exists() { return Ok(result); }
     if !root.is_dir() { return Err("Watched path is not a directory".into()); }
     let mut stack = vec![root.to_path_buf()];
+    let mut visited = 0usize;
     while let Some(dir) = stack.pop() {
         let entries = fs::read_dir(&dir).map_err(|e| format!("Could not read directory {}: {e}", dir.display()))?;
         for entry in entries {
             let entry = entry.map_err(|e| format!("Directory enumeration failed: {e}"))?;
+            visited += 1;
+            if visited > 100_000 { return Err("Directory scan limit reached (100,000 entries)".into()); }
+            let kind = entry.file_type().map_err(|e| format!("Could not inspect file type: {e}"))?;
+            // Do not recurse through symlinks/junction-like entries.
+            if kind.is_symlink() { continue; }
             let path = entry.path();
             let meta = entry.metadata().map_err(|e| format!("Could not inspect {}: {e}", path.display()))?;
             let name = entry.file_name().to_string_lossy().to_string();
@@ -82,7 +88,7 @@ fn folder_snapshot(root: &Path, recursive: bool, pattern: &str, item_type: &str)
                 _ => meta.is_file() || is_dir,
             };
             if include_kind && wildcard_match(pattern, &name) {
-                if result.len() >= 10000 { return Err("Folder watch limit reached (10,000 matching items)".into()); }
+                if result.len() >= 10000 { return Err("Folder scan limit reached (10,000 matching items)".into()); }
                 let stamp = meta.modified().ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map(|d| d.as_nanos()).unwrap_or(0);
                 result.insert(path.to_string_lossy().to_string(), (is_dir, meta.len(), stamp));
             }
@@ -708,6 +714,59 @@ impl Block for BulkFiles {
     }
 }
 
+struct FindFile;
+fn find_file_spec() -> Value {
+    spec_action("Find File & Store Path", "folder-search", "Finds the first or a selected matching file and saves its full path to a workflow variable.", vec![
+        json!({"key":"searchFolder","label":"Folder to search","type":"text","required":true,"maxLen":2048}),
+        json!({"key":"pattern","label":"Filename pattern","type":"text","required":true,"maxLen":512,"default":"*"}),
+        json!({"key":"recursive","label":"Include subdirectories","type":"bool","default":false}),
+        json!({"key":"selection","label":"Which match to select","type":"select","default":"first","options":[["first","Alphabetically first path"],["newest","Newest modified"],["oldest","Oldest modified"],["largest","Largest file"],["smallest","Smallest file"]]}),
+        json!({"key":"saveAs","label":"Store path in variable","type":"text","required":true,"maxLen":64,"default":"filePath"}),
+        json!({"preset":"onFail"})
+    ], "Find {pattern} in {searchFolder}", "Search is bounded to 100,000 directory entries and 10,000 matching files. If there is no match the block returns Not Satisfied (ELSE); on success the full path is saved to the selected per-run variable.")
+}
+#[async_trait]
+impl Block for FindFile {
+    fn title(&self) -> &'static str { "Find File & Store Path" }
+    fn category(&self) -> Cat { Cat::Action }
+    fn risky(&self) -> bool { false }
+    fn spec(&self) -> Option<Value> { Some(find_file_spec()) }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        super::spec::validate(&find_file_spec(), c)?;
+        no_nul(c, &["searchFolder", "pattern", "saveAs"])?;
+        if txt(c, "pattern").is_empty() { return Err("Filename pattern is required".into()); }
+        if !matches!(txt(c, "selection").as_str(), "first"|"newest"|"oldest"|"largest"|"smallest") { return Err("Unknown file selection mode".into()); }
+        if !valid_name(&txt(c, "saveAs")) { return Err("Output variable name is invalid".into()); }
+        Ok(())
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        self.validate(&cx.cfg)?;
+        let folder = PathBuf::from(template(cx, &txt(&cx.cfg, "searchFolder"))?);
+        let pattern = template(cx, &txt(&cx.cfg, "pattern"))?;
+        let recursive = boolv(&cx.cfg, "recursive", false);
+        let selection = txt(&cx.cfg, "selection");
+        let save_as = txt(&cx.cfg, "saveAs");
+        if !folder.is_dir() { return Err("Search folder does not exist".into()); }
+        let matches = folder_snapshot(&folder, recursive, &pattern, "files")?;
+        if matches.is_empty() {
+            (cx.log)("info", format!("No files matched {pattern} in {}", folder.display()));
+            return Ok(Outcome::NotSatisfied);
+        }
+        let selected = match selection.as_str() {
+            "newest" => matches.into_iter().max_by_key(|(_, (_, _, stamp))| *stamp),
+            "oldest" => matches.into_iter().min_by_key(|(_, (_, _, stamp))| *stamp),
+            "largest" => matches.into_iter().max_by_key(|(_, (_, size, _))| *size),
+            "smallest" => matches.into_iter().min_by_key(|(_, (_, size, _))| *size),
+            _ => matches.into_iter().next(),
+        }.ok_or("No matching file could be selected")?;
+        let path = selected.0;
+        let size = selected.1.1;
+        cx.set_variable(save_as.clone(), Value::String(path.clone()))?;
+        (cx.log)("info", format!("Found file and saved path to {save_as} ({} bytes): {path}", size));
+        Ok(Outcome::Satisfied)
+    }
+}
+
 struct SetBrightness;
 fn brightness_spec() -> Value {
     spec_action("Set Display Brightness", "sun", "Sets brightness on Windows monitors that expose the WMI brightness-control interface.", vec![
@@ -938,6 +997,7 @@ pub(super) fn register_into(m: &mut HashMap<&'static str, Box<dyn Block>>) {
     m.insert("act.power_plan", Box::new(SetPowerPlan));
     m.insert("act.ask_user", Box::new(AskUser));
     m.insert("act.retry_command", Box::new(RetryCommand));
+    m.insert("act.find_file", Box::new(FindFile));
 }
 
 #[cfg(test)]
@@ -956,6 +1016,7 @@ mod tests {
             ("act.extract_zip", Cat::Action), ("act.bulk_files", Cat::Action),
             ("act.set_brightness", Cat::Action), ("act.power_plan", Cat::Action),
             ("act.ask_user", Cat::Action), ("act.retry_command", Cat::Action),
+            ("act.find_file", Cat::Action),
         ];
         let registry = super::super::registry();
         for (id, category) in expected {
@@ -1020,6 +1081,8 @@ mod tests {
         assert!(HttpStatus.validate(&json!({"url":"https://example.com","method":"GET","mode":"success","expectedStatus":200,"behavior":"check","pollSec":2,"stableForSec":0,"timeoutSec":0,"onFail":"stop"})).is_ok());
         assert!(HttpStatus.validate(&json!({"url":"file:///C:/secret.txt","method":"GET","mode":"success","expectedStatus":200,"onFail":"stop"})).is_err());
         assert!(RetryCommand.validate(&json!({"command":"Get-Date","attempts":3,"delaySec":1,"backoff":"exponential","saveOutputAs":"lastOutput","timeoutSec":30,"onFail":"stop"})).is_ok());
+        assert!(FindFile.validate(&json!({"searchFolder":"C:\\\\Temp","pattern":"*.log","recursive":true,"selection":"newest","saveAs":"latestLog","onFail":"stop"})).is_ok());
+        assert!(FindFile.validate(&json!({"searchFolder":"C:\\\\Temp","pattern":"*.log","recursive":true,"selection":"newest","saveAs":"1bad","onFail":"stop"})).is_err());
         assert!(AskUser.validate(&json!({"mode":"confirm","title":"Proceed?","message":"Continue?","buttons":"yes_no","timeoutSec":10,"onFail":"stop"})).is_ok());
         assert!(AskUser.validate(&json!({"mode":"input","title":"Name","message":"Enter a name","defaultValue":"default","saveAs":"answer","timeoutSec":0,"onFail":"stop"})).is_ok());
         assert!(AskUser.validate(&json!({"mode":"choice","title":"Pick","message":"Choose one","choicesJson":"[\"A\",\"B\"]","saveAs":"choice","timeoutSec":10,"onFail":"stop"})).is_ok());
