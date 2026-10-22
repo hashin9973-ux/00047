@@ -14,7 +14,7 @@ use std::{
 use tokio::io::AsyncReadExt;
 
 const CAPTURE_LIMIT: usize = 32 * 1024;
-type Probe<'a> = Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
+pub(super) type Probe<'a> = Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
 
 async fn read_capped<R: tokio::io::AsyncRead + Unpin + Send>(reader: &mut R) -> Result<String, String> {
     let mut out = Vec::new();
@@ -28,11 +28,11 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin + Send>(reader: &mut R) -> 
     Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
 
-fn ps_quote(value: &str) -> String {
+pub(super) fn ps_quote(value: &str) -> String {
     format!("'{}'", value.replace('\0', "").replace('\'', "''"))
 }
 
-async fn powershell(cx: &NodeCx, script: &str) -> Result<String, String> {
+pub(super) async fn powershell(cx: &NodeCx, script: &str) -> Result<String, String> {
     #[cfg(not(windows))]
     {
         let _ = (cx, script);
@@ -74,7 +74,7 @@ async fn ps_json<T: for<'de> Deserialize<'de>>(cx: &NodeCx, script: &str) -> Res
     serde_json::from_str::<T>(&out).map_err(|e| format!("Could not parse Windows status result: {e}; output: {}", out.chars().take(300).collect::<String>()))
 }
 
-fn behavior_fields() -> Vec<Value> {
+pub(super) fn behavior_fields() -> Vec<Value> {
     vec![
         json!({"key":"behavior","label":"Behavior","type":"select","default":"check","options":[["check","Check once (IF / ELSE)"],["wait","Wait until satisfied"],["change","Wait until state changes"]]}),
         json!({"key":"pollSec","label":"Poll every","type":"number","min":0.25,"max":3600,"step":0.25,"unit":"s","default":2,"show":{"key":"behavior","in":["wait","change"]}}),
@@ -84,7 +84,7 @@ fn behavior_fields() -> Vec<Value> {
     ]
 }
 
-async fn poll_condition<'a>(
+pub(super) async fn poll_condition<'a>(
     cx: &'a NodeCx, behavior: &str, poll_sec: f64, stable_sec: f64, timeout_sec: f64,
     mut probe: impl FnMut() -> Probe<'a>,
 ) -> Result<Outcome, String> {
@@ -115,8 +115,15 @@ async fn poll_condition<'a>(
     }
 }
 
-fn wait_settings(c: &Value) -> Result<(String, f64, f64, f64), String> {
-    let behavior = text(c, "behavior");
+pub(super) fn wait_settings(c: &Value) -> Result<(String, f64, f64, f64), String> {
+    // Saved automations created before behavior/polling fields existed must remain one-shot checks.
+    let behavior = match text(c, "behavior").as_str() {
+        "" => "check".to_string(),
+        other => other.to_string(),
+    };
+    if !matches!(behavior.as_str(), "check" | "wait" | "change") {
+        return Err("Unknown condition behavior".into());
+    }
     let poll = rng(c, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
     let stable = rng(c, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
     let timeout = rng(c, "timeoutSec", 0.0, 0.0, 86400.0, "Timeout")?;
@@ -170,9 +177,9 @@ impl Block for NetworkCondition {
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
         let mode = text(&cx.cfg,"mode");
-        let adapter = text(&cx.cfg,"adapter");
-        let ssid = text(&cx.cfg,"ssid");
-        let host = text(&cx.cfg,"host");
+        let adapter = cx.expand_template(&text(&cx.cfg,"adapter"))?;
+        let ssid = cx.expand_template(&text(&cx.cfg,"ssid"))?;
+        let host = cx.expand_template(&text(&cx.cfg,"host"))?;
         let threshold = rng(&cx.cfg,"threshold",2.0,0.0,100000.0,"Threshold")?;
         let op = text(&cx.cfg,"op");
         let unit = text(&cx.cfg,"unit");
@@ -282,7 +289,7 @@ impl Block for CpuUsage {
  fn title(&self)-> &'static str{"CPU Usage"} fn category(&self)->Cat{Cat::Condition} fn supports_timeout(&self)->bool{true} fn spec(&self)->Option<Value>{Some(cpu_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&cpu_spec(),c)?;wait_settings(c).map(|_|())}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
-  self.validate(&cx.cfg)?;let scope=text(&cx.cfg,"scope");let name=text(&cx.cfg,"processName");let op=text(&cx.cfg,"op");let threshold=rng(&cx.cfg,"thresholdPct",80.0,0.0,100.0,"CPU usage")?;let(behavior,poll,stable,timeout)=wait_settings(&cx.cfg)?;
+  self.validate(&cx.cfg)?;let scope=text(&cx.cfg,"scope");let name=cx.expand_template(&text(&cx.cfg,"processName"))?;let op=text(&cx.cfg,"op");let threshold=rng(&cx.cfg,"thresholdPct",80.0,0.0,100.0,"CPU usage")?;let(behavior,poll,stable,timeout)=wait_settings(&cx.cfg)?;
   poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{let v=cpu_percent(cx,&scope,&name).await?;(cx.report)("running",None,format!("{} CPU: {v:.1}%",if scope=="system"{"System"}else{name.as_str()}));Ok(if op=="above"{v>threshold}else{v<=threshold})}) as Probe<'_>).await
  }
 }
@@ -328,7 +335,7 @@ impl Block for FileFolder{
  fn title(&self)-> &'static str{"File or Folder State"}fn category(&self)->Cat{Cat::Condition}fn supports_timeout(&self)->bool{true}fn spec(&self)->Option<Value>{Some(file_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&file_spec(),c)?;if text(c,"path").contains('\0'){return Err("Path must not contain NUL characters".into())};wait_settings(c).map(|_|())}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
-  self.validate(&cx.cfg)?;let path=text(&cx.cfg,"path");let state=text(&cx.cfg,"state");let threshold=rng(&cx.cfg,"thresholdMb",100.0,0.0,1048576.0,"Size threshold")?*1_048_576.0;let(behavior,poll,stable,timeout)=wait_settings(&cx.cfg)?;
+  self.validate(&cx.cfg)?;let path=cx.expand_template(&text(&cx.cfg,"path"))?;let state=text(&cx.cfg,"state");let threshold=rng(&cx.cfg,"thresholdMb",100.0,0.0,1048576.0,"Size threshold")?*1_048_576.0;let(behavior,poll,stable,timeout)=wait_settings(&cx.cfg)?;
   let baseline=file_fingerprint(&path)?;
   poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{let current=file_fingerprint(&path)?;let ok=match state.as_str(){"exists"=>current.is_some(),"missing"=>current.is_none(),"size_above"=>current.as_ref().map(|v|v.0 as f64>threshold).unwrap_or(false),"size_below"=>current.as_ref().map(|v|v.0 as f64<=threshold).unwrap_or(false),"changed"=>current!=baseline,_=>false};Ok(ok)})as Probe<'_>).await
  }
@@ -352,7 +359,7 @@ struct ActiveWindow;
 impl Block for ActiveWindow{
  fn title(&self)-> &'static str{"Active Window"}fn category(&self)->Cat{Cat::Condition}fn supports_timeout(&self)->bool{true}fn spec(&self)->Option<Value>{Some(active_window_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&active_window_spec(),c)?;wait_settings(c).map(|_|())}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let matching=text(&cx.cfg,"match");let pattern=text(&cx.cfg,"pattern");let state=text(&cx.cfg,"state");let(behavior,poll,stable,timeout)=wait_settings(&cx.cfg)?;
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let matching=text(&cx.cfg,"match");let pattern=cx.expand_template(&text(&cx.cfg,"pattern"))?;let state=text(&cx.cfg,"state");let(behavior,poll,stable,timeout)=wait_settings(&cx.cfg)?;
  poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{let a=active_sample(cx).await?;let matched=if matching=="title"{a.title.to_lowercase().contains(&pattern.to_lowercase())}else{a.process.eq_ignore_ascii_case(pattern.trim_end_matches(".exe"))||a.process.eq_ignore_ascii_case(pattern.trim_end_matches(".EXE"))};Ok(if state=="inactive"{!matched}else{matched})})as Probe<'_>).await
  }
 }
@@ -380,7 +387,7 @@ macro_rules! device_block {
   fn title(&self)-> &'static str{$title} fn category(&self)->Cat{Cat::Condition} fn supports_timeout(&self)->bool{true}
   fn spec(&self)->Option<Value>{Some(device_spec($title,$kind))}
   fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&device_spec($title,$kind),c)?;if text(c,"deviceName").contains('\0'){return Err("Device name must not contain NUL characters".into())};wait_settings(c).map(|_|())}
-  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let name=text(&cx.cfg,"deviceName");let state=text(&cx.cfg,"state");let class=$kind.to_string();let(behavior,poll,stable,timeout)=wait_settings(&cx.cfg)?;poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{let present=device_present(cx,&class,&name).await?;Ok(if state=="missing"{!present}else{present})})as Probe<'_>).await}
+  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let name=cx.expand_template(&text(&cx.cfg,"deviceName"))?;let state=text(&cx.cfg,"state");let class=$kind.to_string();let(behavior,poll,stable,timeout)=wait_settings(&cx.cfg)?;poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{let present=device_present(cx,&class,&name).await?;Ok(if state=="missing"{!present}else{present})})as Probe<'_>).await}
  }
  }
 }
@@ -441,7 +448,7 @@ fn open_url_spec()->Value{simple_action_spec("Open URL","globe","Opens an HTTP o
 impl Block for OpenUrl{
  fn title(&self)-> &'static str{"Open URL"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn spec(&self)->Option<Value>{Some(open_url_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&open_url_spec(),c)?;let u=text(c,"url");if !(u.starts_with("https://")||u.starts_with("http://")){return Err("URL must start with http:// or https://".into())};if u.contains('\0'){return Err("URL contains a NUL character".into())};Ok(())}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let url=text(&cx.cfg,"url");tokio::task::spawn_blocking(move||super::super::sys::start_file(&url,"")).await.map_err(|e|e.to_string())??;(cx.log)("info",format!("Opened URL {}",text(&cx.cfg,"url")));Ok(Outcome::Satisfied)}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let url=cx.expand_template(&text(&cx.cfg,"url"))?;let log_url=url.clone();tokio::task::spawn_blocking(move||super::super::sys::start_file(&url,"")).await.map_err(|e|e.to_string())??;(cx.log)("info",format!("Opened URL {log_url}"));Ok(Outcome::Satisfied)}
 }
 
 fn volume_spec()->Value{simple_action_spec("Set System Volume","volume-2","Sets or mutes the default Windows playback endpoint.",vec![json!({"key":"mode","label":"Operation","type":"select","default":"set","options":[["set","Set volume"],["mute","Mute"],["unmute","Unmute"],["toggle_mute","Toggle mute"]]}),json!({"key":"percent","label":"Volume (%)","type":"number","min":0,"max":100,"step":1,"default":50,"show":{"key":"mode","eq":"set"}}),json!({"preset":"onFail"})],"Volume: {mode}","Uses the Windows Core Audio endpoint API.")}
@@ -463,7 +470,7 @@ struct SetProcessPriority;
 impl Block for SetProcessPriority{
  fn title(&self)-> &'static str{"Set Process Priority"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn spec(&self)->Option<Value>{Some(priority_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&priority_spec(),c)}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let n=text(&cx.cfg,"processName");let p=text(&cx.cfg,"priority");let script=format!("$ErrorActionPreference='Stop'; $n={}; $p=@(Get-Process -Name $n -ErrorAction Stop); foreach($x in $p){{$x.PriorityClass={}}}; 'Updated priority for '+$p.Count+' process instance(s).'",ps_quote(&n),ps_quote(&p));let out=powershell(cx,&script).await?;(cx.log)("info",out);Ok(Outcome::Satisfied)}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let n=cx.expand_template(&text(&cx.cfg,"processName"))?;let p=text(&cx.cfg,"priority");let script=format!("$ErrorActionPreference='Stop'; $n={}; $p=@(Get-Process -Name $n -ErrorAction Stop); foreach($x in $p){{$x.PriorityClass={}}}; 'Updated priority for '+$p.Count+' process instance(s).'",ps_quote(&n),ps_quote(&p));let out=powershell(cx,&script).await?;(cx.log)("info",out);Ok(Outcome::Satisfied)}
 }
 
 fn window_action_spec()->Value{simple_action_spec("Control Window","app-window","Focus, minimize, maximize, or restore a selected application's main window.",vec![json!({"key":"processName","label":"Process name","type":"text","required":true,"maxLen":260}),json!({"key":"operation","label":"Operation","type":"select","default":"focus","options":[["focus","Focus"],["minimize","Minimize"],["maximize","Maximize"],["restore","Restore"]]}),json!({"preset":"onFail"})],"Window {operation}: {processName}","Focus can fail if Windows foreground-lock rules prevent stealing focus. Matches the first process instance with a main window.")}
@@ -472,7 +479,7 @@ struct ControlWindow;
 impl Block for ControlWindow{
  fn title(&self)-> &'static str{"Control Window"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn spec(&self)->Option<Value>{Some(window_action_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&window_action_spec(),c)}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let n=text(&cx.cfg,"processName");let op=text(&cx.cfg,"operation");let code=r#"using System; using System.Runtime.InteropServices; public class WindowNative { [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h,int c); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }"#;let show=match op.as_str(){"minimize"=>6,"maximize"=>3,"restore"=>9,_=>9};let script=format!("Add-Type -TypeDefinition {}; $n={}; $p=Get-Process -Name $n -ErrorAction Stop | Where-Object {{$_.MainWindowHandle -ne 0}} | Select-Object -First 1; if($null -eq $p){{throw 'No main window found for process'}}; [void][WindowNative]::ShowWindowAsync($p.MainWindowHandle,{}); if('{}' -eq 'focus'){{Start-Sleep -Milliseconds 100; [void][WindowNative]::SetForegroundWindow($p.MainWindowHandle)}}; 'Window operation completed.'",ps_quote(code),ps_quote(&n),show,op);let out=powershell(cx,&script).await?;(cx.log)("info",out);Ok(Outcome::Satisfied)}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let n=cx.expand_template(&text(&cx.cfg,"processName"))?;let op=text(&cx.cfg,"operation");let code=r#"using System; using System.Runtime.InteropServices; public class WindowNative { [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h,int c); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }"#;let show=match op.as_str(){"minimize"=>6,"maximize"=>3,"restore"=>9,_=>9};let script=format!("Add-Type -TypeDefinition {}; $n={}; $p=Get-Process -Name $n -ErrorAction Stop | Where-Object {{$_.MainWindowHandle -ne 0}} | Select-Object -First 1; if($null -eq $p){{throw 'No main window found for process'}}; [void][WindowNative]::ShowWindowAsync($p.MainWindowHandle,{}); if('{}' -eq 'focus'){{Start-Sleep -Milliseconds 100; [void][WindowNative]::SetForegroundWindow($p.MainWindowHandle)}}; 'Window operation completed.'",ps_quote(code),ps_quote(&n),show,op);let out=powershell(cx,&script).await?;(cx.log)("info",out);Ok(Outcome::Satisfied)}
 }
 
 fn copy_move_spec()->Value{simple_action_spec("Copy or Move File","files","Copies or moves a single file to a destination path.",vec![json!({"key":"operation","label":"Operation","type":"select","default":"copy","options":[["copy","Copy"],["move","Move"]]}),json!({"key":"source","label":"Source file","type":"text","required":true,"maxLen":2048}),json!({"key":"destination","label":"Destination file path","type":"text","required":true,"maxLen":2048}),json!({"key":"collision","label":"If destination exists","type":"select","default":"fail","options":[["fail","Fail"],["overwrite","Overwrite"]]}),json!({"preset":"onFail"})],"File {operation}","Only ordinary files are handled; folder copy is deliberately not recursive. Use Delete File when removing an item.")}
@@ -481,7 +488,7 @@ struct CopyMoveFile;
 impl Block for CopyMoveFile{
  fn title(&self)-> &'static str{"Copy or Move File"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn spec(&self)->Option<Value>{Some(copy_move_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&copy_move_spec(),c)?;for k in ["source","destination"]{if text(c,k).contains('\0'){return Err(format!("{k} must not contain NUL characters"))}}Ok(())}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let src=text(&cx.cfg,"source");let dst=text(&cx.cfg,"destination");let op=text(&cx.cfg,"operation");let collision=text(&cx.cfg,"collision");let s=Path::new(&src);let d=Path::new(&dst);let m=std::fs::metadata(s).map_err(|e|format!("Could not inspect source file: {e}"))?;if !m.is_file(){return Err("Source must be a regular file".into())};if d.exists()&&collision!="overwrite"{return Err("Destination already exists".into())};if let Some(parent)=d.parent(){if !parent.exists(){return Err("Destination directory does not exist".into())}}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let src=cx.expand_template(&text(&cx.cfg,"source"))?;let dst=cx.expand_template(&text(&cx.cfg,"destination"))?;let op=text(&cx.cfg,"operation");let collision=text(&cx.cfg,"collision");let s=Path::new(&src);let d=Path::new(&dst);let m=std::fs::metadata(s).map_err(|e|format!("Could not inspect source file: {e}"))?;if !m.is_file(){return Err("Source must be a regular file".into())};if d.exists()&&collision!="overwrite"{return Err("Destination already exists".into())};if let Some(parent)=d.parent(){if !parent.exists(){return Err("Destination directory does not exist".into())}}
  if op=="copy"{std::fs::copy(s,d).map_err(|e|format!("Copy failed: {e}"))?;}else{if d.exists(){std::fs::remove_file(d).map_err(|e|format!("Could not replace destination: {e}"))?}if let Err(e)=std::fs::rename(s,d){if e.raw_os_error()==Some(17){std::fs::copy(s,d).map_err(|x|format!("Move copy stage failed: {x}"))?;std::fs::remove_file(s).map_err(|x|format!("Copied but could not remove source: {x}"))?;}else{return Err(format!("Move failed: {e}"))}}}
  (cx.log)("info",format!("{} '{}' -> '{}'",op,src,dst));Ok(Outcome::Satisfied)}
 }
@@ -492,17 +499,17 @@ struct ClipboardText;
 impl Block for ClipboardText{
  fn title(&self)-> &'static str{"Set Clipboard Text"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn spec(&self)->Option<Value>{Some(clipboard_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&clipboard_spec(),c)?;if text(c,"text").contains('\0'){return Err("Clipboard text must not contain NUL characters".into())};Ok(())}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let t=text(&cx.cfg,"text");let script=format!("$ErrorActionPreference='Stop'; Set-Clipboard -Value {}",ps_quote(&t));powershell(cx,&script).await?;(cx.log)("info","Clipboard text updated (content omitted from logs)".into());Ok(Outcome::Satisfied)}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let t=cx.expand_template(&text(&cx.cfg,"text"))?;let script=format!("$ErrorActionPreference='Stop'; Set-Clipboard -Value {}",ps_quote(&t));powershell(cx,&script).await?;(cx.log)("info","Clipboard text updated (content omitted from logs)".into());Ok(Outcome::Satisfied)}
 }
 
-fn http_spec()->Value{simple_action_spec("HTTP Request / Webhook","globe","Sends an HTTP request to a URL and records a bounded response summary.",vec![json!({"key":"url","label":"URL","type":"text","required":true,"maxLen":2048}),json!({"key":"method","label":"Method","type":"select","default":"GET","options":[["GET","GET"],["POST","POST"],["PUT","PUT"],["PATCH","PATCH"],["DELETE","DELETE"],["HEAD","HEAD"]]}),json!({"key":"body","label":"Request body (optional)","type":"text","maxLen":16000,"default":"","show":{"key":"method","in":["POST","PUT","PATCH"]}}),json!({"key":"headersJson","label":"Headers as JSON object (optional)","type":"text","maxLen":8000,"default":""}),json!({"key":"timeoutSec","label":"Request timeout","type":"number","min":1,"max":120,"step":1,"unit":"s","default":15}),json!({"preset":"onFail"})],"HTTP {method} {url}","Only http:// and https:// URLs are accepted. Do not place API secrets in URLs because workflow configuration may be exported. Response excerpts are truncated; authorization headers are never logged.")}
+fn http_spec()->Value{simple_action_spec("HTTP Request / Webhook","globe","Sends an HTTP request to a URL and optionally stores response data in workflow variables.",vec![json!({"key":"url","label":"URL","type":"text","required":true,"maxLen":2048}),json!({"key":"method","label":"Method","type":"select","default":"GET","options":[["GET","GET"],["POST","POST"],["PUT","PUT"],["PATCH","PATCH"],["DELETE","DELETE"],["HEAD","HEAD"]]}),json!({"key":"body","label":"Request body (optional)","type":"textarea","rows":4,"maxLen":16000,"default":"","show":{"key":"method","in":["POST","PUT","PATCH"]}}),json!({"key":"headersJson","label":"Headers as JSON object (optional)","type":"textarea","rows":3,"maxLen":8000,"default":""}),json!({"key":"saveBodyAs","label":"Save response excerpt to variable (optional)","type":"text","maxLen":64}),json!({"key":"saveStatusAs","label":"Save status code to variable (optional)","type":"text","maxLen":64}),json!({"key":"logResponse","label":"Log response body excerpt","type":"bool","default":false}),json!({"key":"timeoutSec","label":"Request timeout","type":"number","min":1,"max":120,"step":1,"unit":"s","default":15}),json!({"preset":"onFail"})],"HTTP {method} {url}","Only http:// and https:// URLs are accepted. Use {{variable_name}} placeholders in URL, request body, and headers. Response excerpt (up to 4,000 characters) and numeric status can be saved as workflow variables. Bodies are not logged unless explicitly enabled; authorization headers are never logged.")}
 struct HttpRequest;
 #[async_trait]
 impl Block for HttpRequest{
  fn title(&self)-> &'static str{"HTTP Request / Webhook"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn supports_timeout(&self)->bool{true}fn spec(&self)->Option<Value>{Some(http_spec())}
- fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&http_spec(),c)?;let u=text(c,"url");if !(u.starts_with("http://")||u.starts_with("https://")){return Err("URL must start with http:// or https://".into())};if u.contains('\0')||text(c,"body").contains('\0')||text(c,"headersJson").contains('\0'){return Err("HTTP fields must not contain NUL characters".into())};if !text(c,"headersJson").is_empty(){let v:Value=serde_json::from_str(&text(c,"headersJson")).map_err(|e|format!("Headers must be valid JSON: {e}"))?;if !v.is_object(){return Err("Headers must be a JSON object".into())}}check_timeout(c)}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let url=text(&cx.cfg,"url");let method=text(&cx.cfg,"method");let body=text(&cx.cfg,"body");let headers=text(&cx.cfg,"headersJson");let seconds=rng(&cx.cfg,"timeoutSec",15.0,1.0,120.0,"Request timeout")?;let src=format!("$ErrorActionPreference='Stop'; $u={}; $m={}; $timeout={}; $headers=@{{}}; $hjson={}; if($hjson){{$hj=ConvertFrom-Json $hjson; foreach($prop in $hj.PSObject.Properties){{$headers[$prop.Name]=[string]$prop.Value}}}}; $args=@{{Uri=$u;Method=$m;TimeoutSec=$timeout;UseBasicParsing=$true;ErrorAction='Stop'}}; if($headers.Count -gt 0){{$args.Headers=$headers}}; $body={}; if($body -and @('POST','PUT','PATCH') -contains $m){{$args.Body=$body}}; try{{$r=Invoke-WebRequest @args; $content=[string]$r.Content; if($content.Length -gt 4000){{$content=$content.Substring(0,4000)+' …[truncated]'}}; [pscustomobject]@{{status=[int]$r.StatusCode;content=$content}} | ConvertTo-Json -Compress -Depth 4}}catch{{if($_.Exception.Response){{$status=[int]$_.Exception.Response.StatusCode; [pscustomobject]@{{status=$status;content='HTTP request returned an error status'}} | ConvertTo-Json -Compress}}else{{throw}}}}",ps_quote(&url),ps_quote(&method),seconds,ps_quote(&headers),ps_quote(&body));
- let out=powershell(cx,&src).await?;let v:Value=serde_json::from_str(&out).map_err(|e|format!("HTTP response parse failed: {e}"))?;let status=v.get("status").and_then(Value::as_i64).unwrap_or(0);let excerpt=v.get("content").and_then(Value::as_str).unwrap_or("");(cx.log)(if (200..400).contains(&status){"info"}else{"error"},format!("HTTP {method} returned status {status}; response excerpt: {}",excerpt.chars().take(4000).collect::<String>()));if (200..400).contains(&status){Ok(Outcome::Satisfied)}else{Err(format!("HTTP request returned status {status}"))}}
+ fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&http_spec(),c)?;let u=text(c,"url");if !(u.starts_with("http://")||u.starts_with("https://")){return Err("URL must start with http:// or https://".into())};if ["url","body","headersJson","saveBodyAs","saveStatusAs"].iter().any(|k|text(c,k).contains('\0')){return Err("HTTP fields must not contain NUL characters".into())};for key in ["saveBodyAs","saveStatusAs"]{let name=text(c,key);if !name.is_empty()&&!(name.len()<=64&&name.chars().next().is_some_and(|ch|ch.is_ascii_alphabetic()||ch=='_')&&name.chars().all(|ch|ch.is_ascii_alphanumeric()||matches!(ch,'_'|'-'|'.'))){return Err(format!("{key} variable name is invalid"))}};if !text(c,"headersJson").is_empty(){let v:Value=serde_json::from_str(&text(c,"headersJson")).map_err(|e|format!("Headers must be valid JSON: {e}"))?;if !v.is_object(){return Err("Headers must be a JSON object".into())}}check_timeout(c)}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let url=cx.expand_template(&text(&cx.cfg,"url"))?;let method=text(&cx.cfg,"method");let body=cx.expand_template(&text(&cx.cfg,"body"))?;let headers=cx.expand_template(&text(&cx.cfg,"headersJson"))?;let save_body=text(&cx.cfg,"saveBodyAs");let save_status=text(&cx.cfg,"saveStatusAs");let log_response=cx.cfg.get("logResponse").and_then(Value::as_bool).unwrap_or(false);let seconds=rng(&cx.cfg,"timeoutSec",15.0,1.0,120.0,"Request timeout")?;let src=format!("$ErrorActionPreference='Stop'; $u={}; $m={}; $timeout={}; $headers=@{{}}; $hjson={}; if($hjson){{$hj=ConvertFrom-Json $hjson; foreach($prop in $hj.PSObject.Properties){{$headers[$prop.Name]=[string]$prop.Value}}}}; $args=@{{Uri=$u;Method=$m;TimeoutSec=$timeout;UseBasicParsing=$true;ErrorAction='Stop'}}; if($headers.Count -gt 0){{$args.Headers=$headers}}; $body={}; if($body -and @('POST','PUT','PATCH') -contains $m){{$args.Body=$body}}; try{{$r=Invoke-WebRequest @args; $content=[string]$r.Content; if($content.Length -gt 4000){{$content=$content.Substring(0,4000)+' …[truncated]'}}; [pscustomobject]@{{status=[int]$r.StatusCode;content=$content}} | ConvertTo-Json -Compress -Depth 4}}catch{{if($_.Exception.Response){{$status=[int]$_.Exception.Response.StatusCode; [pscustomobject]@{{status=$status;content='HTTP request returned an error status'}} | ConvertTo-Json -Compress}}else{{throw}}}}",ps_quote(&url),ps_quote(&method),seconds,ps_quote(&headers),ps_quote(&body));
+ let out=powershell(cx,&src).await?;let v:Value=serde_json::from_str(&out).map_err(|e|format!("HTTP response parse failed: {e}"))?;let status=v.get("status").and_then(Value::as_i64).unwrap_or(0);let excerpt=v.get("content").and_then(Value::as_str).unwrap_or("");if !save_body.is_empty(){cx.set_variable(save_body,Value::String(excerpt.to_string()))?};if !save_status.is_empty(){cx.set_variable(save_status,json!(status))?};(cx.log)(if (200..400).contains(&status){"info"}else{"error"},if log_response{format!("HTTP {method} returned status {status}; response excerpt: {}",excerpt.chars().take(4000).collect::<String>())}else{format!("HTTP {method} returned status {status} (response body omitted)")});if (200..400).contains(&status){Ok(Outcome::Satisfied)}else{Err(format!("HTTP request returned status {status}"))}}
 }
 
 fn media_spec()->Value{simple_action_spec("Media Control","play","Sends a Windows media key to the active media session.",vec![json!({"key":"operation","label":"Operation","type":"select","default":"play_pause","options":[["play_pause","Play / pause"],["next","Next track"],["previous","Previous track"],["stop","Stop"]]}),json!({"preset":"onFail"})],"Media: {operation}","Uses the Windows media keyboard keys. The media application decides how each key is handled; Stop maps to the media stop key where supported.")}
@@ -529,7 +536,7 @@ struct DeleteFile;
 impl Block for DeleteFile{
  fn title(&self)-> &'static str{"Delete or Recycle File"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn spec(&self)->Option<Value>{Some(delete_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&delete_spec(),c)?;if text(c,"path").contains('\0'){return Err("Path must not contain NUL characters".into())};Ok(())}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let path=text(&cx.cfg,"path");let mode=text(&cx.cfg,"mode");if !Path::new(&path).exists(){return Err("Path does not exist".into())};if mode=="permanent"{if Path::new(&path).is_dir(){std::fs::remove_dir_all(&path).map_err(|e|format!("Directory delete failed: {e}"))?}else{std::fs::remove_file(&path).map_err(|e|format!("File delete failed: {e}"))?}}else{let script=format!("Add-Type -AssemblyName Microsoft.VisualBasic; $p={}; if([System.IO.Directory]::Exists($p)){{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p,'OnlyErrorDialogs','SendToRecycleBin')}}elseif([System.IO.File]::Exists($p)){{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p,'OnlyErrorDialogs','SendToRecycleBin')}}else{{throw 'Path does not exist'}}",ps_quote(&path));let _ = powershell(cx,&script).await?;};(cx.log)("warn",format!("File deletion operation '{}' completed for '{}'",mode,path));Ok(Outcome::Satisfied)}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let path=cx.expand_template(&text(&cx.cfg,"path"))?;let mode=text(&cx.cfg,"mode");if !Path::new(&path).exists(){return Err("Path does not exist".into())};if mode=="permanent"{if Path::new(&path).is_dir(){std::fs::remove_dir_all(&path).map_err(|e|format!("Directory delete failed: {e}"))?}else{std::fs::remove_file(&path).map_err(|e|format!("File delete failed: {e}"))?}}else{let script=format!("Add-Type -AssemblyName Microsoft.VisualBasic; $p={}; if([System.IO.Directory]::Exists($p)){{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p,'OnlyErrorDialogs','SendToRecycleBin')}}elseif([System.IO.File]::Exists($p)){{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p,'OnlyErrorDialogs','SendToRecycleBin')}}else{{throw 'Path does not exist'}}",ps_quote(&path));let _ = powershell(cx,&script).await?;};(cx.log)("warn",format!("File deletion operation '{}' completed for '{}'",mode,path));Ok(Outcome::Satisfied)}
 }
 
 fn sound_spec()->Value{simple_action_spec("Play Sound or Speak Text","volume-2","Plays a WAV file or speaks text using Windows text-to-speech.",vec![json!({"key":"mode","label":"Operation","type":"select","default":"speak","options":[["speak","Speak text"],["sound","Play WAV file"]]}),json!({"key":"text","label":"Text to speak","type":"text","required":true,"maxLen":2000,"show":{"key":"mode","eq":"speak"}}),json!({"key":"path","label":"WAV file path","type":"text","required":true,"maxLen":2048,"show":{"key":"mode","eq":"sound"}}),json!({"preset":"onFail"})],"Audio: {mode}","Text-to-speech uses the Windows System.Speech assembly. WAV playback waits until playback finishes.")}
@@ -538,7 +545,7 @@ struct PlaySoundSpeak;
 impl Block for PlaySoundSpeak{
  fn title(&self)-> &'static str{"Play Sound or Speak Text"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn spec(&self)->Option<Value>{Some(sound_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&sound_spec(),c)?;if text(c,"text").contains('\0')||text(c,"path").contains('\0'){return Err("Audio input contains a NUL character".into())};Ok(())}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let mode=text(&cx.cfg,"mode");let script=if mode=="sound"{let p=text(&cx.cfg,"path");if !Path::new(&p).is_file(){return Err("WAV file does not exist".into())};format!("$ErrorActionPreference='Stop'; $s=New-Object System.Media.SoundPlayer {}; $s.Load(); $s.PlaySync(); 'Sound playback completed.'",ps_quote(&p))}else{format!("Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; try{{$s.Speak({})}}finally{{$s.Dispose()}}; 'Speech completed.'",ps_quote(&text(&cx.cfg,"text")))};let out=powershell(cx,&script).await?;(cx.log)("info",out);Ok(Outcome::Satisfied)}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let mode=text(&cx.cfg,"mode");let script=if mode=="sound"{let p=cx.expand_template(&text(&cx.cfg,"path"))?;if !Path::new(&p).is_file(){return Err("WAV file does not exist".into())};format!("$ErrorActionPreference='Stop'; $s=New-Object System.Media.SoundPlayer {}; $s.Load(); $s.PlaySync(); 'Sound playback completed.'",ps_quote(&p))}else{format!("Add-Type -AssemblyName System.Speech; $s=New-Object System.Speech.Synthesis.SpeechSynthesizer; try{{$s.Speak({})}}finally{{$s.Dispose()}}; 'Speech completed.'",ps_quote(&cx.expand_template(&text(&cx.cfg,"text"))?))};let out=powershell(cx,&script).await?;(cx.log)("info",out);Ok(Outcome::Satisfied)}
 }
 
 fn service_spec()->Value{simple_action_spec("Start, Stop, or Restart Service","settings","Controls a Windows service by its service name.",vec![json!({"key":"serviceName","label":"Service name","type":"text","required":true,"maxLen":256}),json!({"key":"operation","label":"Operation","type":"select","default":"start","options":[["start","Start"],["stop","Stop"],["restart","Restart"]]}),json!({"preset":"onFail"})],"Service {operation}: {serviceName}","Service control may require administrator privileges. Use the service name, not its display name.")}
@@ -547,7 +554,7 @@ struct ServiceControl;
 impl Block for ServiceControl{
  fn title(&self)-> &'static str{"Start, Stop, or Restart Service"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn supports_timeout(&self)->bool{true}fn spec(&self)->Option<Value>{Some(service_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&service_spec(),c)?;if text(c,"serviceName").contains('\0'){return Err("Service name must not contain NUL characters".into())};check_timeout(c)}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let n=text(&cx.cfg,"serviceName");let op=text(&cx.cfg,"operation");let verb=match op.as_str(){"start"=>"Start-Service","stop"=>"Stop-Service",_=>"Restart-Service"};let script=format!("$ErrorActionPreference='Stop'; {verb} -Name {} -ErrorAction Stop; (Get-Service -Name {} | Select-Object -First 1).Status.ToString()",ps_quote(&n),ps_quote(&n));let out=powershell(cx,&script).await?;(cx.log)("info",format!("Service {n}: {out}"));Ok(Outcome::Satisfied)}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let n=cx.expand_template(&text(&cx.cfg,"serviceName"))?;let op=text(&cx.cfg,"operation");let verb=match op.as_str(){"start"=>"Start-Service","stop"=>"Stop-Service",_=>"Restart-Service"};let script=format!("$ErrorActionPreference='Stop'; {verb} -Name {} -ErrorAction Stop; (Get-Service -Name {} | Select-Object -First 1).Status.ToString()",ps_quote(&n),ps_quote(&n));let out=powershell(cx,&script).await?;(cx.log)("info",format!("Service {n}: {out}"));Ok(Outcome::Satisfied)}
 }
 
 pub(super) fn register_into(m:&mut HashMap<&'static str,Box<dyn Block>>){

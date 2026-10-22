@@ -4,14 +4,16 @@ use crate::spec;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    sync::OnceLock,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 #[cfg(windows)]
 use std::process::Stdio;
 use tokio_util::sync::CancellationToken;
 
-mod extra;
+pub(super) mod extra;
+mod extra_more;
+mod advanced;
 
 #[cfg(windows)]
 const MAX_COMMAND_OUTPUT_BYTES: usize = 16 * 1024;
@@ -76,6 +78,59 @@ pub struct NodeCx {
     /// Resolves the Input blocks wired into this block (evaluated fresh each call).
     pub resolve: Resolve,
     pub visible: Flag,
+    /// Variables are shared by every block in this automation run and are discarded when it ends.
+    pub variables: Arc<Mutex<HashMap<String, Value>>>,
+}
+
+impl NodeCx {
+    pub fn get_variable(&self, name: &str) -> Option<Value> {
+        self.variables.lock().ok()?.get(name).cloned()
+    }
+
+    pub fn set_variable(&self, name: String, value: Value) -> Result<(), String> {
+        let mut variables = self.variables.lock().map_err(|_| "workflow variable store is unavailable".to_string())?;
+        variables.insert(name, value);
+        Ok(())
+    }
+
+    pub fn remove_variable(&self, name: &str) -> Result<bool, String> {
+        let mut variables = self.variables.lock().map_err(|_| "workflow variable store is unavailable".to_string())?;
+        Ok(variables.remove(name).is_some())
+    }
+
+    pub fn clear_variables(&self) -> Result<(), String> {
+        self.variables.lock().map_err(|_| "workflow variable store is unavailable".to_string())?.clear();
+        Ok(())
+    }
+
+    /// Replaces {{variable_name}} placeholders. Unknown variables fail explicitly instead of becoming empty strings.
+    pub fn expand_template(&self, input: &str) -> Result<String, String> {
+        let mut output = String::with_capacity(input.len());
+        let mut rest = input;
+        while let Some(start) = rest.find("{{") {
+            output.push_str(&rest[..start]);
+            let after = &rest[start + 2..];
+            let Some(end) = after.find("}}") else {
+                output.push_str(&rest[start..]);
+                return Ok(output);
+            };
+            let name = &after[..end];
+            if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.') {
+                output.push_str("{{");
+                rest = after;
+                continue;
+            }
+            let value = self.get_variable(name).ok_or_else(|| format!("workflow variable '{{{{{name}}}}}' is not set"))?;
+            let rendered = match value {
+                Value::String(s) => s,
+                other => other.to_string(),
+            };
+            output.push_str(&rendered);
+            rest = &after[end + 2..];
+        }
+        output.push_str(rest);
+        Ok(output)
+    }
 }
 
 #[async_trait]
@@ -156,18 +211,18 @@ fn first_process(cx: &NodeCx) -> Result<(u32, String), String> {
 }
 
 fn visible_windows_spec() -> Value {
+    let mut fields = vec![
+        json!({"key":"op","label":"Match","type":"select","default":"at_least",
+             "options":[["at_least","At least"],["at_most","At most"],["exactly","Exactly"]]}),
+        json!({"key":"count","label":"Window count","type":"number","min":0,"max":10000,"step":1,"default":1}),
+    ];
+    fields.extend(extra::behavior_fields());
     json!({
         "category": "condition", "title": "Visible Windows", "icon": "window",
         "description": "Counts visible, non-minimized top-level windows owned by the connected process input.",
-        "requires": "tgt.process",
-        "fields": [
-            {"key":"op","label":"Match","type":"select","default":"at_least",
-             "options":[["at_least","At least"],["at_most","At most"],["exactly","Exactly"]]},
-            {"key":"count","label":"Window count","type":"number","min":0,"max":10000,"step":1,"default":1},
-            {"preset":"onFail"}
-        ],
+        "requires": "tgt.process", "fields": fields,
         "summary": "{op} {count} visible windows",
-        "help": "Requires a Process Input. Counts top-level windows Windows marks visible and that are not minimized. Windows hidden behind other windows may still count; this does not measure unobscured pixels."
+        "help": "Requires a Process Input. Supports check-once, wait-until-satisfied, and state-change behavior, including a polling interval and timeout. Windows hidden behind other windows may still count; this does not measure unobscured pixels."
     })
 }
 
@@ -186,38 +241,45 @@ struct VisibleWindows;
 impl Block for VisibleWindows {
     fn title(&self) -> &'static str { "Visible Windows" }
     fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn requires_target(&self) -> Option<&'static str> { Some("tgt.process") }
     fn spec(&self) -> Option<Value> { Some(visible_windows_spec()) }
     fn validate(&self, c: &Value) -> Result<(), String> {
         spec::validate(&visible_windows_spec(), c)?;
-        expected_window_count(c).map(|_| ())
+        expected_window_count(c)?;
+        extra::wait_settings(c).map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         let (pid, name) = first_process(cx)?;
         let expected = expected_window_count(&cx.cfg)?;
-        let count = tokio::task::spawn_blocking(move || sys::visible_window_count(pid))
-            .await.map_err(|e| e.to_string())??;
         let mode = text(&cx.cfg, "op");
-        let satisfied = window_count_matches(&mode, count, expected);
-        (cx.report)("running", None, format!("{name}: {count} visible window(s); needs {} {expected}", match mode.as_str() {
-            "at_most" => "at most", "exactly" => "exactly", _ => "at least"
-        }));
-        Ok(if satisfied { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+        extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+            let name = name.clone();
+            let mode = mode.clone();
+            Box::pin(async move {
+                let count = tokio::task::spawn_blocking(move || sys::visible_window_count(pid))
+                    .await.map_err(|e| e.to_string())??;
+                let satisfied = window_count_matches(&mode, count, expected);
+                (cx.report)("waiting", None, format!("{name}: {count} visible window(s); needs {} {expected}",
+                    match mode.as_str() { "at_most" => "at most", "exactly" => "exactly", _ => "at least" }));
+                Ok(satisfied)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
 fn process_audio_spec() -> Value {
+    let mut fields = vec![json!({"key":"state","label":"Condition","type":"select","default":"outputting",
+             "options":[["outputting","Outputting audio"],["not_outputting","Not outputting audio"]]})];
+    fields.extend(extra::behavior_fields());
     json!({
         "category": "condition", "title": "Process Outputting Audio", "icon": "bell",
         "requires": "tgt.process",
         "description": "Checks whether the connected process has an active Windows audio-render session.",
-        "fields": [
-            {"key":"state","label":"Condition","type":"select","default":"outputting",
-             "options":[["outputting","Outputting audio"],["not_outputting","Not outputting audio"]]},
-            {"preset":"onFail"}
-        ],
+        "fields": fields,
         "summary": "Process audio: {state}",
-        "help": "Requires a Process Input. A matching active audio-render session means the process has a running audio stream. A muted or silent stream can still count as active; this does not measure audible volume."
+        "help": "Requires a Process Input. Supports check-once, wait-until-satisfied, and state-change behavior, including polling interval, stable duration, and timeout. A muted or silent stream still counts as active."
     })
 }
 struct ProcessAudio;
@@ -225,17 +287,27 @@ struct ProcessAudio;
 impl Block for ProcessAudio {
     fn title(&self) -> &'static str { "Process Outputting Audio" }
     fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn requires_target(&self) -> Option<&'static str> { Some("tgt.process") }
     fn spec(&self) -> Option<Value> { Some(process_audio_spec()) }
-    fn validate(&self, c: &Value) -> Result<(), String> { spec::validate(&process_audio_spec(), c) }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        spec::validate(&process_audio_spec(), c)?;
+        extra::wait_settings(c).map(|_| ())
+    }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         let (pid, name) = first_process(cx)?;
         let state = text(&cx.cfg, "state");
-        let outputting = tokio::task::spawn_blocking(move || sys::process_outputting_audio(pid))
-            .await.map_err(|e| e.to_string())??;
-        let satisfied = (state == "not_outputting") != outputting;
-        (cx.report)("running", None, format!("{name}: {}", if outputting { "audio stream active" } else { "no active audio stream" }));
-        Ok(if satisfied { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+        extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+            let name = name.clone();
+            let state = state.clone();
+            Box::pin(async move {
+                let outputting = tokio::task::spawn_blocking(move || sys::process_outputting_audio(pid))
+                    .await.map_err(|e| e.to_string())??;
+                (cx.report)("waiting", None, format!("{name}: {}", if outputting { "audio stream active" } else { "no active audio stream" }));
+                Ok((state == "not_outputting") != outputting)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
@@ -276,47 +348,40 @@ fn read_mb(cx: &NodeCx) -> Result<(f64, String), String> {
 }
 #[async_trait]
 impl Block for Ram {
-    fn title(&self) -> &'static str {
-        "RAM Usage"
-    }
-    fn category(&self) -> Cat {
-        Cat::Condition
-    }
-    fn supports_timeout(&self) -> bool {
-        true
-    }
+    fn title(&self) -> &'static str { "RAM Usage" }
+    fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn validate(&self, c: &Value) -> Result<(), String> {
         rng(c, "thresholdMb", 800.0, 1.0, 1_048_576.0, "Threshold")?;
-        if text(c, "mode") == "wait" {
+        let mode = text(c, "mode");
+        if !matches!(mode.as_str(), "" | "check" | "wait" | "wait_change") {
+            return Err("Unknown RAM usage mode".into());
+        }
+        if mode != "check" && !mode.is_empty() {
             rng(c, "pollSec", 1.0, 0.25, 3600.0, "Poll interval")?;
+            rng(c, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
             check_timeout(c)?;
         }
         Ok(())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        self.validate(&cx.cfg)?;
         let above = text(&cx.cfg, "op") != "below";
         let thr = rng(&cx.cfg, "thresholdMb", 800.0, 1.0, 1_048_576.0, "Threshold")?;
-        let wait = text(&cx.cfg, "mode") == "wait";
+        let mode = text(&cx.cfg, "mode");
+        let behavior = match mode.as_str() { "wait" => "wait", "wait_change" => "change", _ => "check" };
         let poll = rng(&cx.cfg, "pollSec", 1.0, 0.25, 3600.0, "Poll interval")?;
-        loop {
-            let (cur, scope) = read_mb(cx)?;
-            let ok = if above { cur > thr } else { cur < thr };
-            (cx.report)(
-                if wait { "waiting" } else { "running" },
-                None,
-                format!("{scope}: {cur:.0} MB (needs {} {thr:.0} MB)", if above { "above" } else { "below" }),
-            );
-            if ok {
-                return Ok(Outcome::Satisfied);
-            }
-            if !wait {
-                return Ok(Outcome::NotSatisfied);
-            }
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs_f64(poll)) => {},
-                _ = cx.token.cancelled() => return Err("cancelled".into()),
-            }
-        }
+        let stable = rng(&cx.cfg, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
+        let timeout = rng(&cx.cfg, "timeoutSec", 0.0, 0.0, 86400.0, "Timeout")?;
+        extra::poll_condition(cx, behavior, poll, stable, timeout, || {
+            Box::pin(async move {
+                let (cur, scope) = read_mb(cx)?;
+                let ok = if above { cur > thr } else { cur < thr };
+                (cx.report)(if behavior == "check" { "running" } else { "waiting" }, None,
+                    format!("{scope}: {cur:.0} MB (needs {} {thr:.0} MB)", if above { "above" } else { "below" }));
+                Ok(ok)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
@@ -329,40 +394,34 @@ impl Block for ProcRunning {
     fn validate(&self, c: &Value) -> Result<(), String> {
         if text(c, "name").is_empty() { return Err("Process name is required".into()); }
         let mode = text(c, "mode");
-        if !matches!(mode.as_str(), "" | "check" | "wait_start" | "wait_stop") {
+        if !matches!(mode.as_str(), "" | "check" | "wait_start" | "wait_stop" | "wait_change") {
             return Err("Unknown mode".into());
         }
         if mode.starts_with("wait") {
             rng(c, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
+            rng(c, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
             check_timeout(c)?;
         }
         Ok(())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
-        let name = text(&cx.cfg, "name");
+        self.validate(&cx.cfg)?;
+        let name = cx.expand_template(&text(&cx.cfg, "name"))?;
         let mode = text(&cx.cfg, "mode");
+        let behavior = match mode.as_str() { "wait_start" | "wait_stop" => "wait", "wait_change" => "change", _ => "check" };
         let poll = rng(&cx.cfg, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
-        let wait_start = mode == "wait_start";
-        let wait_stop = mode == "wait_stop";
-        loop {
-            let running = sys::find_pid_by_name(&name).is_ok();
-            (cx.report)(
-                if wait_start || wait_stop { "waiting" } else { "running" },
-                None,
-                format!("{name}: {}", if running { "running" } else { "not running" }),
-            );
-            if wait_start {
-                if running { return Ok(Outcome::Satisfied); }
-            } else if wait_stop {
-                if !running { return Ok(Outcome::Satisfied); }
-            } else {
-                return Ok(if running { Outcome::Satisfied } else { Outcome::NotSatisfied });
-            }
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs_f64(poll)) => {},
-                _ = cx.token.cancelled() => return Err("cancelled".into()),
-            }
-        }
+        let stable = rng(&cx.cfg, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
+        let timeout = rng(&cx.cfg, "timeoutSec", 0.0, 0.0, 86400.0, "Timeout")?;
+        extra::poll_condition(cx, behavior, poll, stable, timeout, || {
+            let name = name.clone();
+            let mode = mode.clone();
+            Box::pin(async move {
+                let running = sys::find_pid_by_name(&name).is_ok();
+                (cx.report)(if behavior == "check" { "running" } else { "waiting" }, None,
+                    format!("{name}: {}", if running { "running" } else { "not running" }));
+                Ok(if mode == "wait_stop" { !running } else { running })
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
@@ -375,13 +434,14 @@ fn schedule_spec() -> Value {
             {"key":"start","label":"From","type":"time","default":"09:00","required":true},
             {"key":"end","label":"Until","type":"time","default":"17:00","required":true},
             {"key":"days","label":"Days","type":"select","default":"all","options":[["all","Every day"],["weekdays","Mon–Fri"],["weekends","Sat–Sun"]]},
-            {"key":"mode","label":"Mode","type":"select","default":"check","options":[["check","Check once (IF / ELSE)"],["wait","Wait until inside the window"]]},
-            {"key":"pollSec","label":"Check every","type":"number","min":1,"max":3600,"step":1,"unit":"s","default":5,"show":{"key":"mode","eq":"wait"}},
-            {"preset":"timeout","show":{"key":"mode","eq":"wait"}},
+            {"key":"mode","label":"Mode","type":"select","default":"check","options":[["check","Check once (IF / ELSE)"],["wait","Wait until inside the window"],["wait_change","Wait until window state changes"]]},
+            {"key":"pollSec","label":"Check every","type":"number","min":1,"max":3600,"step":1,"unit":"s","default":5,"show":{"key":"mode","ne":"check"}},
+            {"key":"stableForSec","label":"Require condition to remain satisfied for","type":"number","min":0,"max":3600,"step":0.5,"unit":"s","default":0,"show":{"key":"mode","ne":"check"}},
+            {"preset":"timeout","show":{"key":"mode","ne":"check"}},
             {"preset":"onFail"}
         ],
         "summary": "{start}–{end} · {days}",
-        "help": "Uses this PC's local time. If Until is earlier than From the window crosses midnight (for example 22:00 to 06:00). From = Until means the whole day. Days is checked at the moment the block runs."
+        "help": "Uses this PC's local time. If Until is earlier than From the window crosses midnight (for example 22:00 to 06:00). From = Until means the whole day. Wait can debounce the inside-window state; Wait for state change notices either entry or exit."
     })
 }
 
@@ -420,22 +480,20 @@ impl Block for Schedule {
         spec::validate(&schedule_spec(), c)
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
-        let wait = text(&cx.cfg, "mode") == "wait";
+        self.validate(&cx.cfg)?;
+        let mode = text(&cx.cfg, "mode");
+        let behavior = match mode.as_str() { "wait" => "wait", "wait_change" => "change", _ => "check" };
         let poll = rng(&cx.cfg, "pollSec", 5.0, 1.0, 3600.0, "Check interval")?;
-        loop {
-            let inside = in_window(&cx.cfg)?;
-            (cx.report)(if wait { "waiting" } else { "running" }, None, if inside { "inside the window".to_string() } else { "outside the window".to_string() });
-            if inside {
-                return Ok(Outcome::Satisfied);
-            }
-            if !wait {
-                return Ok(Outcome::NotSatisfied);
-            }
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs_f64(poll)) => {},
-                _ = cx.token.cancelled() => return Err("cancelled".into()),
-            }
-        }
+        let stable = rng(&cx.cfg, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
+        let timeout = rng(&cx.cfg, "timeoutSec", 0.0, 0.0, 86400.0, "Timeout")?;
+        extra::poll_condition(cx, behavior, poll, stable, timeout, || {
+            Box::pin(async {
+                let inside = in_window(&cx.cfg)?;
+                (cx.report)(if behavior == "check" { "running" } else { "waiting" }, None,
+                    if inside { "inside the window".to_string() } else { "outside the window".to_string() });
+                Ok(inside)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 struct Trim;
@@ -518,7 +576,7 @@ impl Block for LaunchFile {
         if !std::path::Path::new(&path).exists() {
             return Err(format!("file not found: {path}"));
         }
-        let args = text(&cx.cfg, "args");
+        let args = cx.expand_template(&text(&cx.cfg, "args"))?;
         (cx.report)("running", None, format!("Launching {path}"));
         let p2 = path.clone();
         tokio::task::spawn_blocking(move || sys::start_file(&p2, &args))
@@ -535,13 +593,14 @@ fn run_command_spec() -> Value {
         "icon": "proc",
         "description": "Runs a PowerShell command in the background without opening a terminal window.",
         "fields": [
-            {"key":"command","label":"PowerShell command","type":"text","required":true,"maxLen":8000},
+            {"key":"command","label":"PowerShell command","type":"textarea","rows":5,"required":true,"maxLen":8000},
             {"key":"workingDirectory","label":"Working directory (optional)","type":"text","maxLen":1000,"default":""},
+            {"key":"saveOutputAs","label":"Save stdout to variable (optional)","type":"text","maxLen":64},
             {"preset":"timeout","default":30},
             {"preset":"onFail"}
         ],
         "summary": "Run PowerShell command",
-        "help": "Runs powershell.exe without a console window. Standard output and standard error are captured in workflow logs, up to 16 KiB each. Commands run with the current Windows user's permissions and are not sandboxed. Leave the working directory blank to inherit 00047's working directory; otherwise use an absolute path. Timeout 0 disables the timeout."
+        "help": "Runs powershell.exe without a console window. Standard output and standard error are captured in workflow logs, up to 16 KiB each. Commands run with the current Windows user's permissions and are not sandboxed. Use {{variable_name}} placeholders to insert variables; saved stdout is capped at 16 KiB. Leave working directory blank to inherit 00047's working directory. Timeout 0 disables the timeout."
     })
 }
 
@@ -562,6 +621,16 @@ impl Block for RunCommand {
         if text(c, "workingDirectory").contains('\0') {
             return Err("Working directory must not contain NUL characters.".into());
         }
+        if text(c, "saveOutputAs").contains('\0') {
+            return Err("Output variable name must not contain NUL characters.".into());
+        }
+        if !text(c, "saveOutputAs").is_empty() {
+            let name = text(c, "saveOutputAs");
+            if name.len() > 64 || !name.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+                || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')) {
+                return Err("Output variable name is invalid".into());
+            }
+        }
         Ok(())
     }
 
@@ -576,7 +645,7 @@ impl Block for RunCommand {
 
         #[cfg(windows)]
         {
-            let command = text(&cx.cfg, "command");
+            let command = cx.expand_template(&text(&cx.cfg, "command"))?;
             let script = format!(
                 "$ErrorActionPreference = 'Stop'; try {{\n{}\n}} catch {{ [Console]::Error.WriteLine($_.ToString()); exit 1 }}; if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }}",
                 command
@@ -589,7 +658,7 @@ impl Block for RunCommand {
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
 
-            let working_directory = text(&cx.cfg, "workingDirectory");
+            let working_directory = cx.expand_template(&text(&cx.cfg, "workingDirectory"))?;
             if !working_directory.is_empty() {
                 cmd.current_dir(&working_directory);
             }
@@ -632,6 +701,10 @@ impl Block for RunCommand {
             }
 
             if status.success() {
+                let save_as = text(&cx.cfg, "saveOutputAs");
+                if !save_as.is_empty() {
+                    cx.set_variable(save_as, Value::String(stdout.clone()))?;
+                }
                 Ok(Outcome::Satisfied)
             } else {
                 let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "terminated".into());
@@ -662,7 +735,7 @@ impl Block for StopProc {
         let (pid, name) = if text(&cx.cfg, "mode") == "target" {
             first_process(cx)?
         } else {
-            let n = text(&cx.cfg, "name");
+            let n = cx.expand_template(&text(&cx.cfg, "name"))?;
             (sys::find_pid_by_name(&n)?, n)
         };
         if pid == sys::own_pid() { return Err("refusing to stop 00047 itself".into()); }
@@ -689,7 +762,13 @@ impl Block for Notify {
         Ok(())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
-        let (t, b, s) = (text(&cx.cfg, "title"), text(&cx.cfg, "body"), flag(&cx.cfg, "sound", true));
+        let t = cx.expand_template(&text(&cx.cfg, "title"))?;
+        let b = cx.expand_template(&text(&cx.cfg, "body"))?;
+        let s = flag(&cx.cfg, "sound", true);
+        if t.is_empty() || b.is_empty() { return Err("Title and message are required after variable expansion".into()); }
+        if t.chars().count() > 64 || b.chars().count() > 256 {
+            return Err("Expanded title max 64 and message max 256 characters".into());
+        }
         tokio::task::spawn_blocking(move || sys::show_notification(&t, &b, s))
             .await.map_err(|e| e.to_string())??;
         Ok(Outcome::Satisfied)
@@ -733,7 +812,10 @@ impl Block for LogMsg {
             "error" => "error",
             _ => "info",
         };
-        (cx.log)(lvl, text(&cx.cfg, "message"));
+        let message = cx.expand_template(&text(&cx.cfg, "message"))?;
+        if message.is_empty() { return Err("Message is required after variable expansion".into()); }
+        if message.chars().count() > 500 { return Err("Expanded message must be 500 characters or fewer".into()); }
+        (cx.log)(lvl, message);
         Ok(Outcome::Satisfied)
     }
 }
@@ -819,6 +901,8 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         m.insert("tgt.file", Box::new(FileTarget));
         m.insert("cond.schedule", Box::new(Schedule));
         extra::register_into(&mut m);
+        extra_more::register_into(&mut m);
+        advanced::register_into(&mut m);
         crate::custom::load_into(&mut m);
         m
     })
@@ -956,6 +1040,14 @@ mod expanded_blocks_tests {
         assert!(r["cond.workstation_lock"].validate(&json!({"state":"locked","behavior":"check","onFail":"stop"})).is_ok());
         assert!(r["cond.user_idle"].validate(&json!({"state":"idle","seconds":300,"behavior":"check","onFail":"stop"})).is_ok());
         assert!(r["cond.app_responsive"].validate(&json!({"processName":"notepad","state":"responsive","behavior":"check","onFail":"stop"})).is_ok());
+    }
+
+    #[test]
+    fn legacy_conditions_validate_wait_and_state_change_modes() {
+        let r = registry();
+        assert!(r["cond.ram"].validate(&json!({"op":"above","thresholdMb":800,"mode":"wait_change","pollSec":1,"stableForSec":0.5,"timeoutSec":10})).is_ok());
+        assert!(r["cond.proc_running"].validate(&json!({"name":"notepad.exe","mode":"wait_change","pollSec":1,"stableForSec":0.5,"timeoutSec":10})).is_ok());
+        assert!(r["cond.schedule"].validate(&json!({"start":"09:00","end":"17:00","days":"all","mode":"wait_change","pollSec":5,"stableForSec":1,"timeoutSec":30,"onFail":"stop"})).is_ok());
     }
 
     #[test]

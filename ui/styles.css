@@ -138,8 +138,18 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 
 /* block menu */
 .ctx{position:absolute;width:300px;max-height:390px;display:flex;flex-direction:column;border-radius:14px;z-index:20;padding:8px;gap:6px}
+.mfilters{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.mfilter{border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.035);color:var(--mu);font-size:10.5px;padding:4px 7px;cursor:pointer;white-space:nowrap}
+.mfilter:hover,.mfilter.active{color:var(--tx);border-color:rgba(139,156,255,.55);background:rgba(139,156,255,.13)}
+.mgroup{display:flex;align-items:center;justify-content:space-between;padding:7px 8px 3px;color:var(--mu);font-size:9px;font-weight:700;letter-spacing:.08em}
+.mgroup span{opacity:.7;font-variant-numeric:tabular-nums}
+.mitem-text{min-width:0;flex:1}
+.mitem-text b,.mitem-text small{overflow-wrap:anywhere}
+.mstar{flex:none;border:0;background:transparent;color:var(--mu);padding:4px 6px;border-radius:6px;font-size:17px;line-height:1;cursor:pointer}
+.mstar:hover{background:rgba(255,255,255,.08);color:var(--tx)}
+.mstar.is-fav{color:#f5c95d}
 .ml{overflow:auto}
-.mi{display:flex;gap:10px;align-items:center;padding:7px 8px;border-radius:9px;cursor:pointer}
+.mi{display:flex;gap:10px;align-items:center;padding:7px 6px 7px 8px;border-radius:9px;cursor:pointer;min-width:0}
 .mi.on,.mi:hover{background:rgba(139,156,255,.14)}
 .mi b{display:block;font-weight:600}.mi small{color:var(--mu);font-size:11px;line-height:1.3;display:block}
 .mic svg{width:20px;height:20px;display:block}
@@ -173,9 +183,10 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .fld{display:grid;gap:4px}
 .fld[hidden]{display:none}
 .fl{font-size:11.5px;color:var(--mu)}.fl em{font-style:normal;opacity:.7}
-.fld input[type=text],.fld input[type=number],.fld select{width:100%;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:6px 8px;outline:none}
-.fld input:focus,.fld select:focus{border-color:rgba(139,156,255,.6)}
-.fld.bad input{border-color:var(--er)}
+.fld input[type=text],.fld input[type=number],.fld select,.fld textarea{box-sizing:border-box;width:100%;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:6px 8px;outline:none}
+.fld textarea{min-height:76px;resize:vertical;white-space:pre-wrap;user-select:text;font:inherit;line-height:1.4}
+.fld input:focus,.fld select:focus,.fld textarea:focus{border-color:rgba(139,156,255,.6)}
+.fld.bad input,.fld.bad textarea{border-color:var(--er)}
 .fld.chk{display:flex;align-items:center;gap:8px}
 .fh{color:var(--mu);font-size:11px;line-height:1.35}
 .nhelp{color:var(--mu);font-size:11px;line-height:1.4;border-top:1px solid var(--line);padding-top:8px}

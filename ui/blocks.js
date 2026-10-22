@@ -12,6 +12,44 @@ const I = {
   proc: ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M16.9 16.9l2.1 2.1M4.9 19.1l2.1-2.1M16.9 7.1l2.1-2.1"/>'),
   stop: ic('<rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9z"/>'),
   bell: ic('<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0"/>'),
+  activity: ic('<path d="M3 12h4l3-8 4 16 3-8h4"/>'),
+  'app-window': ic('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/>'),
+  battery: ic('<rect x="3" y="7" width="17" height="10" rx="2"/><path d="M23 10v4M7 10v4"/>'),
+  'battery-charging': ic('<rect x="3" y="7" width="17" height="10" rx="2"/><path d="M23 10v4M12 8l-3 5h4l-1 3 4-6h-4z"/>'),
+  'calendar-clock': ic('<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M8 2v4M16 2v4M3 9h10"/><circle cx="16.5" cy="15.5" r="3.5"/><path d="M16.5 13.5v2l1.5 1"/>'),
+  clipboard: ic('<rect x="5" y="5" width="14" height="17" rx="2"/><rect x="9" y="2" width="6" height="5" rx="1"/><path d="M8 11h8M8 15h8"/>'),
+  eraser: ic('<path d="m4 15 9-10a2 2 0 0 1 3 0l4 4a2 2 0 0 1 0 3l-8 8H8z"/><path d="m9 10 6 6M13 20h8"/>'),
+  'external-link': ic('<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/>'),
+  'file-archive': ic('<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M10 10h2v2h-2zM10 14h2v2h-2zM10 18h2"/>'),
+  'file-pen': ic('<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h6M14 3v6h6M14 3l6 6"/><path d="m13 17 5-5 3 3-5 5-4 1z"/>'),
+  'file-text': ic('<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h8"/>'),
+  files: ic('<path d="M8 7V4a2 2 0 0 1 2-2h9l3 3v11a2 2 0 0 1-2 2h-3"/><path d="M3 8a2 2 0 0 1 2-2h9l3 3v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
+  'folder-open': ic('<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v2H8l-2 9-3-1z"/><path d="M6 19l2-9h13l-3 8a2 2 0 0 1-2 1z"/>'),
+  'folder-plus': ic('<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 10v6M9 13h6"/>'),
+  'folder-search': ic('<path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v3"/><path d="M3 8v10a2 2 0 0 0 2 2h6"/><circle cx="16" cy="15" r="3"/><path d="m18.3 17.3 2.2 2.2"/>'),
+  'folder-tree': ic('<path d="M3 5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v3"/><path d="M3 7v11a2 2 0 0 0 2 2h5M14 12v3M14 15h4v4M14 15h-3v4"/><rect x="12" y="10" width="4" height="4" rx="1"/>'),
+  gauge: ic('<path d="M4 19a9 9 0 1 1 16 0"/><path d="m12 13 5-5M12 13l-1 3"/><circle cx="12" cy="13" r="1"/>'),
+  globe: ic('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>'),
+  'hard-drive': ic('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 14h18M7 16.5h.01M11 16.5h.01"/>'),
+  image: ic('<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/>'),
+  keyboard: ic('<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M9 9h.01M12 9h.01M15 9h.01M18 9h.01M6 12h.01M9 12h.01M12 12h.01M15 12h.01M18 12h.01M8 15h8"/>'),
+  layers: ic('<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/>'),
+  lock: ic('<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>'),
+  'message-square': ic('<path d="M21 11.5a8.5 8.5 0 0 1-9 8.5 9 9 0 0 1-4-.9L3 21l1.9-4.5A8.5 8.5 0 1 1 21 11.5z"/>'),
+  'monitor-down': ic('<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8M12 16v5M8 8l4 4 4-4"/>'),
+  'mouse-pointer-2': ic('<path d="m5 3 14 11-7 1-3 6z"/>'),
+  network: ic('<circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="m11 7-5 9M13 7l5 9M7 18h10"/>'),
+  plus: ic('<path d="M12 5v14M5 12h14"/>'),
+  power: ic('<path d="M12 2v10M6 5a8 8 0 1 0 12 0"/>'),
+  'refresh-cw': ic('<path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.5 9A7 7 0 0 1 18 6l2 1M4 17l2 1a7 7 0 0 0 12.5-3"/>'),
+  settings: ic('<circle cx="12" cy="12" r="3"/><path d="m19 13 2 1-2 4-2-1-2 1v2H9v-2l-2-1-2 1-2-4 2-1v-2l-2-1 2-4 2 1 2-1V4h6v2l2 1 2-1 2 4-2 1z"/>'),
+  sun: ic('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  timer: ic('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2M9 2h6M12 2v3"/>'),
+  'trash-2': ic('<path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15M10 10v7M14 10v7"/>'),
+  usb: ic('<path d="M12 19V4M9 7l3-3 3 3M12 12l-4 4M12 15l4 4M8 16H6a2 2 0 1 0 0 4h2M16 19h2a2 2 0 1 0 0-4h-2"/><circle cx="12" cy="21" r="1"/>'),
+  variable: ic('<path d="M5 5c3 0 3 14 6 14s3-14 8-14M4 19h4M16 5h4"/>'),
+  'volume-2': ic('<path d="M3 9v6h4l5 4V5L7 9zM16 9a5 5 0 0 1 0 6M18 6a9 9 0 0 1 0 12"/>'),
+  wifi: ic('<path d="M3 9a14 14 0 0 1 18 0M6 12a9 9 0 0 1 12 0M9 15a4 4 0 0 1 6 0M12 19h.01"/>'),
 };
 
 export const CATS = {
@@ -49,31 +87,33 @@ export const BLOCKS = {
   'cond.ram': {
     cat: 'cond', title: 'RAM Usage', icon: I.chip,
     desc: 'Compares RAM (MB) of a wired Process Input, or of the whole system, to a threshold.',
-    defaults: { op: 'above', thresholdMb: 800, mode: 'check', pollSec: 1, timeoutSec: 0, onFail: 'stop' },
+    defaults: { op: 'above', thresholdMb: 800, mode: 'check', pollSec: 1, stableForSec: 0, timeoutSec: 0, onFail: 'stop' },
     fields: [
       { key: 'op', label: 'Satisfied when RAM is', type: 'select', options: [['above', 'Above'], ['below', 'Below']] },
       { key: 'thresholdMb', label: 'Threshold', type: 'number', min: 1, max: 1048576, step: 10, unit: 'MB' },
-      { key: 'mode', label: 'Mode', type: 'select', options: [['check', 'Check once (IF / ELSE)'], ['wait', 'Wait until satisfied']] },
-      { key: 'pollSec', label: 'Poll every', type: 'number', min: 0.25, max: 3600, step: 0.25, unit: 's', show: c => c.mode === 'wait' },
-      { ...TIMEOUT, show: c => c.mode === 'wait' },
-      ONFAIL,
-    ],
-    summary: c => `${c.op === 'below' ? 'Below' : 'Above'} ${num(c.thresholdMb)} MB · ${c.mode === 'wait' ? 'waits' + (c.timeoutSec > 0 ? ` ≤ ${dur(c.timeoutSec)}` : '') : 'checks once'}`,
-    help: 'Connect a Process Input to measure that process working set. With no input, this condition measures used system RAM.',
-  },
-  'cond.proc_running': {
-    cat: 'cond', title: 'Process Running', icon: I.proc,
-    desc: 'Checks whether a process (by exe name) is running, or waits for it to start or stop.',
-    defaults: { name: '', mode: 'check', pollSec: 2, timeoutSec: 0, onFail: 'stop' },
-    fields: [
-      { key: 'name', label: 'Process name', type: 'text', placeholder: 'chrome.exe', required: true },
-      { key: 'mode', label: 'Mode', type: 'select', options: [['check', 'Check once (IF running / ELSE not)'], ['wait_start', 'Wait until it starts'], ['wait_stop', 'Wait until it stops']] },
+      { key: 'mode', label: 'Mode', type: 'select', options: [['check', 'Check once (IF / ELSE)'], ['wait', 'Wait until satisfied'], ['wait_change', 'Wait until threshold state changes']] },
       { key: 'pollSec', label: 'Poll every', type: 'number', min: 0.25, max: 3600, step: 0.25, unit: 's', show: c => c.mode !== 'check' },
+      { key: 'stableForSec', label: 'Require condition to remain satisfied for', type: 'number', min: 0, max: 3600, step: 0.5, unit: 's', show: c => c.mode !== 'check' },
       { ...TIMEOUT, show: c => c.mode !== 'check' },
       ONFAIL,
     ],
-    summary: c => !c.name ? 'No process set' : c.mode === 'wait_start' ? `Wait for ${c.name} to start` : c.mode === 'wait_stop' ? `Wait for ${c.name} to stop` : `Is ${c.name} running?`,
-    help: 'Include the .exe extension. Needs no input block.',
+    summary: c => `${c.op === 'below' ? 'Below' : 'Above'} ${num(c.thresholdMb)} MB · ${c.mode === 'wait' ? 'waits' + (c.timeoutSec > 0 ? ` ≤ ${dur(c.timeoutSec)}` : '') : c.mode === 'wait_change' ? 'waits for a change' : 'checks once'}`,
+    help: 'Connect a Process Input to measure that process working set. With no input, this condition measures used system RAM. State-change mode watches for the selected threshold condition to flip.',
+  },
+  'cond.proc_running': {
+    cat: 'cond', title: 'Process Running', icon: I.proc,
+    desc: 'Checks whether a process (by exe name) is running, or waits for it to start, stop, or change state.',
+    defaults: { name: '', mode: 'check', pollSec: 2, stableForSec: 0, timeoutSec: 0, onFail: 'stop' },
+    fields: [
+      { key: 'name', label: 'Process name', type: 'text', placeholder: 'chrome.exe', required: true },
+      { key: 'mode', label: 'Mode', type: 'select', options: [['check', 'Check once (IF running / ELSE not)'], ['wait_start', 'Wait until it starts'], ['wait_stop', 'Wait until it stops'], ['wait_change', 'Wait until running state changes']] },
+      { key: 'pollSec', label: 'Poll every', type: 'number', min: 0.25, max: 3600, step: 0.25, unit: 's', show: c => c.mode !== 'check' },
+      { key: 'stableForSec', label: 'Require condition to remain satisfied for', type: 'number', min: 0, max: 3600, step: 0.5, unit: 's', show: c => c.mode !== 'check' },
+      { ...TIMEOUT, show: c => c.mode !== 'check' },
+      ONFAIL,
+    ],
+    summary: c => !c.name ? 'No process set' : c.mode === 'wait_start' ? `Wait for ${c.name} to start` : c.mode === 'wait_stop' ? `Wait for ${c.name} to stop` : c.mode === 'wait_change' ? `Wait for ${c.name} state change` : `Is ${c.name} running?`,
+    help: 'Include the .exe extension. Needs no input block. Stable duration helps avoid short-lived process-state flicker.',
   },
   'act.stop_proc': {
     cat: 'act', title: 'Stop Process', icon: I.stop,
@@ -189,7 +229,7 @@ export function fieldError(f, cfg) {
     if (v < f.min || v > f.max) return `${f.min} – ${f.max}`;
   }
   if (f.type === 'time' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? ''))) return 'Use HH:MM';
-  if (f.type === 'text' || f.type === 'file') {
+  if (f.type === 'text' || f.type === 'textarea' || f.type === 'file') {
     const s = String(v ?? '').trim();
     if (f.required && !s) return 'Required';
     if (f.maxLen && s.length > f.maxLen) return `Max ${f.maxLen} characters`;

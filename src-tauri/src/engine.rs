@@ -242,6 +242,7 @@ impl Engine {
                 Box::new(move || resolve_targets(&a, &nid))
             },
             visible: Box::new(|| false),
+            variables: Arc::new(Mutex::new(HashMap::new())),
         };
         let out = tokio::time::timeout(Duration::from_secs(60), blk.run(&cx))
             .await
@@ -306,6 +307,7 @@ impl Engine {
             auto: Arc::new(auto),
             token: parent.child_token(),
             visits: Default::default(),
+            variables: Arc::new(Mutex::new(HashMap::new())),
             rate: Default::default(),
             handles: Default::default(),
             errors: AtomicU32::new(0),
@@ -359,6 +361,7 @@ struct Ctx {
     auto: Arc<Automation>,
     token: CancellationToken,
     visits: Mutex<HashMap<String, u64>>,
+    variables: Arc<Mutex<HashMap<String, Value>>>,
     rate: Mutex<HashMap<String, VecDeque<Instant>>>,
     handles: Mutex<Vec<JoinHandle<()>>>,
     errors: AtomicU32,
@@ -718,6 +721,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             let c = ctx.clone();
             Box::new(move || c.eng.visible())
         },
+        variables: ctx.variables.clone(),
     };
 
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
