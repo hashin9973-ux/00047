@@ -67,6 +67,10 @@ export class Editor {
   constructor(host, hooks) {
     this.host = host;
     this.hooks = hooks;
+    try {
+      const saved = JSON.parse(localStorage.getItem('00047:block-favorites:v1') || '[]');
+      this.blockFavorites = new Set(Array.isArray(saved) ? saved.filter(k => typeof k === 'string') : []);
+    } catch { this.blockFavorites = new Set(); }
     this.auto = null;
     this.vp = { x: 80, y: 80, k: 1 };
     this.els = new Map();
@@ -1046,21 +1050,62 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
   openMenu(cx, cy, pending) {
     const wp = this.toWorld(cx, cy), m = this.menu;
     m.className = 'ctx glass'; m.onclick = null;
-    m.innerHTML = `<input class="mq" placeholder="Search blocks…" spellcheck="false"><div class="ml"></div>`;
-    this.placeMenu(cx, cy, 300, 390);
-    const inp = m.querySelector('.mq'), list = m.querySelector('.ml');
-    let idx = 0, items = [];
+    m.innerHTML = `<input class="mq" placeholder="Search blocks…" spellcheck="false" aria-label="Search blocks">
+      <div class="mfilters" role="group" aria-label="Block category">
+        <button class="mfilter active" data-filter="all" type="button">All</button>
+        <button class="mfilter" data-filter="cond" type="button">Conditions</button>
+        <button class="mfilter" data-filter="act" type="button">Actions</button>
+        <button class="mfilter" data-filter="tgt" type="button">Inputs</button>
+        <button class="mfilter" data-filter="favorites" type="button">★ Favorites</button>
+      </div>
+      <div class="ml"></div>`;
+    this.placeMenu(cx, cy, 340, 470);
+    const inp = m.querySelector('.mq'), list = m.querySelector('.ml'), filters = m.querySelector('.mfilters');
+    let idx = 0, items = [], activeFilter = 'all';
+    const toggleFavorite = k => {
+      if (this.blockFavorites.has(k)) this.blockFavorites.delete(k); else this.blockFavorites.add(k);
+      try { localStorage.setItem('00047:block-favorites:v1', JSON.stringify([...this.blockFavorites])); } catch {}
+      render();
+    };
     const render = () => {
       const q = inp.value.trim().toLowerCase();
-      items = Object.entries(BLOCKS).filter(([, b]) =>
-        (!pending || b.cat !== 'tgt') && `${b.title} ${b.desc} ${CATS[b.cat].label}`.toLowerCase().includes(q));
+      const filtered = Object.entries(BLOCKS).filter(([k, b]) => {
+        if (pending && b.cat === 'tgt') return false;
+        if (activeFilter === 'favorites' && !this.blockFavorites.has(k)) return false;
+        if (['cond', 'act', 'tgt'].includes(activeFilter) && b.cat !== activeFilter) return false;
+        return `${k} ${b.title} ${b.desc} ${CATS[b.cat].label}`.toLowerCase().includes(q);
+      });
+      const catOrder = ['cond', 'act', 'tgt'];
+      items = filtered.sort((a, b) => {
+        const cat = catOrder.indexOf(a[1].cat) - catOrder.indexOf(b[1].cat);
+        if (cat) return cat;
+        const fav = Number(this.blockFavorites.has(b[0])) - Number(this.blockFavorites.has(a[0]));
+        return fav || a[1].title.localeCompare(b[1].title);
+      });
       idx = Math.min(idx, Math.max(0, items.length - 1));
-      list.innerHTML = items.map(([k, b], i) =>
-        `<div class="mi${i === idx ? ' on' : ''}" data-k="${k}"><span class="mic" style="color:${CATS[b.cat].color}">${b.icon}</span><span><b>${b.title}</b><small>${CATS[b.cat].label} · ${b.desc}</small></span></div>`
-      ).join('') || '<div class="mempty">No matching blocks</div>';
+      filters.querySelectorAll('[data-filter]').forEach(btn => btn.classList.toggle('active', btn.dataset.filter === activeFilter));
+      const groups = [];
+      for (const cat of catOrder) {
+        const groupItems = items.map((it, i) => ({ it, i })).filter(x => x.it[1].cat === cat);
+        if (!groupItems.length) continue;
+        groups.push(`<div class="mgroup">${cat === 'cond' ? 'CONDITIONS' : cat === 'act' ? 'ACTIONS' : 'INPUTS'} <span>${groupItems.length}</span></div>`);
+        groups.push(groupItems.map(({it:[k,b],i}) =>
+          `<div class="mi${i === idx ? ' on' : ''}" data-k="${k}">
+            <span class="mic" style="color:${CATS[b.cat].color}">${b.icon}</span>
+            <span class="mitem-text"><b>${b.title}</b><small>${CATS[b.cat].label} · ${b.desc}</small></span>
+            <button class="mstar${this.blockFavorites.has(k) ? ' is-fav' : ''}" type="button" data-fav="${k}" title="${this.blockFavorites.has(k) ? 'Remove favorite' : 'Add favorite'}" aria-label="${this.blockFavorites.has(k) ? 'Remove' : 'Add'} ${b.title} ${this.blockFavorites.has(k) ? 'from' : 'to'} favorites">${this.blockFavorites.has(k) ? '★' : '☆'}</button>
+          </div>`
+        ).join(''));
+      }
+      list.innerHTML = groups.join('') || '<div class="mempty">No matching blocks</div>';
     };
     const pick = k => { this.hideMenu(); this.addNode(k, wp, pending); };
     inp.addEventListener('input', () => { idx = 0; render(); });
+    filters.addEventListener('click', e => {
+      const btn = e.target.closest('[data-filter]');
+      if (!btn) return;
+      activeFilter = btn.dataset.filter; idx = 0; render();
+    });
     inp.addEventListener('keydown', e => {
       if (e.key === 'ArrowDown') { idx = Math.min(items.length - 1, idx + 1); render(); e.preventDefault(); }
       else if (e.key === 'ArrowUp') { idx = Math.max(0, idx - 1); render(); e.preventDefault(); }
@@ -1068,7 +1113,12 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
       else if (e.key === 'Escape') this.hideMenu();
       e.stopPropagation();
     });
-    list.addEventListener('click', e => { const it = e.target.closest('.mi'); if (it) pick(it.dataset.k); });
+    list.addEventListener('click', e => {
+      const star = e.target.closest('[data-fav]');
+      if (star) { e.preventDefault(); e.stopPropagation(); toggleFavorite(star.dataset.fav); return; }
+      const it = e.target.closest('.mi');
+      if (it) pick(it.dataset.k);
+    });
     render(); inp.focus();
   }
 }
