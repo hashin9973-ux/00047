@@ -1306,7 +1306,14 @@ mod win {
             .unwrap_or(true)
     }
 
-    fn quarantine_until_target_exit(pid: u32) {
+    fn quarantine_until_target_exit(pid: u32, process: Handle) {
+        // The target may have exited between the failed wait and quarantine setup.
+        // The original process handle identifies that exact process object and lets
+        // us avoid retaining a stale quarantine for a PID that may later be reused.
+        if unsafe { WaitForSingleObject(process, 0) } == WAIT_OBJECT_0 {
+            return;
+        }
+
         let inserted = match indeterminate_pids().lock() {
             Ok(mut pids) => pids.insert(pid),
             Err(_) => return,
@@ -1320,6 +1327,11 @@ mod win {
         // rest of the app session rather than risking another operation.
         let watcher = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
         if is_invalid(watcher) {
+            if unsafe { WaitForSingleObject(process, 0) } == WAIT_OBJECT_0 {
+                if let Ok(mut pids) = indeterminate_pids().lock() {
+                    pids.remove(&pid);
+                }
+            }
             return;
         }
         let watcher_value = watcher as isize;
@@ -1499,7 +1511,7 @@ mod win {
                 } else {
                     last_error("WaitForSingleObject(remote thread)")
                 };
-                quarantine_until_target_exit(pid);
+                quarantine_until_target_exit(pid, process);
                 CloseHandle(thread);
                 return Err(format!(
                     "{wait_error}; the operation outcome is indeterminate. PID {pid} is quarantined and no further mod operations will run in it until the process exits. Restart the target process to recover."
