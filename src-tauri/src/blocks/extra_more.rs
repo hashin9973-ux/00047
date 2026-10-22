@@ -763,6 +763,34 @@ mod tests {
     }
 
     #[test]
+    fn every_utility_condition_exposes_wait_controls() {
+        let registry = super::super::registry();
+        let ids = [
+            "cond.process_count",
+            "cond.service_state",
+            "cond.clipboard_text",
+            "cond.environment_variable",
+            "cond.file_age",
+            "cond.directory_count",
+        ];
+        for id in ids {
+            let spec = registry.get(id).unwrap_or_else(|| panic!("{id} missing")).spec().unwrap();
+            let fields = spec.get("fields").and_then(Value::as_array).unwrap_or_else(|| panic!("{id} has no fields"));
+            for key in ["behavior", "pollSec", "stableForSec"] {
+                assert!(fields.iter().any(|field| field.get("key").and_then(Value::as_str) == Some(key)), "{id} missing {key}");
+            }
+            assert!(fields.iter().any(|field| {
+                field.get("key").and_then(Value::as_str) == Some("timeoutSec")
+                    || field.get("preset").and_then(Value::as_str) == Some("timeout")
+            }), "{id} missing timeout control");
+            assert_eq!(fields.iter().filter(|field| {
+                field.get("key").and_then(Value::as_str) == Some("onFail")
+                    || field.get("preset").and_then(Value::as_str) == Some("onFail")
+            }).count(), 1, "{id} should expose exactly one onFail field");
+        }
+    }
+
+    #[test]
     fn utility_block_validation_rejects_unsafe_or_invalid_config() {
         assert!(CreateFolder.validate(&json!({"path":"C:\\Temp\\new-folder","onFail":"stop"})).is_ok());
         assert!(CreateFolder.validate(&json!({"path":"bad\u{0000}path","onFail":"stop"})).is_err());
