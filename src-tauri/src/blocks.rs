@@ -4,7 +4,7 @@ use crate::spec;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
-    sync::OnceLock,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 #[cfg(windows)]
@@ -77,6 +77,59 @@ pub struct NodeCx {
     /// Resolves the Input blocks wired into this block (evaluated fresh each call).
     pub resolve: Resolve,
     pub visible: Flag,
+    /// Variables are shared by every block in this automation run and are discarded when it ends.
+    pub variables: Arc<Mutex<HashMap<String, Value>>>,
+}
+
+impl NodeCx {
+    pub fn get_variable(&self, name: &str) -> Option<Value> {
+        self.variables.lock().ok()?.get(name).cloned()
+    }
+
+    pub fn set_variable(&self, name: String, value: Value) -> Result<(), String> {
+        let mut variables = self.variables.lock().map_err(|_| "workflow variable store is unavailable".to_string())?;
+        variables.insert(name, value);
+        Ok(())
+    }
+
+    pub fn remove_variable(&self, name: &str) -> Result<bool, String> {
+        let mut variables = self.variables.lock().map_err(|_| "workflow variable store is unavailable".to_string())?;
+        Ok(variables.remove(name).is_some())
+    }
+
+    pub fn clear_variables(&self) -> Result<(), String> {
+        self.variables.lock().map_err(|_| "workflow variable store is unavailable".to_string())?.clear();
+        Ok(())
+    }
+
+    /// Replaces {{variable_name}} placeholders. Unknown variables fail explicitly instead of becoming empty strings.
+    pub fn expand_template(&self, input: &str) -> Result<String, String> {
+        let mut output = String::with_capacity(input.len());
+        let mut rest = input;
+        while let Some(start) = rest.find("{{") {
+            output.push_str(&rest[..start]);
+            let after = &rest[start + 2..];
+            let Some(end) = after.find("}}") else {
+                output.push_str(&rest[start..]);
+                return Ok(output);
+            };
+            let name = &after[..end];
+            if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.') {
+                output.push_str("{{");
+                rest = after;
+                continue;
+            }
+            let value = self.get_variable(name).ok_or_else(|| format!("workflow variable '{{{{{name}}}}}' is not set"))?;
+            let rendered = match value {
+                Value::String(s) => s,
+                other => other.to_string(),
+            };
+            output.push_str(&rendered);
+            rest = &after[end + 2..];
+        }
+        output.push_str(rest);
+        Ok(output)
+    }
 }
 
 #[async_trait]
