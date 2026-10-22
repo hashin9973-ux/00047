@@ -18,6 +18,10 @@ fn raw_text(c: &Value, key: &str) -> String {
     c.get(key).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
+fn template(cx: &NodeCx, s: &str) -> Result<String, String> {
+    cx.expand_template(s)
+}
+
 fn ps_quote(value: &str) -> String {
     format!("'{}'", value.replace('\0', "").replace('\'', "''"))
 }
