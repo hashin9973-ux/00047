@@ -62,7 +62,10 @@ inline std::atomic<int>& LifecycleState() noexcept {
     WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) { \
         int expected = 2; \
         auto& state = ::wmod::windhawk_adapter::LifecycleState(); \
-        if (!state.compare_exchange_strong(expected, 3)) return; \
+        if (!state.compare_exchange_strong(expected, 3)) { \
+            if (expected == 0) ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
+            return; \
+        } \
         try { (before_uninit_callback)(); } catch (...) {} \
         ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
         try { (uninit_callback)(); } catch (...) {} \

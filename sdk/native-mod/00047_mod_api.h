@@ -5,7 +5,7 @@
 #include <Windows.h>
 #include <cstdint>
 
-// 00047 native mod ABI v1.
+// 00047 native mod ABI v2.
 // A module must export all five lifecycle functions/queries below with these exact names.
 // The host maps an x64 DLL into an allow-listed shell process, validates the ABI
 // version, calls WmodInitializeV1, and calls WmodShutdownV1 before unloading.

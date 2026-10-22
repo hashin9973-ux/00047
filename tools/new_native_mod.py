@@ -68,9 +68,10 @@ WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void) {
 }
 
 WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) {
-    if (!g_initialized) return;
-    Wh_Log(L"Starter mod shutting down");
-    g_initialized = false;
+    if (g_initialized) {
+        Wh_Log(L"Starter mod shutting down");
+        g_initialized = false;
+    }
     wmod::windhawk_hook_compat::ShutdownHookOperations();
 }
 

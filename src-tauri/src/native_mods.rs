@@ -1675,6 +1675,69 @@ mod win {
         }
     }
 
+    fn wait_for_safe_unload(
+        pid: u32,
+        process: Handle,
+        module_base: usize,
+        can_unload_rva: usize,
+        timeout: std::time::Duration,
+    ) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match remote_call(
+                pid,
+                process,
+                (module_base + can_unload_rva) as *mut c_void,
+                ptr::null_mut(),
+            ) {
+                Ok(code) if code != 0 => return Ok(()),
+                Ok(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Ok(_) => {
+                    return Err(
+                        "native mod was shut down but still has in-flight module frames; it remains mapped to avoid unsafe DLL unload".into()
+                    );
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "could not prove native mod unload is safe; DLL was left mapped: {error}"
+                    ));
+                }
+            }
+        }
+    }
+
+    fn cleanup_after_failed_init(
+        pid: u32,
+        process: Handle,
+        module_base: usize,
+        shutdown_rva: usize,
+        can_unload_rva: usize,
+    ) -> Result<(), String> {
+        remote_call(
+            pid,
+            process,
+            (module_base + shutdown_rva) as *mut c_void,
+            ptr::null_mut(),
+        ).map_err(|error| format!("WmodShutdownV1 failed: {error}"))?;
+
+        wait_for_safe_unload(
+            pid,
+            process,
+            module_base,
+            can_unload_rva,
+            std::time::Duration::from_secs(3),
+        )?;
+
+        let free_library = remote_system_proc(pid, b"FreeLibrary\0")?;
+        match remote_call(pid, process, free_library, module_base as *mut c_void) {
+            Ok(code) if code != 0 => Ok(()),
+            Ok(_) => Err("FreeLibrary returned FALSE in the target process".into()),
+            Err(error) => Err(format!("could not free failed native mod: {error}")),
+        }
+    }
+
     fn write_remote_utf16(process: Handle, text: &str) -> Result<*mut c_void, String> {
         unsafe {
             let value: Vec<u16> = OsStr::new(text).encode_wide().chain(Some(0)).collect();
@@ -1877,29 +1940,49 @@ mod win {
             );
             let api_version = remote_call(pid, process, (remote_module + api_rva) as *mut c_void, ptr::null_mut());
             if api_version != Ok(2) {
-                // Only attempt rollback if the version-call thread is known to have
-                // completed. A timeout leaves its execution state unknown.
-                if !target_operation_is_indeterminate(pid) {
-                    let _ = remote_call(pid, process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
-                    if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\0") {
-                        let _ = remote_call(pid, process, free_library, remote_module as *mut c_void);
-                    }
-                }
-                CloseHandle(process); free_local_map(local_module);
-                return Err(format!("mod ABI mismatch: expected version 2, got {}", api_version.map(|v| v.to_string()).unwrap_or_else(|e| e)));
+                // A completed ABI check can be rolled back only through the
+                // same shutdown + quiescence protocol as a normal unload.
+                let cleanup = if target_operation_is_indeterminate(pid) {
+                    Err("target was quarantined after an indeterminate remote call".to_string())
+                } else {
+                    cleanup_after_failed_init(
+                        pid, process, remote_module, shutdown_rva, can_unload_rva
+                    )
+                };
+                CloseHandle(process);
+                free_local_map(local_module);
+                let cleanup_note = cleanup.err()
+                    .map(|error| format!("; DLL may remain mapped: {error}"))
+                    .unwrap_or_default();
+                return Err(format!(
+                    "mod ABI mismatch: expected version 2, got {}{}",
+                    api_version.map(|value| value.to_string()).unwrap_or_else(|error| error),
+                    cleanup_note
+                ));
             }
 
             let init = remote_call(pid, process, (remote_module + init_rva) as *mut c_void, ptr::null_mut());
             if !matches!(init, Ok(code) if code != 0) {
-                // Don't race an initializer that may still be executing after timeout.
-                if !target_operation_is_indeterminate(pid) {
-                    let _ = remote_call(pid, process, (remote_module + shutdown_rva) as *mut c_void, ptr::null_mut());
-                    if let Ok(free_library) = remote_system_proc(pid, b"FreeLibrary\0") {
-                        let _ = remote_call(pid, process, free_library, remote_module as *mut c_void);
-                    }
-                }
-                CloseHandle(process); free_local_map(local_module);
-                return Err(format!("WmodInitializeV1 failed: {}", init.map(|v| v.to_string()).unwrap_or_else(|e| e)));
+                // The initializer's thread has completed (unless quarantined),
+                // but it may have started work of its own. Shutdown alone is not
+                // permission to unmap the DLL: require the same quiescence proof.
+                let cleanup = if target_operation_is_indeterminate(pid) {
+                    Err("target was quarantined after an indeterminate initializer".to_string())
+                } else {
+                    cleanup_after_failed_init(
+                        pid, process, remote_module, shutdown_rva, can_unload_rva
+                    )
+                };
+                CloseHandle(process);
+                free_local_map(local_module);
+                let cleanup_note = cleanup.err()
+                    .map(|error| format!("; DLL may remain mapped: {error}"))
+                    .unwrap_or_default();
+                return Err(format!(
+                    "WmodInitializeV1 failed: {}{}",
+                    init.map(|value| value.to_string()).unwrap_or_else(|error| error),
+                    cleanup_note
+                ));
             }
 
             CloseHandle(process);
@@ -1934,33 +2017,14 @@ mod win {
                 return Err(format!("WmodShutdownV1 failed; DLL was left mapped: {error}"));
             }
 
-            // Disabling hooks prevents new detours from entering the DLL, but
-            // another thread may still be returning through the mod's code.
-            // Poll a target-side stack/RIP check and fail closed if quiescence
-            // cannot be proven; never call FreeLibrary in that case.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            loop {
-                match remote_call(pid, process,
-                    (base + can_unload_rva) as *mut c_void, ptr::null_mut()) {
-                    Ok(code) if code != 0 => break,
-                    Ok(_) if std::time::Instant::now() < deadline => {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                    Ok(_) => {
-                        CloseHandle(process);
-                        free_local_map(local_module);
-                        return Err(
-                            "native mod was shut down but still has in-flight module frames; it remains mapped to avoid unsafe DLL unload".into()
-                        );
-                    }
-                    Err(error) => {
-                        CloseHandle(process);
-                        free_local_map(local_module);
-                        return Err(format!(
-                            "could not prove native mod unload is safe; DLL was left mapped: {error}"
-                        ));
-                    }
-                }
+            // Only unmap after the target proves no thread instruction pointer
+            // or detectable stack return address can enter the DLL image.
+            if let Err(error) = wait_for_safe_unload(
+                pid, process, base, can_unload_rva, std::time::Duration::from_secs(3)
+            ) {
+                CloseHandle(process);
+                free_local_map(local_module);
+                return Err(error);
             }
 
             let free_library = match remote_system_proc(pid, b"FreeLibrary\0") {

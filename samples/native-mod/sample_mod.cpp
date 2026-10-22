@@ -26,13 +26,11 @@ BOOL WINAPI WmodInitializeV1(void) {
 }
 
 void WINAPI WmodShutdownV1(void) {
-    if (!g_initialized) {
-        return;
+    if (g_initialized) {
+        OutputDebugStringW(L"[00047 sample native mod] WmodShutdownV1 called before unload.\n");
+        wmod::Log(L"info", L"WmodShutdownV1 called before unload.");
+        g_initialized = false;
     }
-
-    OutputDebugStringW(L"[00047 sample native mod] WmodShutdownV1 called before unload.\n");
-    wmod::Log(L"info", L"WmodShutdownV1 called before unload.");
-    g_initialized = false;
     wmod::windhawk_hook_compat::ShutdownHookOperations();
 }
 
