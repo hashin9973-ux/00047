@@ -11,7 +11,7 @@ use std::{
 use std::process::Stdio;
 use tokio_util::sync::CancellationToken;
 
-mod extra;
+pub(super) mod extra;
 mod extra_more;
 mod advanced;
 
