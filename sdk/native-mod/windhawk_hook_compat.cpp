@@ -516,40 +516,56 @@ void ShutdownHookOperations() noexcept {
 } // namespace wmod::windhawk_hook_compat
 
 BOOL Wh_Disasm(void* address, WH_DISASM_RESULT* result) {
-    if (!address || !result) return FALSE;
+    if (!result) return FALSE;
     std::memset(result, 0, sizeof(*result));
+    if (!address) return FALSE;
 
-    MEMORY_BASIC_INFORMATION region{};
-    if (VirtualQuery(address, &region, sizeof(region)) != sizeof(region) ||
-        region.State != MEM_COMMIT || (region.Protect & (PAGE_GUARD | PAGE_NOACCESS))) {
+    try {
+        MEMORY_BASIC_INFORMATION region{};
+        if (VirtualQuery(address, &region, sizeof(region)) != sizeof(region) ||
+            region.State != MEM_COMMIT ||
+            (region.Protect & (PAGE_GUARD | PAGE_NOACCESS))) {
+            return FALSE;
+        }
+        const DWORD protection = region.Protect & 0xFF;
+        if (protection == PAGE_EXECUTE) return FALSE;
+
+        const auto start = reinterpret_cast<std::uintptr_t>(address);
+        const auto base = reinterpret_cast<std::uintptr_t>(region.BaseAddress);
+        if (start < base || start - base >= region.RegionSize) return FALSE;
+        const size_t available = std::min<size_t>(
+            15, region.RegionSize - static_cast<size_t>(start - base));
+        if (available == 0) return FALSE;
+
+        unsigned char bytes[15]{};
+        SIZE_T bytesRead = 0;
+        if (!ReadProcessMemory(GetCurrentProcess(), address, bytes, available, &bytesRead) ||
+            bytesRead == 0) {
+            return FALSE;
+        }
+
+        hde64s decoded{};
+        hde64_disasm(bytes, &decoded);
+        if ((decoded.flags & F_ERROR) || decoded.len == 0 || decoded.len > bytesRead) {
+            return FALSE;
+        }
+
+        result->length = decoded.len;
+        std::string text(Mnemonic(bytes, bytesRead, decoded));
+        text += " [";
+        for (size_t i = 0; i < decoded.len; ++i) {
+            char value[4]{};
+            std::snprintf(value, sizeof(value), "%02X", bytes[i]);
+            if (i) text += ' ';
+            text += value;
+        }
+        text += ']';
+        const size_t copyLength = std::min(text.size(), sizeof(result->text) - 1);
+        std::memcpy(result->text, text.data(), copyLength);
+        result->text[copyLength] = '\0';
+        return TRUE;
+    } catch (...) {
+        std::memset(result, 0, sizeof(*result));
         return FALSE;
     }
-    const DWORD protection = region.Protect & 0xFF;
-    if (protection == PAGE_EXECUTE) return FALSE;
-    const auto start = reinterpret_cast<std::uintptr_t>(address);
-    const auto base = reinterpret_cast<std::uintptr_t>(region.BaseAddress);
-    if (start < base || start - base >= region.RegionSize) return FALSE;
-    const size_t available = std::min<size_t>(15, region.RegionSize - static_cast<size_t>(start - base));
-    if (available == 0) return FALSE;
-
-    unsigned char bytes[15]{};
-    std::memcpy(bytes, address, available);
-    hde64s decoded{};
-    hde64_disasm(bytes, &decoded);
-    if ((decoded.flags & F_ERROR) || decoded.len == 0 || decoded.len > available) return FALSE;
-
-    result->length = decoded.len;
-    std::string text(Mnemonic(bytes, available, decoded));
-    text += " [";
-    for (size_t i = 0; i < decoded.len; ++i) {
-        char value[4]{};
-        std::snprintf(value, sizeof(value), "%02X", bytes[i]);
-        if (i) text += ' ';
-        text += value;
-    }
-    text += ']';
-    const size_t copyLength = std::min(text.size(), sizeof(result->text) - 1);
-    std::memcpy(result->text, text.data(), copyLength);
-    result->text[copyLength] = '\0';
-    return TRUE;
 }
