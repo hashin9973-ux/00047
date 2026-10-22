@@ -20,6 +20,8 @@
 #include <unordered_map>
 #include <vector>
 
+#pragma comment(lib, "psapi.lib")
+
 namespace {
 struct HookRecord {
     void* target = nullptr;
@@ -302,6 +304,7 @@ bool HasNoInFlightModuleFrames() noexcept {
                 break;
             }
         } while (Thread32Next(snapshot, &entry));
+        if (safe && GetLastError() != ERROR_NO_MORE_FILES) safe = false;
 
         CloseHandle(snapshot);
         snapshot = INVALID_HANDLE_VALUE;

@@ -1877,7 +1877,7 @@ mod win {
                 "DLL loaded; checking its ABI and running initialization.".into(),
             );
             let api_version = remote_call(pid, process, (remote_module + api_rva) as *mut c_void, ptr::null_mut());
-            if api_version != Ok(1) {
+            if api_version != Ok(2) {
                 // Only attempt rollback if the version-call thread is known to have
                 // completed. A timeout leaves its execution state unknown.
                 if !target_operation_is_indeterminate(pid) {
@@ -1887,7 +1887,7 @@ mod win {
                     }
                 }
                 CloseHandle(process); free_local_map(local_module);
-                return Err(format!("mod ABI mismatch: expected version 1, got {}", api_version.map(|v| v.to_string()).unwrap_or_else(|e| e)));
+                return Err(format!("mod ABI mismatch: expected version 2, got {}", api_version.map(|v| v.to_string()).unwrap_or_else(|e| e)));
             }
 
             let init = remote_call(pid, process, (remote_module + init_rva) as *mut c_void, ptr::null_mut());

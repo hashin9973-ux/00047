@@ -28,13 +28,17 @@ Only these target processes are accepted by this build: explorer.exe, StartMenuE
 
 Before installation, the importer validates archive paths and size, checks the PE machine type and PE32+ format, and verifies that the DLL exports WmodGetApiVersion, WmodInitializeV1, WmodShutdownV1, WmodIsInitializedV1, and WmodCanUnloadV1. Package access also rejects symlinked package roots, package folders, and manifest/DLL files, and checks that each resolved module path remains inside its managed package directory. The enabled-mod state file is bounded to 1 MiB, filters invalid IDs when loaded, refuses symlink destinations, and is saved via a same-directory temporary file and rename to avoid partial JSON writes. ZIP import validates Windows-reserved device names, forbidden filename characters, trailing dots/spaces, case collisions, and file/directory conflicts both during validation and extraction, so validation cannot be bypassed by changing the archive between those steps. This is defense-in-depth for the local mod store; it does not sandbox the native DLL.  Remote calls have a 10-second wait limit. If a remote thread times out or its wait result is uncertain, the host marks that PID indeterminate and quarantines it from further native-mod operations until the process exits; it deliberately does not race shutdown/unload against a possibly active initializer. Per-mod UI status lists each discovered target PID and its latest lifecycle result. Enabling calls the version function and initialization function inside each currently running supported target. The app scans every five seconds while running, so enabled mods are also applied when a supported shell process appears later. The per-target lifecycle panel reports detected, loading, initializing, initialized, stopping, unloaded, failed, rolled-back, and indeterminate states independently for each PID. Disabling calls WmodShutdownV1 and attempts to unload the DLL from matching supported processes. If a load attempt fails on a present target (including ABI mismatch or an initialization failure), the host disables the mod and attempts to roll back partial loads instead of retrying that failure every five seconds.
 
-## SDK ABI v1
+## SDK ABI v2
 
-Include sdk/native-mod/00047_mod_api.h when building a native x64 DLL. The exact export ABI is:
+Include sdk/native-mod/00047_mod_api.h when building a native x64 DLL. The exact export contract is:
 
-- WmodGetApiVersion() returns 1.
+- WmodGetApiVersion() returns 2.
 - WmodInitializeV1() returns non-zero if initialization succeeded.
-- WmodShutdownV1() removes hooks and releases mod-owned resources before unload.
+- WmodShutdownV1() releases mod-owned resources and disables/removes tracked hooks.
+- WmodIsInitializedV1() reports whether initialization is active.
+- WmodCanUnloadV1() reports whether the module has no remaining registered hooks or detectable thread instruction/stack references to its image. The host requires this check to pass before FreeLibrary; otherwise it leaves the DLL mapped.
+
+ABI version 2 adds the two lifecycle-query exports needed to recover safely from a deferred unload. Packages with only the original three exports are not accepted by this SDK version.
 
 A no-op C++ sample is in samples/native-mod. It writes debug output only, so it is safe as a loader-lifecycle example without modifying the desktop.
 
@@ -65,7 +69,7 @@ Validate a package independently at any time:
 
     python tools/validate_native_mod.py dist/my-mod.zip
 
-Validation checks archive and decompression limits, path traversal, case-collisions, Windows-reserved names and file/directory conflicts, symbolic links and encryption, manifest fields, allowed target process names, the x64 PE32+ machine type, export-table bounds and the three required lifecycle exports. All archive entries are read to verify their CRCs. Invalid packages fail before an output package is committed.
+Validation checks archive and decompression limits, path traversal, case-collisions, Windows-reserved names and file/directory conflicts, symbolic links and encryption, manifest fields, allowed target process names, the x64 PE32+ machine type, export-table bounds and the five required lifecycle exports. All archive entries are read to verify their CRCs. Invalid packages fail before an output package is committed.
 
 The author tools do not replace the application's independent validation at installation time, and they do not provide a security sandbox or certify that a DLL is safe. They confirm the package structure and ABI prerequisites only. Regression tests include a synthetic PE32+ export-table fixture, invalid package cases, and deterministic packaging:
 

@@ -11,7 +11,7 @@
 // version, calls WmodInitializeV1, and calls WmodShutdownV1 before unloading.
 // Native mods execute in-process and are not sandboxed.
 
-#define WMOD_00047_ABI_VERSION 1u
+#define WMOD_00047_ABI_VERSION 2u
 
 #ifdef WMOD_BUILD_DLL
 #define WMOD_00047_EXPORT extern "C" __declspec(dllexport)

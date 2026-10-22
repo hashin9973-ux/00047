@@ -2,13 +2,20 @@
 
 #include <Windows.h>
 #include <atomic>
-#include <cassert>
+#include <cstdio>
 #include <thread>
 
 using TestFunction = int(__cdecl*)(int);
 static void* g_originalAddress = nullptr;
 static std::atomic<bool> g_holdDetour{false};
 static std::atomic<bool> g_insideDetour{false};
+
+#define CHECK(expression) do { \
+    if (!(expression)) { \
+        std::fprintf(stderr, "CHECK failed at %s:%d: %s\\n", __FILE__, __LINE__, #expression); \
+        return __LINE__; \
+    } \
+} while (0)
 
 extern "C" __declspec(noinline) int __cdecl HookTestTarget(int value) {
     volatile int result = value + 2;
@@ -30,37 +37,37 @@ extern "C" __declspec(noinline) int __cdecl HookTestDetour(int value) {
 }
 
 int main() {
-    assert(HookTestTarget(5) == 7);
+    CHECK(HookTestTarget(5) == 7);
 
     WH_DISASM_RESULT instruction{};
-    assert(Wh_Disasm(reinterpret_cast<void*>(&HookTestTarget), &instruction) == TRUE);
-    assert(instruction.length > 0 && instruction.length <= 15);
-    assert(instruction.text[0] != '\0');
+    CHECK(Wh_Disasm(reinterpret_cast<void*>(&HookTestTarget), &instruction) == TRUE);
+    CHECK(instruction.length > 0 && instruction.length <= 15);
+    CHECK(instruction.text[0] != '\0');
 
-    assert(Wh_SetFunctionHook(
+    CHECK(Wh_SetFunctionHook(
         reinterpret_cast<void*>(&HookTestTarget),
         reinterpret_cast<void*>(&HookTestDetour),
         &g_originalAddress) == TRUE);
-    assert(g_originalAddress != nullptr);
-    assert(HookTestTarget(5) == 7); // registration is deferred until apply
+    CHECK(g_originalAddress != nullptr);
+    CHECK(HookTestTarget(5) == 7); // registration is deferred until apply
 
-    assert(Wh_ApplyHookOperations() == TRUE);
-    assert(HookTestTarget(5) == 17);
+    CHECK(Wh_ApplyHookOperations() == TRUE);
+    CHECK(HookTestTarget(5) == 17);
 
-    assert(Wh_RemoveFunctionHook(reinterpret_cast<void*>(&HookTestTarget)) == TRUE);
-    assert(HookTestTarget(5) == 17); // removal is also queued
-    assert(Wh_ApplyHookOperations() == TRUE);
-    assert(HookTestTarget(5) == 7);
-    assert(wmod::windhawk_hook_compat::CanUnload() == FALSE); // lifecycle is still accepting hooks
+    CHECK(Wh_RemoveFunctionHook(reinterpret_cast<void*>(&HookTestTarget)) == TRUE);
+    CHECK(HookTestTarget(5) == 17); // removal is also queued
+    CHECK(Wh_ApplyHookOperations() == TRUE);
+    CHECK(HookTestTarget(5) == 7);
+    CHECK(wmod::windhawk_hook_compat::CanUnload() == FALSE); // lifecycle is still accepting hooks
 
     // Exercise the critical unload race: a detour may still be executing even
     // after its entry point is restored. The quiescence query must fail closed
     // until that callback and its return path have left the module image.
-    assert(Wh_SetFunctionHook(
+    CHECK(Wh_SetFunctionHook(
         reinterpret_cast<void*>(&HookTestTarget),
         reinterpret_cast<void*>(&HookTestDetour),
         &g_originalAddress) == TRUE);
-    assert(Wh_ApplyHookOperations() == TRUE);
+    CHECK(Wh_ApplyHookOperations() == TRUE);
     g_insideDetour.store(false, std::memory_order_release);
     g_holdDetour.store(true, std::memory_order_release);
     int result = 0;
@@ -69,14 +76,14 @@ int main() {
     for (int i = 0; i < 2000 && !g_insideDetour.load(std::memory_order_acquire); ++i) {
         Sleep(1);
     }
-    assert(g_insideDetour.load(std::memory_order_acquire));
+    CHECK(g_insideDetour.load(std::memory_order_acquire));
 
     wmod::windhawk_hook_compat::ShutdownHookOperations();
-    assert(wmod::windhawk_hook_compat::CanUnload() == FALSE);
+    CHECK(wmod::windhawk_hook_compat::CanUnload() == FALSE);
 
     g_holdDetour.store(false, std::memory_order_release);
     caller.join();
-    assert(result == 123);
-    assert(wmod::windhawk_hook_compat::CanUnload() == TRUE);
+    CHECK(result == 123);
+    CHECK(wmod::windhawk_hook_compat::CanUnload() == TRUE);
     return 0;
 }
