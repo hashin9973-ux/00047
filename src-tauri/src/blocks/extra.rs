@@ -1,7 +1,6 @@
 //! Additional Windows automation conditions/actions. All OS commands are launched without a console window.
 use super::{check_timeout, rng, spec, text, Block, Cat, NodeCx, Outcome};
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -10,7 +9,7 @@ use std::{
     path::Path,
     pin::Pin,
     process::Stdio,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 use tokio::io::AsyncReadExt;
 
@@ -309,7 +308,7 @@ impl Block for DiskSpace {
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&disk_spec(),c)?;let d=text(c,"drive");if d.len()!=2||!d.ends_with(':')||!d.chars().next().unwrap_or(' ').is_ascii_alphabetic(){return Err("Drive must look like C:".into())};wait_settings(c).map(|_|())}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
   self.validate(&cx.cfg)?;let drive=text(&cx.cfg,"drive");let metric=text(&cx.cfg,"metric");let op=text(&cx.cfg,"op");let threshold=rng(&cx.cfg,"threshold",15.0,0.0,1_000_000.0,"Threshold")?;let(behavior,poll,stable,timeout)=wait_settings(&cx.cfg)?;
-  poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{let d=disk_sample(cx,&drive).await?;let free_pct=if d.total==0{0.0}else{d.free as f64/d.total as f64*100.0};let v=match metric.as_str(){"used_pct"=>100.0-free_pct,"free_gb"=>d.free as f64/1_000_000_000.0,_=>free_pct};(cx.report)("running",None,format!("{drive}: {v:.1} {}",if metric=="free_gb"{"GB"}{"%"}));Ok(if op=="above"{v>threshold}else{v<=threshold})})as Probe<'_>).await
+  poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{let d=disk_sample(cx,&drive).await?;let free_pct=if d.total==0{0.0}else{d.free as f64/d.total as f64*100.0};let v=match metric.as_str(){"used_pct"=>100.0-free_pct,"free_gb"=>d.free as f64/1_000_000_000.0,_=>free_pct};(cx.report)("running",None,format!("{drive}: {v:.1} {}",if metric=="free_gb" { "GB" } else { "%" }));Ok(if op=="above"{v>threshold}else{v<=threshold})})as Probe<'_>).await
  }
 }
 
@@ -530,7 +529,7 @@ struct DeleteFile;
 impl Block for DeleteFile{
  fn title(&self)-> &'static str{"Delete or Recycle File"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn spec(&self)->Option<Value>{Some(delete_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&delete_spec(),c)?;if text(c,"path").contains('\0'){return Err("Path must not contain NUL characters".into())};Ok(())}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let path=text(&cx.cfg,"path");let mode=text(&cx.cfg,"mode");if !Path::new(&path).exists(){return Err("Path does not exist".into())};if mode=="permanent"{if Path::new(&path).is_dir(){std::fs::remove_dir_all(&path).map_err(|e|format!("Directory delete failed: {e}"))?}else{std::fs::remove_file(&path).map_err(|e|format!("File delete failed: {e}"))?}}else{let script=format!("Add-Type -AssemblyName Microsoft.VisualBasic; $p={}; if([System.IO.Directory]::Exists($p)){{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p,'OnlyErrorDialogs','SendToRecycleBin')}}elseif([System.IO.File]::Exists($p)){{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p,'OnlyErrorDialogs','SendToRecycleBin')}}else{{throw 'Path does not exist'}}",ps_quote(&path));powershell(cx,&script).await?};(cx.log)("warn",format!("File deletion operation '{}' completed for '{}'",mode,path));Ok(Outcome::Satisfied)}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let path=text(&cx.cfg,"path");let mode=text(&cx.cfg,"mode");if !Path::new(&path).exists(){return Err("Path does not exist".into())};if mode=="permanent"{if Path::new(&path).is_dir(){std::fs::remove_dir_all(&path).map_err(|e|format!("Directory delete failed: {e}"))?}else{std::fs::remove_file(&path).map_err(|e|format!("File delete failed: {e}"))?}}else{let script=format!("Add-Type -AssemblyName Microsoft.VisualBasic; $p={}; if([System.IO.Directory]::Exists($p)){{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p,'OnlyErrorDialogs','SendToRecycleBin')}}elseif([System.IO.File]::Exists($p)){{[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p,'OnlyErrorDialogs','SendToRecycleBin')}}else{{throw 'Path does not exist'}}",ps_quote(&path));let _ = powershell(cx,&script).await?;};(cx.log)("warn",format!("File deletion operation '{}' completed for '{}'",mode,path));Ok(Outcome::Satisfied)}
 }
 
 fn sound_spec()->Value{simple_action_spec("Play Sound or Speak Text","volume-2","Plays a WAV file or speaks text using Windows text-to-speech.",vec![json!({"key":"mode","label":"Operation","type":"select","default":"speak","options":[["speak","Speak text"],["sound","Play WAV file"]]}),json!({"key":"text","label":"Text to speak","type":"text","required":true,"maxLen":2000,"show":{"key":"mode","eq":"speak"}}),json!({"key":"path","label":"WAV file path","type":"text","required":true,"maxLen":2048,"show":{"key":"mode","eq":"sound"}}),json!({"preset":"onFail"})],"Audio: {mode}","Text-to-speech uses the Windows System.Speech assembly. WAV playback waits until playback finishes.")}
