@@ -85,7 +85,11 @@ pub struct NativeTarget {
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum NativeModTargetState {
-    Running,
+    Detected,
+    Loading,
+    Initializing,
+    Initialized,
+    Stopping,
     Ineligible,
     Failed,
     Indeterminate,
@@ -161,15 +165,19 @@ fn merge_rollback_statuses(
                     current.clone()
                 }
                 (NativeModTargetState::Failed, _) => old.clone(),
-                (NativeModTargetState::Running, NativeModTargetState::Unloaded)
-                | (NativeModTargetState::Running, NativeModTargetState::NotLoaded) => {
-                    NativeModTargetStatus {
-                        pid: current.pid,
-                        executable: current.executable.clone(),
-                        state: NativeModTargetState::RolledBack,
-                        detail: "This target's load was rolled back after another target failed.".into(),
-                    }
-                }
+                (
+                    NativeModTargetState::Initialized
+                    | NativeModTargetState::Running
+                    | NativeModTargetState::Loading
+                    | NativeModTargetState::Initializing
+                    | NativeModTargetState::Stopping,
+                    NativeModTargetState::Unloaded | NativeModTargetState::NotLoaded,
+                ) => NativeModTargetStatus {
+                    pid: current.pid,
+                    executable: current.executable.clone(),
+                    state: NativeModTargetState::RolledBack,
+                    detail: "This target's load was rolled back after another target failed.".into(),
+                },
                 _ => current.clone(),
             }
         })
@@ -274,16 +282,59 @@ impl NativeModManager {
         }
     }
 
+    fn set_target_status(&self, id: &str, status: NativeModTargetStatus) {
+        if let Ok(mut stored) = self.target_statuses.lock() {
+            let statuses = stored.entry(id.to_string()).or_default();
+            if let Some(existing) = statuses.iter_mut().find(|existing| existing.pid == status.pid) {
+                *existing = status;
+            } else {
+                statuses.push(status);
+                statuses.sort_by_key(|entry| entry.pid);
+            }
+        }
+    }
+
+    fn mark_loaded_targets_stopping(&self, id: &str) {
+        let statuses = self.target_status_snapshot(id)
+            .into_iter()
+            .map(|target| {
+                if matches!(
+                    target.state,
+                    NativeModTargetState::Initialized
+                        | NativeModTargetState::Running
+                        | NativeModTargetState::Loading
+                        | NativeModTargetState::Initializing
+                ) {
+                    NativeModTargetStatus {
+                        state: NativeModTargetState::Stopping,
+                        detail: "Shutdown and unload are in progress.".into(),
+                        ..target
+                    }
+                } else {
+                    target
+                }
+            })
+            .collect();
+        self.set_target_statuses(id, statuses);
+    }
+
     fn mark_running_targets_indeterminate(&self, id: &str, reason: &str) {
         let unresolved = self
             .target_status_snapshot(id)
             .into_iter()
             .map(|target| {
-                if target.state == NativeModTargetState::Running {
+                if matches!(
+                    target.state,
+                    NativeModTargetState::Initialized
+                        | NativeModTargetState::Running
+                        | NativeModTargetState::Loading
+                        | NativeModTargetState::Initializing
+                        | NativeModTargetState::Stopping
+                ) {
                     NativeModTargetStatus {
                         state: NativeModTargetState::Indeterminate,
                         detail: format!(
-                            "Unloading could not be confirmed: {reason}. The DLL may still be present; restart this target process to guarantee unloading."
+                            "Unload/load completion could not be confirmed: {reason}. The DLL may still be present; restart this target process to guarantee recovery."
                         ),
                         ..target
                     }
@@ -517,6 +568,7 @@ impl NativeModManager {
                 return Err(status);
             }
         };
+        self.mark_loaded_targets_stopping(id);
         match unload_from_targets(&manifest.targets, &dll) {
             Ok(report) => {
                 self.set_target_statuses(id, report.target_statuses);
@@ -593,15 +645,16 @@ impl NativeModManager {
             persistence_warning = Some("native mod state lock is unavailable".into());
         }
 
+        let previous_target_statuses = self.target_status_snapshot(id);
+        self.mark_loaded_targets_stopping(id);
         let cleanup_warning = match self.package_dir(id) {
             Ok(folder) => match load_manifest(&folder) {
                 Ok(manifest) => match module_file_path(&folder, &manifest.module) {
                     Ok(dll) => match unload_from_targets(&manifest.targets, &dll) {
                         Ok(report) => {
-                            let previous = self.target_status_snapshot(id);
                             self.set_target_statuses(
                                 id,
-                                merge_rollback_statuses(&previous, &report.target_statuses),
+                                merge_rollback_statuses(&previous_target_statuses, &report.target_statuses),
                             );
                             if report.errors.is_empty() {
                                 None
@@ -660,22 +713,48 @@ impl NativeModManager {
                 });
                 continue;
             }
-            match inject_into_process(target.pid, &target.executable, &dll) {
+            let pid = target.pid;
+            let executable = target.executable.clone();
+            self.set_target_status(
+                id,
+                NativeModTargetStatus {
+                    pid,
+                    executable: executable.clone(),
+                    state: NativeModTargetState::Detected,
+                    detail: "Supported target discovered; preparing native mod load.".into(),
+                },
+            );
+            let status_id = id.to_string();
+            let status_executable = executable.clone();
+            let mut on_phase = |state: NativeModTargetState, detail: String| {
+                self.set_target_status(
+                    &status_id,
+                    NativeModTargetStatus {
+                        pid,
+                        executable: status_executable.clone(),
+                        state,
+                        detail,
+                    },
+                );
+            };
+            let result = inject_into_process(pid, &executable, &dll, &mut on_phase);
+            drop(on_phase);
+            match result {
                 Ok(()) => {
                     successes += 1;
                     per_target.push(NativeModTargetStatus {
-                        pid: target.pid,
-                        executable: target.executable,
-                        state: NativeModTargetState::Running,
+                        pid,
+                        executable,
+                        state: NativeModTargetState::Initialized,
                         detail: "The DLL is present and the loader completed successfully.".into(),
                     });
                 }
                 Err(e) => {
-                    let indeterminate = target_operation_is_indeterminate(target.pid);
-                    failures.push(format!("{} (PID {}): {e}", target.executable, target.pid));
+                    let indeterminate = target_operation_is_indeterminate(pid);
+                    failures.push(format!("{executable} (PID {pid}): {e}"));
                     per_target.push(NativeModTargetStatus {
-                        pid: target.pid,
-                        executable: target.executable,
+                        pid,
+                        executable,
                         state: if indeterminate {
                             NativeModTargetState::Indeterminate
                         } else {
@@ -1150,11 +1229,21 @@ fn discover_targets() -> Result<Vec<NativeTarget>, String> {
 }
 
 #[cfg(windows)]
-fn inject_into_process(pid: u32, executable: &str, module: &Path) -> Result<(), String> {
-    win::inject(pid, executable, module)
+fn inject_into_process(
+    pid: u32,
+    executable: &str,
+    module: &Path,
+    on_phase: &mut dyn FnMut(NativeModTargetState, String),
+) -> Result<(), String> {
+    win::inject(pid, executable, module, on_phase)
 }
 #[cfg(not(windows))]
-fn inject_into_process(_pid: u32, _executable: &str, _module: &Path) -> Result<(), String> {
+fn inject_into_process(
+    _pid: u32,
+    _executable: &str,
+    _module: &Path,
+    _on_phase: &mut dyn FnMut(NativeModTargetState, String),
+) -> Result<(), String> {
     Err("native shell mods can only be loaded on Windows".into())
 }
 
@@ -1238,7 +1327,7 @@ fn unload_from_targets(targets: &[String], module: &Path) -> Result<NativeUnload
 
 #[cfg(windows)]
 mod win {
-    use super::{validate_pe_file, NativeTarget, SUPPORTED_TARGETS};
+    use super::{validate_pe_file, NativeModTargetState, NativeTarget, SUPPORTED_TARGETS};
     use std::{
         collections::HashSet,
         ffi::{c_char, c_void, OsStr, OsString},
@@ -1633,7 +1722,12 @@ mod win {
         Ok(())
     }
 
-    pub fn inject(pid: u32, executable: &str, module_path: &Path) -> Result<(), String> {
+    pub fn inject(
+        pid: u32,
+        executable: &str,
+        module_path: &Path,
+        on_phase: &mut dyn FnMut(NativeModTargetState, String),
+    ) -> Result<(), String> {
         // Serialize the full load/validate/initialize sequence so user actions and
         // periodic discovery cannot interleave lifecycle calls for native modules.
         let _operation = target_operation_gate()
@@ -1646,6 +1740,10 @@ mod win {
         validate_pe_file(module_path)?;
 
         if module_for_path(pid, module_path)?.is_some() {
+            on_phase(
+                NativeModTargetState::Initialized,
+                "The DLL is already loaded in this target; initialization was not repeated.".into(),
+            );
             return Ok(());
         }
 
@@ -1672,6 +1770,10 @@ mod win {
                 Ok(p) => p,
                 Err(e) => { VirtualFreeEx(process, remote_path, 0, MEM_RELEASE); CloseHandle(process); free_local_map(local_module); return Err(e); }
             };
+            on_phase(
+                NativeModTargetState::Loading,
+                "Loading the DLL in the target process.".into(),
+            );
             let loaded = remote_call(pid, process, load_library, remote_path);
             if loaded.is_ok() { VirtualFreeEx(process, remote_path, 0, MEM_RELEASE); }
             let result = match loaded {
@@ -1687,6 +1789,10 @@ mod win {
                 Some(m) => m.mod_base_addr as usize,
                 None => { CloseHandle(process); free_local_map(local_module); return Err("DLL loaded but was not found in the target module list".into()); }
             };
+            on_phase(
+                NativeModTargetState::Initializing,
+                "DLL loaded; checking its ABI and running initialization.".into(),
+            );
             let api_version = remote_call(pid, process, (remote_module + api_rva) as *mut c_void, ptr::null_mut());
             if api_version != Ok(1) {
                 // Only attempt rollback if the version-call thread is known to have
@@ -1716,6 +1822,10 @@ mod win {
 
             CloseHandle(process);
             free_local_map(local_module);
+            on_phase(
+                NativeModTargetState::Initialized,
+                "ABI validation and mod initialization completed.".into(),
+            );
             Ok(())
         }
     }
@@ -2154,7 +2264,7 @@ mod tests {
             NativeModTargetStatus {
                 pid: 10,
                 executable: "explorer.exe".into(),
-                state: NativeModTargetState::Running,
+                state: NativeModTargetState::Initialized,
                 detail: "initialized".into(),
             },
             NativeModTargetStatus {
