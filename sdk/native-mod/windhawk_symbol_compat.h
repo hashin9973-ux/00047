@@ -11,6 +11,7 @@
 #include <Windows.h>
 #include <DbgHelp.h>
 #include <Psapi.h>
+#include "windhawk_hook_compat.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -19,6 +20,7 @@
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -342,6 +344,184 @@ inline BOOL Wh_FindNextSymbol(HANDLE symSearch, WH_FIND_SYMBOL* findData) {
 inline void Wh_FindCloseSymbol(HANDLE symSearch) {
     if (!symSearch) return;
     delete reinterpret_cast<::wmod::windhawk_symbol_compat::SearchContext*>(symSearch);
+}
+
+
+// Source-level compatibility for Windhawk's symbol-selected hook API.
+// Resolution is based on the bounded local DbgHelp snapshot; online cache,
+// hybrid-module support, and cross-mod hook coordination are not implemented.
+#ifndef WMOD_WINDHAWK_HOOK_SYMBOL_TYPES
+#define WMOD_WINDHAWK_HOOK_SYMBOL_TYPES
+typedef struct tagWH_SYMBOL_HOOK {
+    const struct {
+        PCWSTR string;
+        size_t length;
+    }* symbols;
+    size_t symbolsCount;
+    void** pOriginalFunction;
+    void* hookFunction;
+    bool optional;
+} WH_SYMBOL_HOOK;
+
+typedef struct tagWH_HOOK_SYMBOLS_OPTIONS {
+    size_t optionsSize;
+    PCWSTR symbolServer;
+    BOOL noUndecoratedSymbols;
+    PCWSTR onlineCacheUrl;
+} WH_HOOK_SYMBOLS_OPTIONS;
+#endif
+
+inline BOOL Wh_HookSymbols(HMODULE module,
+    const WH_SYMBOL_HOOK* symbolHooks,
+    size_t symbolHooksCount,
+    const WH_HOOK_SYMBOLS_OPTIONS* options) {
+    if (!module) return FALSE;
+    if (symbolHooksCount == 0) return TRUE;
+    if (!symbolHooks || symbolHooksCount > 2048) return FALSE;
+
+    struct HookOptionsV1 {
+        size_t optionsSize;
+        PCWSTR symbolServer;
+        BOOL noUndecoratedSymbols;
+    };
+    PCWSTR symbolServer = nullptr;
+    BOOL noUndecoratedSymbols = FALSE;
+    if (options) {
+        if (options->optionsSize == sizeof(WH_HOOK_SYMBOLS_OPTIONS)) {
+            symbolServer = options->symbolServer;
+            noUndecoratedSymbols = options->noUndecoratedSymbols;
+            // onlineCacheUrl is intentionally ignored by this local-only adapter.
+        } else if (options->optionsSize == sizeof(HookOptionsV1)) {
+            const auto* v1 = reinterpret_cast<const HookOptionsV1*>(options);
+            symbolServer = v1->symbolServer;
+            noUndecoratedSymbols = v1->noUndecoratedSymbols;
+        } else if (options->optionsSize != 0) {
+            return FALSE;
+        }
+    }
+
+    struct ResolvedHook {
+        size_t index = 0;
+        void* target = nullptr;
+    };
+    std::vector<ResolvedHook> resolved;
+    std::vector<bool> found;
+    try {
+        resolved.reserve(symbolHooksCount);
+        found.assign(symbolHooksCount, false);
+        for (size_t i = 0; i < symbolHooksCount; ++i) {
+            if (symbolHooks[i].symbolsCount > 512 ||
+                (symbolHooks[i].symbolsCount != 0 && !symbolHooks[i].symbols)) {
+                return FALSE;
+            }
+            for (size_t j = 0; j < symbolHooks[i].symbolsCount; ++j) {
+                const auto& selector = symbolHooks[i].symbols[j];
+                if (!selector.string || selector.length == 0 ||
+                    selector.length > ::wmod::windhawk_symbol_compat::kMaxSymbolNameChars) {
+                    return FALSE;
+                }
+            }
+        }
+    } catch (...) {
+        return FALSE;
+    }
+
+    MODULEINFO moduleInfo{};
+    if (!GetModuleInformation(GetCurrentProcess(), module, &moduleInfo, sizeof(moduleInfo)) ||
+        !moduleInfo.lpBaseOfDll || moduleInfo.SizeOfImage == 0) {
+        return FALSE;
+    }
+
+    WH_FIND_SYMBOL_OPTIONS findOptions{};
+    findOptions.optionsSize = sizeof(findOptions);
+    findOptions.symbolServer = symbolServer;
+    findOptions.noUndecoratedSymbols = noUndecoratedSymbols;
+
+    WH_FIND_SYMBOL current{};
+    HANDLE search = Wh_FindFirstSymbol(module, &findOptions, &current);
+    if (!search) {
+        for (size_t i = 0; i < symbolHooksCount; ++i) {
+            if (!symbolHooks[i].optional) return FALSE;
+        }
+        return TRUE;
+    }
+
+    try {
+        // One resolved symbol satisfies the first still-unresolved selector
+        // group that names it, matching Windhawk's alternative-name semantics.
+        do {
+            const std::wstring_view undecorated =
+                current.symbol ? std::wstring_view(current.symbol) : std::wstring_view();
+            const std::wstring_view decorated =
+                current.symbolDecorated ? std::wstring_view(current.symbolDecorated) : std::wstring_view();
+            for (size_t i = 0; i < symbolHooksCount; ++i) {
+                if (found[i]) continue;
+                const WH_SYMBOL_HOOK& hook = symbolHooks[i];
+                bool matches = false;
+                for (size_t j = 0; j < hook.symbolsCount; ++j) {
+                    const auto& selector = hook.symbols[j];
+                    const std::wstring_view wanted(selector.string, selector.length);
+                    if (wanted == undecorated || wanted == decorated) {
+                        matches = true;
+                        break;
+                    }
+                }
+                if (matches) {
+                    found[i] = true;
+                    resolved.push_back({i, current.address});
+                    break;
+                }
+            }
+        } while (Wh_FindNextSymbol(search, &current));
+    } catch (...) {
+        Wh_FindCloseSymbol(search);
+        return FALSE;
+    }
+    Wh_FindCloseSymbol(search);
+
+    for (size_t i = 0; i < symbolHooksCount; ++i) {
+        if (!found[i] && !symbolHooks[i].optional) return FALSE;
+    }
+
+    struct RegisteredHook {
+        void* target = nullptr;
+        void** originalSlot = nullptr;
+        void* previousOriginal = nullptr;
+    };
+    std::vector<RegisteredHook> registered;
+    try {
+        registered.reserve(resolved.size());
+        for (const auto& match : resolved) {
+            const auto& hook = symbolHooks[match.index];
+            if (!hook.hookFunction) continue;
+            void* previousOriginal = hook.pOriginalFunction ? *hook.pOriginalFunction : nullptr;
+            if (!Wh_SetFunctionHook(match.target, hook.hookFunction, hook.pOriginalFunction)) {
+                if (hook.pOriginalFunction) *hook.pOriginalFunction = previousOriginal;
+                for (auto it = registered.rbegin(); it != registered.rend(); ++it) {
+                    (void)Wh_RemoveFunctionHook(it->target);
+                    if (it->originalSlot) *it->originalSlot = it->previousOriginal;
+                }
+                return FALSE;
+            }
+            registered.push_back({match.target, hook.pOriginalFunction, previousOriginal});
+        }
+
+        // Publish direct symbol addresses only after every requested detour was
+        // registered, avoiding partial output on failure.
+        for (const auto& match : resolved) {
+            const auto& hook = symbolHooks[match.index];
+            if (!hook.hookFunction && hook.pOriginalFunction) {
+                *hook.pOriginalFunction = match.target;
+            }
+        }
+        return TRUE;
+    } catch (...) {
+        for (auto it = registered.rbegin(); it != registered.rend(); ++it) {
+            (void)Wh_RemoveFunctionHook(it->target);
+            if (it->originalSlot) *it->originalSlot = it->previousOriginal;
+        }
+        return FALSE;
+    }
 }
 
 #endif // WMOD_00047_WINDHAWK_SYMBOL_COMPAT_H
