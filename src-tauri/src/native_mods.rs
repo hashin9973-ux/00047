@@ -578,10 +578,12 @@ impl NativeModManager {
                     self.set_status(id, status.clone());
                     Ok(status)
                 } else {
+                    let details = report.errors.join("; ");
+                    self.mark_running_targets_indeterminate(id, &details);
                     let status = format!(
                         "Disabled; unloaded from {} process(es); unload warning: {}",
                         report.unloaded,
-                        report.errors.join("; ")
+                        details
                     );
                     self.set_status(id, status.clone());
                     Err(status)
