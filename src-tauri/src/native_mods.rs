@@ -474,10 +474,21 @@ impl NativeModManager {
             }
         };
         match unload_from_targets(&manifest.targets, &dll) {
-            Ok(count) => {
-                let status = format!("Disabled; unloaded from {count} process(es)");
-                self.set_status(id, status.clone());
-                Ok(status)
+            Ok(report) => {
+                self.set_target_statuses(id, report.target_statuses);
+                if report.errors.is_empty() {
+                    let status = format!("Disabled; unloaded from {} process(es)", report.unloaded);
+                    self.set_status(id, status.clone());
+                    Ok(status)
+                } else {
+                    let status = format!(
+                        "Disabled; unloaded from {} process(es); unload warning: {}",
+                        report.unloaded,
+                        report.errors.join("; ")
+                    );
+                    self.set_status(id, status.clone());
+                    Err(status)
+                }
             }
             Err(e) => {
                 let status = format!("Disabled; unload warning: {e}");
@@ -496,6 +507,9 @@ impl NativeModManager {
             fs::remove_dir_all(&folder).map_err(|e| format!("remove native mod package: {e}"))?;
         }
         if let Ok(mut statuses) = self.statuses.lock() {
+            statuses.remove(id);
+        }
+        if let Ok(mut statuses) = self.target_statuses.lock() {
             statuses.remove(id);
         }
         Ok(())
@@ -522,13 +536,30 @@ impl NativeModManager {
             persistence_warning = Some("native mod state lock is unavailable".into());
         }
 
-        let cleanup_warning = self.package_dir(id)
-            .and_then(|folder| load_manifest(&folder).map(|manifest| (folder, manifest)))
-            .and_then(|(folder, manifest)| {
-                module_file_path(&folder, &manifest.module)
-                    .and_then(|dll| unload_from_targets(&manifest.targets, &dll).map(|_| ()))
-            })
-            .err();
+        let cleanup_warning = match self.package_dir(id) {
+            Ok(folder) => match load_manifest(&folder) {
+                Ok(manifest) => match module_file_path(&folder, &manifest.module) {
+                    Ok(dll) => match unload_from_targets(&manifest.targets, &dll) {
+                        Ok(report) => {
+                            let previous = self.target_status_snapshot(id);
+                            self.set_target_statuses(
+                                id,
+                                merge_rollback_statuses(&previous, &report.target_statuses),
+                            );
+                            if report.errors.is_empty() {
+                                None
+                            } else {
+                                Some(report.errors.join("; "))
+                            }
+                        }
+                        Err(error) => Some(error),
+                    },
+                    Err(error) => Some(error),
+                },
+                Err(error) => Some(error),
+            },
+            Err(error) => Some(error),
+        };
 
         let mut status = format!("Disabled after load failure: {reason}");
         if let Some(warning) = cleanup_warning {
@@ -551,21 +582,51 @@ impl NativeModManager {
             .collect();
 
         if matching.is_empty() {
+            self.set_target_statuses(id, Vec::new());
             return Ok("Enabled; waiting for a supported target process".into());
         }
 
         let mut successes = 0usize;
         let mut failures = Vec::new();
+        let mut per_target = Vec::new();
         for target in matching {
             if !target.eligible {
                 failures.push(format!("{} (PID {}): {}", target.executable, target.pid, target.detail));
+                per_target.push(NativeModTargetStatus {
+                    pid: target.pid,
+                    executable: target.executable,
+                    state: NativeModTargetState::Ineligible,
+                    detail: target.detail,
+                });
                 continue;
             }
             match inject_into_process(target.pid, &target.executable, &dll) {
-                Ok(()) => successes += 1,
-                Err(e) => failures.push(format!("{} (PID {}): {e}", target.executable, target.pid)),
+                Ok(()) => {
+                    successes += 1;
+                    per_target.push(NativeModTargetStatus {
+                        pid: target.pid,
+                        executable: target.executable,
+                        state: NativeModTargetState::Running,
+                        detail: "The DLL is present and the loader completed successfully.".into(),
+                    });
+                }
+                Err(e) => {
+                    let indeterminate = target_operation_is_indeterminate(target.pid);
+                    failures.push(format!("{} (PID {}): {e}", target.executable, target.pid));
+                    per_target.push(NativeModTargetStatus {
+                        pid: target.pid,
+                        executable: target.executable,
+                        state: if indeterminate {
+                            NativeModTargetState::Indeterminate
+                        } else {
+                            NativeModTargetState::Failed
+                        },
+                        detail: e,
+                    });
+                }
             }
         }
+        self.set_target_statuses(id, per_target);
         if !failures.is_empty() {
             return Err(format!("loaded into {successes} process(es); {}", failures.join("; ")));
         }
