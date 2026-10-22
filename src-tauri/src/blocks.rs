@@ -7,7 +7,38 @@ use std::{
     sync::OnceLock,
     time::{Duration, Instant},
 };
+#[cfg(windows)]
+use std::process::Stdio;
 use tokio_util::sync::CancellationToken;
+
+#[cfg(windows)]
+const MAX_COMMAND_OUTPUT_BYTES: usize = 16 * 1024;
+
+#[cfg(windows)]
+async fn read_bounded_output<R>(mut reader: R, limit: usize) -> Result<(Vec<u8>, bool), String>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut output = Vec::with_capacity(limit.min(8192));
+    let mut buffer = [0u8; 8192];
+    let mut truncated = false;
+
+    loop {
+        let read = reader.read(&mut buffer).await.map_err(|e| format!("read command output: {e}"))?;
+        if read == 0 {
+            break;
+        }
+        let keep = (limit - output.len()).min(read);
+        output.extend_from_slice(&buffer[..keep]);
+        if keep < read {
+            truncated = true;
+        }
+    }
+
+    Ok((output, truncated))
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Cat {
@@ -495,6 +526,123 @@ impl Block for LaunchFile {
     }
 }
 
+fn run_command_spec() -> Value {
+    json!({
+        "category": "action",
+        "title": "Run Command",
+        "icon": "proc",
+        "description": "Runs a PowerShell command in the background without opening a terminal window.",
+        "fields": [
+            {"key":"command","label":"PowerShell command","type":"text","required":true,"maxLen":8000},
+            {"key":"workingDirectory","label":"Working directory (optional)","type":"text","maxLen":1000,"default":""},
+            {"preset":"timeout","default":30},
+            {"preset":"onFail"}
+        ],
+        "summary": "Run PowerShell command",
+        "help": "Runs powershell.exe without a console window. Standard output and standard error are captured in workflow logs, up to 16 KiB each. Commands run with the current Windows user's permissions and are not sandboxed. Leave the working directory blank to inherit 00047's working directory; otherwise use an absolute path. Timeout 0 disables the timeout."
+    })
+}
+
+struct RunCommand;
+#[async_trait]
+impl Block for RunCommand {
+    fn title(&self) -> &'static str { "Run Command" }
+    fn category(&self) -> Cat { Cat::Action }
+    fn supports_timeout(&self) -> bool { true }
+    fn risky(&self) -> bool { true }
+    fn spec(&self) -> Option<Value> { Some(run_command_spec()) }
+
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        spec::validate(&run_command_spec(), c)?;
+        if text(c, "command").contains('\0') {
+            return Err("PowerShell command must not contain NUL characters.".into());
+        }
+        if text(c, "workingDirectory").contains('\0') {
+            return Err("Working directory must not contain NUL characters.".into());
+        }
+        Ok(())
+    }
+
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        self.validate(&cx.cfg)?;
+
+        #[cfg(not(windows))]
+        {
+            let _ = cx;
+            return Err("Run Command is supported only on Windows.".into());
+        }
+
+        #[cfg(windows)]
+        {
+            let command = text(&cx.cfg, "command");
+            let script = format!(
+                "$ErrorActionPreference = 'Stop'; try {{\n{}\n}} catch {{ [Console]::Error.WriteLine($_.ToString()); exit 1 }}; if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }}",
+                command
+            );
+
+            let mut cmd = tokio::process::Command::new("powershell.exe");
+            cmd.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script.as_str()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+
+            let working_directory = text(&cx.cfg, "workingDirectory");
+            if !working_directory.is_empty() {
+                cmd.current_dir(&working_directory);
+            }
+
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.as_std_mut().creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
+
+            (cx.report)("running", None, "Executing PowerShell command (console hidden)".into());
+            let mut child = cmd.spawn().map_err(|e| format!("could not start PowerShell command: {e}"))?;
+            let stdout = child.stdout.take().ok_or_else(|| "PowerShell stdout pipe was unavailable".to_string())?;
+            let stderr = child.stderr.take().ok_or_else(|| "PowerShell stderr pipe was unavailable".to_string())?;
+            let stdout_reader = tokio::spawn(read_bounded_output(stdout, MAX_COMMAND_OUTPUT_BYTES));
+            let stderr_reader = tokio::spawn(read_bounded_output(stderr, MAX_COMMAND_OUTPUT_BYTES));
+
+            let status = tokio::select! {
+                result = child.wait() => result.map_err(|e| format!("could not wait for PowerShell command: {e}"))?,
+                _ = cx.token.cancelled() => return Err("cancelled".into()),
+            };
+
+            let (stdout_bytes, stdout_truncated) = stdout_reader
+                .await.map_err(|e| format!("stdout capture task failed: {e}"))??;
+            let (stderr_bytes, stderr_truncated) = stderr_reader
+                .await.map_err(|e| format!("stderr capture task failed: {e}"))??;
+            let stdout = String::from_utf8_lossy(&stdout_bytes).trim_end().to_string();
+            let stderr = String::from_utf8_lossy(&stderr_bytes).trim_end().to_string();
+
+            if !stdout.is_empty() {
+                (cx.log)("info", format!("stdout:\n{stdout}"));
+            }
+            if !stderr.is_empty() {
+                (cx.log)(if status.success() { "warn" } else { "error" }, format!("stderr:\n{stderr}"));
+            }
+            if stdout_truncated {
+                (cx.log)("warn", format!("stdout capture truncated at {MAX_COMMAND_OUTPUT_BYTES} bytes"));
+            }
+            if stderr_truncated {
+                (cx.log)("warn", format!("stderr capture truncated at {MAX_COMMAND_OUTPUT_BYTES} bytes"));
+            }
+
+            if status.success() {
+                Ok(Outcome::Satisfied)
+            } else {
+                let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "terminated".into());
+                let detail: String = stderr.chars().take(512).collect();
+                Err(format!(
+                    "PowerShell exited with code {code}{}",
+                    if detail.is_empty() { String::new() } else { format!(": {detail}") }
+                ))
+            }
+        }
+    }
+}
+
 struct StopProc;
 #[async_trait]
 impl Block for StopProc {
@@ -661,6 +809,7 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         m.insert("act.wait", Box::new(Wait));
         m.insert("act.start", Box::new(Start));
         m.insert("act.launch", Box::new(LaunchFile));
+        m.insert("act.command", Box::new(RunCommand));
         m.insert("act.loop", Box::new(Loop));
         m.insert("act.log", Box::new(LogMsg));
         m.insert("act.notify", Box::new(Notify));
@@ -677,6 +826,43 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
 mod input_condition_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn run_command_is_registered_as_a_risky_timed_action() {
+        let command = registry().get("act.command").unwrap();
+        assert_eq!(command.title(), "Run Command");
+        assert_eq!(command.category(), Cat::Action);
+        assert!(command.supports_timeout());
+        assert!(command.risky());
+        assert!(command.validate(&json!({
+            "command": "Get-Date",
+            "workingDirectory": "",
+            "timeoutSec": 30,
+            "onFail": "stop"
+        })).is_ok());
+        assert!(command.validate(&json!({
+            "command": "   ",
+            "workingDirectory": "",
+            "timeoutSec": 30,
+            "onFail": "stop"
+        })).is_err());
+
+        let nul_command = format!("Get-Date{}", '\0');
+        assert!(command.validate(&json!({
+            "command": nul_command,
+            "workingDirectory": "",
+            "timeoutSec": 30,
+            "onFail": "stop"
+        })).is_err());
+
+        let too_long = "x".repeat(8001);
+        assert!(command.validate(&json!({
+            "command": too_long,
+            "workingDirectory": "",
+            "timeoutSec": 30,
+            "onFail": "stop"
+        })).is_err());
+    }
 
     #[test]
     fn visible_window_comparisons_cover_all_modes() {
