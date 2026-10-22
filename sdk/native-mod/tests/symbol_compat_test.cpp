@@ -94,6 +94,36 @@ int wmain() {
     CHECK(Wh_ApplyHookOperations() == TRUE);
     CHECK(CompatibilityProbeSymbol() == 47);
 
+    // A null detour requests symbol discovery only.
+    void* discoveredProbe = nullptr;
+    WH_SYMBOL_HOOK lookupHook{};
+    lookupHook.symbols = reinterpret_cast<const decltype(lookupHook.symbols)>(&probeSelector);
+    lookupHook.symbolsCount = 1;
+    lookupHook.pOriginalFunction = &discoveredProbe;
+    lookupHook.hookFunction = nullptr;
+    lookupHook.optional = false;
+    CHECK(Wh_HookSymbols(GetModuleHandleW(nullptr), &lookupHook, 1, &hookOptions) == TRUE);
+    CHECK(discoveredProbe == reinterpret_cast<void*>(&CompatibilityProbeSymbol));
+
+    // Missing required names fail without publishing partial symbol results.
+    struct MissingSelector {
+        PCWSTR string;
+        size_t length;
+    } missingSelector{L"00047DefinitelyMissingSymbol", wcslen(L"00047DefinitelyMissingSymbol")};
+    void* untouched = reinterpret_cast<void*>(static_cast<ULONG_PTR>(1));
+    WH_SYMBOL_HOOK missingHook{};
+    missingHook.symbols = reinterpret_cast<const decltype(missingHook.symbols)>(&missingSelector);
+    missingHook.symbolsCount = 1;
+    missingHook.pOriginalFunction = &untouched;
+    missingHook.optional = false;
+    CHECK(Wh_HookSymbols(GetModuleHandleW(nullptr), &missingHook, 1, &hookOptions) == FALSE);
+    CHECK(untouched == reinterpret_cast<void*>(static_cast<ULONG_PTR>(1)));
+
+    // An absent optional hook is a success and leaves its output untouched.
+    missingHook.optional = true;
+    CHECK(Wh_HookSymbols(GetModuleHandleW(nullptr), &missingHook, 1, &hookOptions) == TRUE);
+    CHECK(untouched == reinterpret_cast<void*>(static_cast<ULONG_PTR>(1)));
+
     // NULL handles are explicitly safe no-ops.
     CHECK(Wh_FindNextSymbol(nullptr, &first) == FALSE);
     Wh_FindCloseSymbol(nullptr);
