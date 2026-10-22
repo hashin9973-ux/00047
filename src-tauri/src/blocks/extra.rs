@@ -116,7 +116,14 @@ pub(super) async fn poll_condition<'a>(
 }
 
 pub(super) fn wait_settings(c: &Value) -> Result<(String, f64, f64, f64), String> {
-    let behavior = text(c, "behavior");
+    // Saved automations created before behavior/polling fields existed must remain one-shot checks.
+    let behavior = match text(c, "behavior").as_str() {
+        "" => "check".to_string(),
+        other => other.to_string(),
+    };
+    if !matches!(behavior.as_str(), "check" | "wait" | "change") {
+        return Err("Unknown condition behavior".into());
+    }
     let poll = rng(c, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
     let stable = rng(c, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
     let timeout = rng(c, "timeoutSec", 0.0, 0.0, 86400.0, "Timeout")?;
