@@ -6,8 +6,9 @@
 //
 // The host stores settings.json beside the mod package. This adapter watches
 // that directory using asynchronous ReadDirectoryChangesW and invokes the mod's
-// Wh_ModSettingsChanged callback on a dedicated worker thread. The worker is
-// synchronously stopped before Wh_ModBeforeUninit/Wh_ModUninit run.
+// Wh_ModSettingsChanged callback (void or BOOL(BOOL* bReload)) on a dedicated
+// worker thread. Reload requests are surfaced through WmodIsReloadRequestedV1;
+// the worker is synchronously stopped before shutdown callbacks run.
 //
 // Callback thread affinity differs from Windhawk. The callback must be thread
 // safe, short-lived, and must not depend on a UI/shell thread. In particular,
@@ -80,6 +81,7 @@ public:
         stopEvent_ = nullptr;
         directory_ = INVALID_HANDLE_VALUE;
         callback_ = nullptr;
+        reloadCallback_ = nullptr;
     }
 
 private:
