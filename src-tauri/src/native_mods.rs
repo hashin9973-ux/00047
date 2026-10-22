@@ -89,6 +89,8 @@ pub enum NativeModTargetState {
     Loading,
     Initializing,
     Initialized,
+    // Retained as a defensive legacy state for older internal state transitions.
+    Running,
     Stopping,
     Ineligible,
     Failed,
