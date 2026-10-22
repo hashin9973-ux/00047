@@ -37,14 +37,14 @@ def make_test_pe(exports=None, machine=0x8664):
     struct.pack_into(
         "<IIHHIIIIIII", data, 0x200,
         0, 0, 0, 0, 0x1040, 1,
-        function_count, len(names), 0x1050, 0x1060, 0x1070,
+        function_count, len(names), 0x1050, 0x1070, 0x1090,
     )
     for index, name in enumerate(names):
         struct.pack_into("<I", data, 0x250 + index * 4, 0x1110 + index * 0x10)
-        name_rva = 0x1080 + index * 0x20
-        struct.pack_into("<I", data, 0x260 + index * 4, name_rva)
-        struct.pack_into("<H", data, 0x270 + index * 2, index)
-        raw_name_offset = 0x280 + index * 0x20
+        name_rva = 0x10A0 + index * 0x20
+        struct.pack_into("<I", data, 0x270 + index * 4, name_rva)
+        struct.pack_into("<H", data, 0x290 + index * 2, index)
+        raw_name_offset = 0x2A0 + index * 0x20
         encoded = name.encode("ascii") + b"\0"
         data[raw_name_offset:raw_name_offset + len(encoded)] = encoded
     return bytes(data)

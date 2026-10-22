@@ -24,10 +24,12 @@ const MAX_UNPACKED_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_ENABLED_STATE_BYTES: u64 = 1024 * 1024;
 static STATE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-const REQUIRED_EXPORTS: [&str; 3] = [
+const REQUIRED_EXPORTS: [&str; 5] = [
     "WmodGetApiVersion",
     "WmodInitializeV1",
     "WmodShutdownV1",
+    "WmodIsInitializedV1",
+    "WmodCanUnloadV1",
 ];
 
 pub const SUPPORTED_TARGETS: [&str; 4] = [

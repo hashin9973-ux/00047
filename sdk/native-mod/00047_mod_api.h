@@ -6,7 +6,7 @@
 #include <cstdint>
 
 // 00047 native mod ABI v1.
-// A module must export the three lifecycle functions below with these exact names.
+// A module must export all five lifecycle functions/queries below with these exact names.
 // The host maps an x64 DLL into an allow-listed shell process, validates the ABI
 // version, calls WmodInitializeV1, and calls WmodShutdownV1 before unloading.
 // Native mods execute in-process and are not sandboxed.
