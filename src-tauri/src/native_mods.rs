@@ -2123,11 +2123,11 @@ mod tests {
     fn native_mod_target_lifecycle_states_serialize_as_stable_lower_camel_case() {
         assert_eq!(
             serde_json::to_string(&NativeModTargetState::Indeterminate).unwrap(),
-            "\\"indeterminate\\""
+            "\"indeterminate\""
         );
         assert_eq!(
             serde_json::to_string(&NativeModTargetState::NotLoaded).unwrap(),
-            "\\"notLoaded\\""
+            "\"notLoaded\""
         );
     }
 
