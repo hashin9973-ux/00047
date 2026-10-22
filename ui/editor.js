@@ -820,6 +820,11 @@ if (A.kind === 'act.loop') {
       } else if (f.type === 'bool') {
         inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!n.cfg[f.key];
         row.classList.add('chk'); row.prepend(inp);
+      } else if (f.type === 'textarea') {
+        inp = document.createElement('textarea');
+        inp.rows = f.rows || 5;
+        inp.spellcheck = true;
+        inp.value = n.cfg[f.key] ?? '';
       } else {
         inp = document.createElement('input');
         inp.type = f.type === 'number' ? 'number' : f.type === 'time' ? 'time' : 'text';
