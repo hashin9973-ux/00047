@@ -131,6 +131,12 @@ struct ReadPackage {
     manifest: ModManifest,
 }
 
+struct NativeUnloadReport {
+    unloaded: usize,
+    target_statuses: Vec<NativeModTargetStatus>,
+    errors: Vec<String>,
+}
+
 pub struct NativeModManager {
     root: PathBuf,
     state: Mutex<PersistedState>,
@@ -1098,20 +1104,76 @@ fn inject_into_process(_pid: u32, _executable: &str, _module: &Path) -> Result<(
     Err("native shell mods can only be loaded on Windows".into())
 }
 
-fn unload_from_targets(targets: &[String], module: &Path) -> Result<usize, String> {
+fn target_operation_is_indeterminate(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        win::target_operation_is_indeterminate(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+fn unload_from_targets(targets: &[String], module: &Path) -> Result<NativeUnloadReport, String> {
     #[cfg(windows)]
     {
         let running = win::discover_targets()?;
-        let mut count = 0;
-        let mut errors = Vec::new();
-        for p in running.into_iter().filter(|p| targets.iter().any(|t| t.eq_ignore_ascii_case(&p.executable))) {
-            match win::unload(p.pid, &p.executable, module) {
-                Ok(true) => count += 1,
-                Ok(false) => {}
-                Err(e) => errors.push(format!("{} (PID {}): {e}", p.executable, p.pid)),
+        let mut report = NativeUnloadReport {
+            unloaded: 0,
+            target_statuses: Vec::new(),
+            errors: Vec::new(),
+        };
+        for target in running
+            .into_iter()
+            .filter(|p| targets.iter().any(|t| t.eq_ignore_ascii_case(&p.executable)))
+        {
+            if !target.eligible {
+                report.target_statuses.push(NativeModTargetStatus {
+                    pid: target.pid,
+                    executable: target.executable,
+                    state: NativeModTargetState::Ineligible,
+                    detail: target.detail,
+                });
+                continue;
+            }
+            match win::unload(target.pid, &target.executable, module) {
+                Ok(true) => {
+                    report.unloaded += 1;
+                    report.target_statuses.push(NativeModTargetStatus {
+                        pid: target.pid,
+                        executable: target.executable,
+                        state: NativeModTargetState::Unloaded,
+                        detail: "Shutdown completed and the DLL was unloaded.".into(),
+                    });
+                }
+                Ok(false) => report.target_statuses.push(NativeModTargetStatus {
+                    pid: target.pid,
+                    executable: target.executable,
+                    state: NativeModTargetState::NotLoaded,
+                    detail: "The DLL was not loaded in this process.".into(),
+                }),
+                Err(error) => {
+                    let indeterminate = target_operation_is_indeterminate(target.pid);
+                    report.errors.push(format!(
+                        "{} (PID {}): {error}",
+                        target.executable, target.pid
+                    ));
+                    report.target_statuses.push(NativeModTargetStatus {
+                        pid: target.pid,
+                        executable: target.executable,
+                        state: if indeterminate {
+                            NativeModTargetState::Indeterminate
+                        } else {
+                            NativeModTargetState::Failed
+                        },
+                        detail: error,
+                    });
+                }
             }
         }
-        if errors.is_empty() { Ok(count) } else { Err(errors.join("; ")) }
+        Ok(report)
     }
     #[cfg(not(windows))]
     {
