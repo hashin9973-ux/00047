@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <mutex>
 #include <TlHelp32.h>
 #include <Psapi.h>
@@ -23,12 +24,219 @@
 #pragma comment(lib, "psapi.lib")
 
 namespace {
+constexpr DWORD kSharedRegistryMagic = 0x57484D31u;
+constexpr DWORD kSharedRegistryVersion = 1;
+constexpr DWORD kSharedRegistryWaitMs = 5000;
+constexpr size_t kMaxSharedHookEntries = 4096;
+
+struct SharedHookEntry {
+    std::uintptr_t target = 0;
+    std::uintptr_t owner = 0;
+};
+
+struct SharedHookTable {
+    DWORD magic = 0;
+    DWORD version = 0;
+    DWORD poisoned = 0;
+    DWORD count = 0;
+    SharedHookEntry entries[kMaxSharedHookEntries]{};
+};
+
+// Each mod DLL has its own C++ statics, so coordinate hook target ownership via
+// a per-process named mutex and shared mapping. A stale/abandoned registry is
+// deliberately fail-closed: new hooks are refused and unload remains blocked.
+class ProcessHookRegistry final {
+public:
+    ProcessHookRegistry() = default;
+    ProcessHookRegistry(const ProcessHookRegistry&) = delete;
+    ProcessHookRegistry& operator=(const ProcessHookRegistry&) = delete;
+
+    ~ProcessHookRegistry() {
+        if (table_) UnmapViewOfFile(table_);
+        if (mapping_) CloseHandle(mapping_);
+        if (mutex_) CloseHandle(mutex_);
+    }
+
+    bool Claim(void* target, HMODULE owner) noexcept {
+        if (!target || !owner || !LockTable()) return false;
+        bool success = false;
+        const auto targetValue = reinterpret_cast<std::uintptr_t>(target);
+        const auto ownerValue = reinterpret_cast<std::uintptr_t>(owner);
+        bool alreadyClaimed = false;
+        for (DWORD i = 0; i < table_->count; ++i) {
+            if (table_->entries[i].target == targetValue) {
+                alreadyClaimed = true;
+                break;
+            }
+        }
+        if (!alreadyClaimed && table_->count < kMaxSharedHookEntries) {
+            table_->entries[table_->count] = {targetValue, ownerValue};
+            ++table_->count;
+            success = true;
+        }
+        ReleaseTable();
+        return success;
+    }
+
+    bool Release(void* target, HMODULE owner) noexcept {
+        if (!target || !owner || !LockTable()) return false;
+        bool success = false;
+        const auto targetValue = reinterpret_cast<std::uintptr_t>(target);
+        const auto ownerValue = reinterpret_cast<std::uintptr_t>(owner);
+        for (DWORD i = 0; i < table_->count; ++i) {
+            if (table_->entries[i].target != targetValue) continue;
+            if (table_->entries[i].owner != ownerValue) break;
+            table_->entries[i] = table_->entries[table_->count - 1];
+            --table_->count;
+            table_->entries[table_->count] = {};
+            success = true;
+            break;
+        }
+        ReleaseTable();
+        return success;
+    }
+
+    bool HasOwner(HMODULE owner) noexcept {
+        if (!owner || !LockTable()) return true;
+        const auto ownerValue = reinterpret_cast<std::uintptr_t>(owner);
+        bool found = false;
+        for (DWORD i = 0; i < table_->count; ++i) {
+            if (table_->entries[i].owner == ownerValue) {
+                found = true;
+                break;
+            }
+        }
+        ReleaseTable();
+        return found;
+    }
+
+private:
+    bool EnsureReady() noexcept {
+        try {
+            std::lock_guard<std::mutex> guard(initMutex_);
+            if (attempted_) return ready_;
+            attempted_ = true;
+
+            wchar_t mutexName[96]{};
+            wchar_t mappingName[96]{};
+            const auto pid = static_cast<unsigned long>(GetCurrentProcessId());
+            if (swprintf_s(mutexName, _countof(mutexName),
+                    L"Local\\00047NativeHookRegistryLock-%lu", pid) < 0 ||
+                swprintf_s(mappingName, _countof(mappingName),
+                    L"Local\\00047NativeHookRegistry-%lu", pid) < 0) {
+                return false;
+            }
+
+            HANDLE mutex = CreateMutexW(nullptr, FALSE, mutexName);
+            if (!mutex) return false;
+            HANDLE mapping = CreateFileMappingW(
+                INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                static_cast<DWORD>(sizeof(SharedHookTable)), mappingName);
+            if (!mapping) {
+                CloseHandle(mutex);
+                return false;
+            }
+            const bool existed = GetLastError() == ERROR_ALREADY_EXISTS;
+            auto* table = static_cast<SharedHookTable*>(
+                MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedHookTable)));
+            if (!table) {
+                CloseHandle(mapping);
+                CloseHandle(mutex);
+                return false;
+            }
+
+            const DWORD wait = WaitForSingleObject(mutex, kSharedRegistryWaitMs);
+            if (wait == WAIT_ABANDONED) {
+                if (table->magic == kSharedRegistryMagic) table->poisoned = 1;
+                ReleaseMutex(mutex);
+                UnmapViewOfFile(table);
+                CloseHandle(mapping);
+                CloseHandle(mutex);
+                return false;
+            }
+            if (wait != WAIT_OBJECT_0) {
+                UnmapViewOfFile(table);
+                CloseHandle(mapping);
+                CloseHandle(mutex);
+                return false;
+            }
+
+            if (!existed) {
+                std::memset(table, 0, sizeof(*table));
+                table->magic = kSharedRegistryMagic;
+                table->version = kSharedRegistryVersion;
+            } else if (table->magic != kSharedRegistryMagic ||
+                table->version != kSharedRegistryVersion ||
+                table->count > kMaxSharedHookEntries) {
+                table->poisoned = 1;
+            }
+            ReleaseMutex(mutex);
+
+            mutex_ = mutex;
+            mapping_ = mapping;
+            table_ = table;
+            ready_ = true;
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    bool LockTable() noexcept {
+        if (!EnsureReady()) return false;
+        const DWORD wait = WaitForSingleObject(mutex_, kSharedRegistryWaitMs);
+        if (wait == WAIT_ABANDONED) {
+            if (table_) table_->poisoned = 1;
+            ReleaseMutex(mutex_);
+            return false;
+        }
+        if (wait != WAIT_OBJECT_0) return false;
+
+        if (!table_ || table_->magic != kSharedRegistryMagic ||
+            table_->version != kSharedRegistryVersion ||
+            table_->poisoned != 0 || table_->count > kMaxSharedHookEntries) {
+            if (table_) table_->poisoned = 1;
+            ReleaseMutex(mutex_);
+            return false;
+        }
+        return true;
+    }
+
+    void ReleaseTable() noexcept {
+        if (mutex_) ReleaseMutex(mutex_);
+    }
+
+    std::mutex initMutex_;
+    HANDLE mutex_ = nullptr;
+    HANDLE mapping_ = nullptr;
+    SharedHookTable* table_ = nullptr;
+    bool attempted_ = false;
+    bool ready_ = false;
+};
+
+ProcessHookRegistry& SharedHookRegistry() {
+    static ProcessHookRegistry registry;
+    return registry;
+}
+
+HMODULE CurrentHookOwnerModule() noexcept {
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&Wh_SetFunctionHook), &module)) {
+        return nullptr;
+    }
+    return module;
+}
+
 struct HookRecord {
     void* target = nullptr;
     void* detour = nullptr;
     void* original = nullptr;
     bool enabled = false;
     bool removeQueued = false;
+    HMODULE ownerModule = nullptr;
 };
 
 std::mutex g_mutex;
