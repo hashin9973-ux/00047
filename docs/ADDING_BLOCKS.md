@@ -53,7 +53,7 @@ Top-level properties:
 - `name` and `version`: human-readable package metadata.
 - `blocks`: 1–100 block definitions.
 
-Each block uses the normal 00047 block UI metadata: `kind` (must start with `user.`), `category` (`condition` or `action`), `title`, optional `icon` and `description`, `fields`, and optional `summary`. Field types are `text`, `file`, `number` (with numeric `min` and `max`), `select` (with `options` such as `[["fast","Fast"]]`), `bool`, and `time`. Preset fields like `{"preset":"timeout"}` and `{"preset":"onFail"}` are also supported.
+Each block uses the normal 00047 block UI metadata: `kind` (must start with `user.`), `category` (`condition` or `action`), `title`, optional `icon` and `description`, `fields`, and optional `summary`. Field types are `text`, `textarea` (multi-line text, optional `rows`), `file`, `number` (with numeric `min` and `max`), `select` (with `options` such as `[["fast","Fast"]]`), `bool`, and `time`. Preset fields like `{"preset":"timeout"}` and `{"preset":"onFail"}` are also supported.
 
 ### Runtime and entrypoint
 
