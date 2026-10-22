@@ -2068,6 +2068,70 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_rollback_marks_successes_and_preserves_target_failures() {
+        let previous = vec![
+            NativeModTargetStatus {
+                pid: 10,
+                executable: "explorer.exe".into(),
+                state: NativeModTargetState::Running,
+                detail: "initialized".into(),
+            },
+            NativeModTargetStatus {
+                pid: 11,
+                executable: "SearchHost.exe".into(),
+                state: NativeModTargetState::Failed,
+                detail: "initialization failed".into(),
+            },
+            NativeModTargetStatus {
+                pid: 12,
+                executable: "ShellExperienceHost.exe".into(),
+                state: NativeModTargetState::Indeterminate,
+                detail: "remote call timed out".into(),
+            },
+        ];
+        let rollback = vec![
+            NativeModTargetStatus {
+                pid: 10,
+                executable: "explorer.exe".into(),
+                state: NativeModTargetState::Unloaded,
+                detail: "unloaded".into(),
+            },
+            NativeModTargetStatus {
+                pid: 11,
+                executable: "SearchHost.exe".into(),
+                state: NativeModTargetState::NotLoaded,
+                detail: "not loaded".into(),
+            },
+            NativeModTargetStatus {
+                pid: 12,
+                executable: "ShellExperienceHost.exe".into(),
+                state: NativeModTargetState::Indeterminate,
+                detail: "still quarantined".into(),
+            },
+        ];
+
+        let merged = merge_rollback_statuses(&previous, &rollback);
+        assert_eq!(merged[0].state, NativeModTargetState::RolledBack);
+        assert!(merged[0].detail.contains("rolled back"));
+        assert_eq!(merged[1].state, NativeModTargetState::Failed);
+        assert_eq!(merged[1].detail, "initialization failed");
+        assert_eq!(merged[2].state, NativeModTargetState::Indeterminate);
+        assert_eq!(merged[2].detail, "still quarantined");
+    }
+
+    #[test]
+    fn native_mod_target_lifecycle_states_serialize_as_stable_lower_camel_case() {
+        assert_eq!(
+            serde_json::to_string(&NativeModTargetState::Indeterminate).unwrap(),
+            "\\"indeterminate\\""
+        );
+        assert_eq!(
+            serde_json::to_string(&NativeModTargetState::NotLoaded).unwrap(),
+            "\\"notLoaded\\""
+        );
+    }
+
+    #[test]
     fn native_mod_manifest_requires_the_module_file_in_package() {
         let m = manifest(vec!["explorer.exe"], "bin/mod.dll");
         let files = HashSet::from(["manifest.json".to_string()]);
