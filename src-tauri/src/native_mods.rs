@@ -1628,7 +1628,7 @@ mod win {
 
     fn open_modifiable_process(pid: u32) -> Result<Handle, String> {
         unsafe {
-            let access = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ;
+            let access = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | SYNCHRONIZE;
             let h = OpenProcess(access, 0, pid);
             if is_invalid(h) { Err(last_error("OpenProcess(modification)")) } else { Ok(h) }
         }
@@ -2312,14 +2312,17 @@ mod tests {
 
     #[test]
     fn native_mod_target_lifecycle_states_serialize_as_stable_lower_camel_case() {
-        assert_eq!(
-            serde_json::to_string(&NativeModTargetState::Indeterminate).unwrap(),
-            "\"indeterminate\""
-        );
-        assert_eq!(
-            serde_json::to_string(&NativeModTargetState::NotLoaded).unwrap(),
-            "\"notLoaded\""
-        );
+        for (state, expected) in [
+            (NativeModTargetState::Detected, "\"detected\""),
+            (NativeModTargetState::Loading, "\"loading\""),
+            (NativeModTargetState::Initializing, "\"initializing\""),
+            (NativeModTargetState::Initialized, "\"initialized\""),
+            (NativeModTargetState::Stopping, "\"stopping\""),
+            (NativeModTargetState::Indeterminate, "\"indeterminate\""),
+            (NativeModTargetState::NotLoaded, "\"notLoaded\""),
+        ] {
+            assert_eq!(serde_json::to_string(&state).unwrap(), expected);
+        }
     }
 
     #[test]
