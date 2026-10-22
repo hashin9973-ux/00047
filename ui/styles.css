@@ -173,9 +173,10 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .fld{display:grid;gap:4px}
 .fld[hidden]{display:none}
 .fl{font-size:11.5px;color:var(--mu)}.fl em{font-style:normal;opacity:.7}
-.fld input[type=text],.fld input[type=number],.fld select{width:100%;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:6px 8px;outline:none}
-.fld input:focus,.fld select:focus{border-color:rgba(139,156,255,.6)}
-.fld.bad input{border-color:var(--er)}
+.fld input[type=text],.fld input[type=number],.fld select,.fld textarea{box-sizing:border-box;width:100%;background:#16181d;border:1px solid var(--line);border-radius:8px;padding:6px 8px;outline:none}
+.fld textarea{min-height:76px;resize:vertical;white-space:pre-wrap;user-select:text;font:inherit;line-height:1.4}
+.fld input:focus,.fld select:focus,.fld textarea:focus{border-color:rgba(139,156,255,.6)}
+.fld.bad input,.fld.bad textarea{border-color:var(--er)}
 .fld.chk{display:flex;align-items:center;gap:8px}
 .fh{color:var(--mu);font-size:11px;line-height:1.35}
 .nhelp{color:var(--mu);font-size:11px;line-height:1.4;border-top:1px solid var(--line);padding-top:8px}
