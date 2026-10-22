@@ -25,7 +25,7 @@ Existing **RAM Usage**, **Process Running**, **Visible Windows**, and **Process 
 - **Control Window** focuses, minimizes, maximizes, or restores an application's main window.
 - **Copy or Move File** copies or moves a single file and makes destination collision handling explicit.
 - **Set Clipboard Text** places configured text on the clipboard without logging its contents.
-- **HTTP Request / Webhook** sends GET, HEAD, POST, PUT, PATCH, or DELETE requests and logs a bounded response excerpt.
+- **HTTP Request / Webhook** sends GET, HEAD, POST, PUT, PATCH, or DELETE requests. It logs the response status by default; response-body logging is opt-in, and a bounded response excerpt and status code can be saved into workflow variables.
 - **Media Control** sends play/pause, next, previous, or stop media keys.
 - **Power Control** locks, sleeps, hibernates, shuts down, restarts, or cancels a pending shutdown.
 - **Delete or Recycle File** sends a file/folder to the Recycle Bin or permanently deletes it.
