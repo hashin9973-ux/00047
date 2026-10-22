@@ -1,5 +1,7 @@
 export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, getView }) {
   const $ = (selector) => document.querySelector(selector);
+  let lifecycleRefreshTimer = null;
+  let refreshInFlight = false;
 
   function bindActions(root) {
     root.querySelectorAll('[data-native-action]').forEach((button) => {
@@ -20,6 +22,12 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
   }
 
   async function refreshData() {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
+    if (lifecycleRefreshTimer !== null) {
+      clearTimeout(lifecycleRefreshTimer);
+      lifecycleRefreshTimer = null;
+    }
     const host = $('#view-native-mods');
     try {
       const info = await invoke('native_mod_refresh');
@@ -69,6 +77,17 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     } catch (error) {
       $('#native-mod-list').innerHTML = '<p class="er">Could not load native mods: ' + esc(error) + '</p><button class="btn" data-native-action="refresh">Retry</button>';
       bindActions(host);
+    } finally {
+      refreshInFlight = false;
+      // Poll only while the native-mod view is active. The read-only refresh
+      // command can now observe loading/stopping states while the background
+      // monitor or a user action is working on a target process.
+      if (getView() === 'native-mods') {
+        lifecycleRefreshTimer = setTimeout(() => {
+          lifecycleRefreshTimer = null;
+          void refreshData();
+        }, 1200);
+      }
     }
   }
 
