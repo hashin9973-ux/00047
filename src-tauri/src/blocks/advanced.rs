@@ -640,7 +640,10 @@ impl Block for BulkFiles {
         super::spec::validate(&bulk_files_spec(), c)?;
         no_nul(c, &["sourceFolder", "pattern", "destinationFolder", "prefix", "suffix"])?;
         if !matches!(txt(c, "operation").as_str(), "copy"|"move"|"rename"|"recycle") { return Err("Unknown bulk operation".into()); }
-        if !matches!(txt(c, "collision").as_str(), "fail"|"skip"|"overwrite") { return Err("Unknown collision mode".into()); }
+        if matches!(txt(c, "operation").as_str(), "copy"|"move"|"rename")
+            && !matches!(txt(c, "collision").as_str(), "fail"|"skip"|"overwrite") {
+            return Err("Unknown collision mode".into());
+        }
         let cap = num(c, "maxItems", 500.0, 1.0, 10000.0, "Maximum number of files")?;
         if cap.fract() != 0.0 { return Err("Maximum number of files must be a whole number".into()); }
         if matches!(txt(c, "operation").as_str(), "copy"|"move") && txt(c, "destinationFolder").is_empty() { return Err("Destination folder is required for copy and move".into()); }
@@ -918,9 +921,7 @@ mod tests {
         assert!(MouseAutomation.validate(&json!({"operation":"click","coordinateSpace":"window","processName":"notepad","x":10,"y":20,"onFail":"stop"})).is_ok());
         assert!(MouseAutomation.validate(&json!({"operation":"click","coordinateSpace":"window","x":10,"y":20,"onFail":"stop"})).is_err());
         assert!(BulkFiles.validate(&json!({"sourceFolder":"C:\\Temp","pattern":"*.log","operation":"recycle","recursive":false,"collision":"fail","maxItems":100,"previewOnly":true,"onFail":"stop"})).is_ok());
-        assert!(MouseAutomation.validate(&json!({"operation":"click","coordinateSpace":"window","processName":"notepad","x":10,"y":20,"onFail":"stop"})).is_ok());
-        assert!(MouseAutomation.validate(&json!({"operation":"click","coordinateSpace":"window","x":10,"y":20,"onFail":"stop"})).is_err());
-        assert!(BulkFiles.validate(&json!({"sourceFolder":"C:\\\\Temp","pattern":"*.log","operation":"recycle","recursive":false,"collision":"fail","maxItems":100,"previewOnly":true,"onFail":"stop"})).is_ok());
+
         assert!(ExtractZip.validate(&json!({"sourcePath":"C:\\\\Temp\\\\a.zip","destinationPath":"C:\\\\Temp\\\\out","collision":"fail","onFail":"stop"})).is_ok());
         assert!(ExtractZip.validate(&json!({"sourcePath":"C:\\\\Temp\\\\a.txt","destinationPath":"C:\\\\Temp\\\\out","collision":"fail","onFail":"stop"})).is_err());
         assert!(HttpStatus.validate(&json!({"url":"https://example.com","method":"GET","mode":"success","expectedStatus":200,"behavior":"check","pollSec":2,"stableForSec":0,"timeoutSec":0,"onFail":"stop"})).is_ok());
