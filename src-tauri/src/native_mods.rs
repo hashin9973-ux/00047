@@ -142,6 +142,7 @@ pub struct NativeModManager {
     state: Mutex<PersistedState>,
     statuses: Mutex<HashMap<String, String>>,
     target_statuses: Mutex<HashMap<String, Vec<NativeModTargetStatus>>>,
+    lifecycle_gate: Mutex<()>,
 }
 
 fn merge_rollback_statuses(
@@ -184,6 +185,7 @@ impl NativeModManager {
             state: Mutex::new(state),
             statuses: Mutex::new(HashMap::new()),
             target_statuses: Mutex::new(HashMap::new()),
+            lifecycle_gate: Mutex::new(()),
         }
     }
 
@@ -375,6 +377,9 @@ impl NativeModManager {
     }
 
     pub fn install(&self, path: &Path) -> Result<String, String> {
+        let _transition = self.lifecycle_gate
+            .lock()
+            .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
         let read = read_package(path)?;
         let id = read.manifest.id.clone();
         if self.enabled_snapshot().contains(&id) {
@@ -425,6 +430,9 @@ impl NativeModManager {
     }
 
     pub fn enable(&self, id: &str) -> Result<String, String> {
+        let _transition = self.lifecycle_gate
+            .lock()
+            .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
         let folder = self.package_dir(id)?;
         let manifest = load_manifest(&folder)?;
         if manifest.id != id {
@@ -458,6 +466,13 @@ impl NativeModManager {
     }
 
     pub fn disable(&self, id: &str) -> Result<String, String> {
+        let _transition = self.lifecycle_gate
+            .lock()
+            .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
+        self.disable_inner(id)
+    }
+
+    fn disable_inner(&self, id: &str) -> Result<String, String> {
         let folder = self.package_dir(id)?;
         let manifest = load_manifest(&folder)?;
         {
@@ -505,9 +520,12 @@ impl NativeModManager {
     }
 
     pub fn uninstall(&self, id: &str) -> Result<(), String> {
+        let _transition = self.lifecycle_gate
+            .lock()
+            .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
         let folder = self.package_dir(id)?;
         if self.enabled_snapshot().contains(id) {
-            self.disable(id)?;
+            self.disable_inner(id)?;
         }
         if folder.exists() {
             fs::remove_dir_all(&folder).map_err(|e| format!("remove native mod package: {e}"))?;
@@ -522,6 +540,11 @@ impl NativeModManager {
     }
 
     pub fn apply_enabled_mods(&self) {
+        // Serialize reconciliation with install/enable/disable/uninstall. Otherwise
+        // a stale five-second scan could load a mod after the user disabled it.
+        let Ok(_transition) = self.lifecycle_gate.lock() else {
+            return;
+        };
         let enabled = self.enabled_snapshot();
         for id in enabled {
             match self.apply_one(&id) {
