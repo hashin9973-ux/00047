@@ -14,6 +14,10 @@ use tokio::io::AsyncReadExt;
 
 const OUTPUT_LIMIT: usize = 16 * 1024;
 
+fn raw_text(c: &Value, key: &str) -> String {
+    c.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+}
+
 fn ps_quote(value: &str) -> String {
     format!("'{}'", value.replace('\0', "").replace('\'', "''"))
 }
@@ -70,19 +74,6 @@ async fn powershell(cx: &NodeCx, script: &str) -> Result<String, String> {
 async fn ps_bool(cx: &NodeCx, script: &str) -> Result<bool, String> {
     let out = powershell(cx, script).await?;
     serde_json::from_str::<bool>(out.trim()).map_err(|e| format!("Could not parse Windows condition result: {e}"))
-}
-
-fn compare_spec(title: &str, icon: &str, description: &str, value_label: &str, summary: &str, help: &str) -> Value {
-    json!({
-        "category":"condition","title":title,"icon":icon,"description":description,
-        "fields":[
-            {"key":"comparison","label":"Comparison","type":"select","default":"at_least",
-             "options":[["equal","Equal to"],["not_equal","Not equal to"],["greater","Greater than"],["at_least","At least"],["less","Less than"],["at_most","At most"]]},
-            {"key":"count","label":value_label,"type":"number","min":0,"max":1000000,"step":1,"default":1},
-            {"preset":"onFail"}
-        ],
-        "summary":summary,"help":help
-    })
 }
 
 fn condition_spec(title: &str, icon: &str, description: &str, fields: Vec<Value>, summary: &str, help: &str) -> Value {
@@ -201,7 +192,7 @@ impl Block for ClipboardText {
         let mode = text(c, "mode");
         if !matches!(mode.as_str(), "empty"|"equal"|"contains"|"starts") { return Err("Unknown clipboard match mode".into()); }
         let key = match mode.as_str() { "equal" => "text", "contains" => "containsText", "starts" => "startsText", _ => "" };
-        if !key.is_empty() && text(c, key).is_empty() { return Err("Text to compare is required for this match mode".into()); }
+        if !key.is_empty() && raw_text(c, key).is_empty() { return Err("Text to compare is required for this match mode".into()); }
         for key in ["text", "containsText", "startsText"] {
             if text(c, key).contains('\0') { return Err("Clipboard comparison text must not contain NUL characters".into()); }
         }
@@ -210,7 +201,7 @@ impl Block for ClipboardText {
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
         let mode = text(&cx.cfg, "mode");
-        let expected = match mode.as_str() { "equal" => text(&cx.cfg, "text"), "contains" => text(&cx.cfg, "containsText"), "starts" => text(&cx.cfg, "startsText"), _ => String::new() };
+        let expected = match mode.as_str() { "equal" => raw_text(&cx.cfg, "text"), "contains" => raw_text(&cx.cfg, "containsText"), "starts" => raw_text(&cx.cfg, "startsText"), _ => String::new() };
         let script = format!(
             "$ErrorActionPreference='Stop'; $v=[string](Get-Clipboard -Raw -ErrorAction Stop); $e={}; $m={}; $ok=switch($m){{'empty'{{[string]::IsNullOrEmpty($v)}}'equal'{{[string]::Equals($v,$e,[System.StringComparison]::OrdinalIgnoreCase)}}'contains'{{$v.IndexOf($e,[System.StringComparison]::OrdinalIgnoreCase) -ge 0}}'starts'{{$v.StartsWith($e,[System.StringComparison]::OrdinalIgnoreCase)}}default{{$false}}}}; [bool]$ok | ConvertTo-Json -Compress",
             ps_quote(&expected), ps_quote(&mode));
@@ -253,7 +244,7 @@ impl Block for EnvironmentVariable {
         let name = text(&cx.cfg, "name");
         let scope = text(&cx.cfg, "scope");
         let mode = text(&cx.cfg, "mode");
-        let expected = match mode.as_str() { "equal" => text(&cx.cfg, "expected"), "contains" => text(&cx.cfg, "containsValue"), _ => String::new() };
+        let expected = match mode.as_str() { "equal" => raw_text(&cx.cfg, "expected"), "contains" => raw_text(&cx.cfg, "containsValue"), _ => String::new() };
         let script = format!(
             "$ErrorActionPreference='Stop'; $n={}; $target=[System.EnvironmentVariableTarget]::{scope}; $v=[Environment]::GetEnvironmentVariable($n,$target); $ok=switch({}){{'exists'{{$null -ne $v}}'equal'{{[string]::Equals([string]$v,{},[System.StringComparison]::OrdinalIgnoreCase)}}'contains'{{$null -ne $v -and ([string]$v).IndexOf({},[System.StringComparison]::OrdinalIgnoreCase) -ge 0}}default{{$false}}}}; [bool]$ok | ConvertTo-Json -Compress",
             ps_quote(&name), ps_quote(&mode), ps_quote(&expected), ps_quote(&expected));
@@ -551,12 +542,12 @@ impl Block for TypeText {
     fn spec(&self) -> Option<Value> { Some(type_text_spec()) }
     fn validate(&self, c: &Value) -> Result<(), String> {
         spec::validate(&type_text_spec(), c)?;
-        if text(c, "text").contains('\0') { return Err("Text to type must not contain NUL characters".into()); }
+        if raw_text(c, "text").contains('\0') { return Err("Text to type must not contain NUL characters".into()); }
         Ok(())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
-        let value = text(&cx.cfg, "text");
+        let value = raw_text(&cx.cfg, "text");
         let code = r#"
 using System;
 using System.Runtime.InteropServices;
