@@ -267,9 +267,9 @@ impl Block for HttpStatus {
         let method = txt(&cx.cfg, "method");
         let mode = txt(&cx.cfg, "mode");
         let code = if mode == "status" { num(&cx.cfg, "expectedStatus", 200.0, 100.0, 599.0, "Expected status code")? as u16 } else { 200u16 };
-        let contains = raw(&cx.cfg, "containsText");
-        let path = txt(&cx.cfg, "jsonPath");
-        let expected = raw(&cx.cfg, "expectedValue");
+        let contains = template(cx, &raw(&cx.cfg, "containsText"))?;
+        let path = template(cx, &txt(&cx.cfg, "jsonPath"))?;
+        let expected = template(cx, &raw(&cx.cfg, "expectedValue"))?;
         let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
         extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
             let url = url.clone(); let method = method.clone(); let mode = mode.clone();
