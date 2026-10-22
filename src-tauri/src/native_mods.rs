@@ -425,6 +425,7 @@ impl NativeModManager {
             return Err(format!("install mod: {e}"));
         }
         if backup.exists() { let _ = fs::remove_dir_all(&backup); }
+        self.set_target_statuses(&id, Vec::new());
         self.set_status(&id, "Installed; disabled".into());
         Ok(id)
     }
@@ -490,6 +491,18 @@ impl NativeModManager {
             Ok(path) => path,
             Err(e) => {
                 let status = format!("Disabled; unload skipped because the module path is unsafe: {e}");
+                let unresolved = self
+                    .target_status_snapshot(id)
+                    .into_iter()
+                    .map(|target| NativeModTargetStatus {
+                        state: NativeModTargetState::Indeterminate,
+                        detail: format!(
+                            "Unloading was skipped because the module path could not be verified: {e}. The DLL may still be present; restart this target to guarantee unloading."
+                        ),
+                        ..target
+                    })
+                    .collect();
+                self.set_target_statuses(id, unresolved);
                 self.set_status(id, status.clone());
                 return Err(status);
             }
