@@ -50,9 +50,6 @@ void TryUninitializeLocked() noexcept {
     if (status == MH_OK || status == MH_ERROR_NOT_INITIALIZED) g_initialized = false;
 }
 
-    if (status == MH_OK || status == MH_ERROR_NOT_INITIALIZED) g_initialized = false;
-}
-
 BOOL RestoreCommittedStatesLocked() noexcept {
     if (!g_initialized) return true;
     bool queued = true;
