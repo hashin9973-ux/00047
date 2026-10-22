@@ -12,6 +12,12 @@ extern "C" __declspec(noinline) int CompatibilityProbeSymbol() {
 #pragma optimize("", on)
 #endif
 
+static void* g_originalProbe = nullptr;
+extern "C" __declspec(noinline) int CompatibilityProbeDetour() {
+    auto original = reinterpret_cast<int(__cdecl*)()>(g_originalProbe);
+    return original() + 10;
+}
+
 #define CHECK(condition) do { \
     if (!(condition)) { \
         std::wcerr << L"FAILED check at line " << __LINE__ << L"\n"; \
@@ -60,6 +66,33 @@ int wmain() {
     CHECK(first.symbolDecorated != nullptr);
     CHECK(first.symbol == nullptr);
     Wh_FindCloseSymbol(search);
+
+    // Resolve a symbol name, queue its hook, apply it and restore the target.
+    struct ProbeSelector {
+        PCWSTR string;
+        size_t length;
+    } probeSelector{L"CompatibilityProbeSymbol", wcslen(L"CompatibilityProbeSymbol")};
+    void* originalProbe = nullptr;
+    WH_SYMBOL_HOOK probeHook{};
+    probeHook.symbols = reinterpret_cast<const decltype(probeHook.symbols)>(&probeSelector);
+    probeHook.symbolsCount = 1;
+    probeHook.pOriginalFunction = &originalProbe;
+    probeHook.hookFunction = reinterpret_cast<void*>(&CompatibilityProbeDetour);
+    probeHook.optional = false;
+
+    WH_HOOK_SYMBOLS_OPTIONS hookOptions{};
+    hookOptions.optionsSize = sizeof(hookOptions);
+    hookOptions.symbolServer = L"";
+    hookOptions.noUndecoratedSymbols = FALSE;
+    CHECK(Wh_HookSymbols(GetModuleHandleW(nullptr), &probeHook, 1, &hookOptions) == TRUE);
+    CHECK(originalProbe != nullptr);
+    g_originalProbe = originalProbe;
+    CHECK(CompatibilityProbeSymbol() == 47);
+    CHECK(Wh_ApplyHookOperations() == TRUE);
+    CHECK(CompatibilityProbeSymbol() == 57);
+    CHECK(Wh_RemoveFunctionHook(reinterpret_cast<void*>(&CompatibilityProbeSymbol)) == TRUE);
+    CHECK(Wh_ApplyHookOperations() == TRUE);
+    CHECK(CompatibilityProbeSymbol() == 47);
 
     // NULL handles are explicitly safe no-ops.
     CHECK(Wh_FindNextSymbol(nullptr, &first) == FALSE);
