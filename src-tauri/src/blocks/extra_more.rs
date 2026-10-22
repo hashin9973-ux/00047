@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn utility_block_validation_rejects_unsafe_or_invalid_config() {
         assert!(CreateFolder.validate(&json!({"path":"C:\\Temp\\new-folder","onFail":"stop"})).is_ok());
-        assert!(CreateFolder.validate(&json!({"path":"bad\u0000path","onFail":"stop"})).is_err());
+        assert!(CreateFolder.validate(&json!({"path":"bad\u{0000}path","onFail":"stop"})).is_err());
         assert!(WriteTextFile.validate(&json!({"path":"C:\\Temp\\x.txt","mode":"append","content":"line","onFail":"stop"})).is_ok());
         assert!(ZipArchive.validate(&json!({"sourcePath":"C:\\Temp","destinationPath":"C:\\Temp\\x.zip","collision":"fail","onFail":"stop"})).is_ok());
         assert!(ZipArchive.validate(&json!({"sourcePath":"C:\\Temp","destinationPath":"C:\\Temp\\x.txt","collision":"fail","onFail":"stop"})).is_err());
