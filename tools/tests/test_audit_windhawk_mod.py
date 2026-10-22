@@ -75,7 +75,7 @@ class WindhawkAuditTests(unittest.TestCase):
             self.assertEqual(result, 0)
             parsed = json.loads(output.getvalue())
             self.assertEqual(parsed["version"], "2.1.0")
-            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "error")
+            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "warning")
             uri = parsed["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
             self.assertTrue(uri.startswith("file:"), uri)
 
@@ -93,7 +93,7 @@ class WindhawkAuditTests(unittest.TestCase):
             self.assertEqual(output.getvalue(), "")
             parsed = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(parsed["version"], "2.1.0")
-            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "error")
+            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "warning")
 
 
     def test_fail_on_unsupported_still_emits_valid_sarif(self):
@@ -106,7 +106,7 @@ class WindhawkAuditTests(unittest.TestCase):
             self.assertEqual(result, 2)
             parsed = json.loads(output.getvalue())
             self.assertEqual(parsed["version"], "2.1.0")
-            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "error")
+            self.assertEqual(parsed["runs"][0]["results"][0]["level"], "warning")
 
     def test_classifies_supported_unsupported_unknown_and_lifecycle(self):
         source = r'''
