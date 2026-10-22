@@ -24,6 +24,7 @@ BOOL Wh_Disasm(void* address, WH_DISASM_RESULT* result);
 namespace wmod::windhawk_hook_compat {
 BOOL BeginHookOperations() noexcept;
 BOOL ApplyHookOperations() noexcept;
+BOOL CanUnload() noexcept;
 void ShutdownHookOperations() noexcept;
 }
 

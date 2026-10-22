@@ -18,6 +18,12 @@ inline std::atomic<int>& LifecycleState() noexcept {
     WMOD_00047_EXPORT std::uint32_t WINAPI WmodGetApiVersion(void) { \
         return WMOD_00047_ABI_VERSION; \
     } \
+    WMOD_00047_EXPORT BOOL WINAPI WmodIsInitializedV1(void) { \
+        return ::wmod::windhawk_adapter::LifecycleState().load() == 2 ? TRUE : FALSE; \
+    } \
+    WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) { \
+        return ::wmod::windhawk_hook_compat::CanUnload(); \
+    } \
     WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void) { \
         int expected = 0; \
         auto& state = ::wmod::windhawk_adapter::LifecycleState(); \

@@ -15,6 +15,7 @@ use std::{
         Mutex,
     },
 };
+use std::time::{Duration, Instant};
 use zip::ZipArchive;
 
 const MAX_ZIP_BYTES: u64 = 20 * 1024 * 1024;
@@ -1744,13 +1745,6 @@ mod win {
         }
         validate_pe_file(module_path)?;
 
-        if module_for_path(pid, module_path)?.is_some() {
-            on_phase(
-                NativeModTargetState::Initialized,
-                "The DLL is already loaded in this target; initialization was not repeated.".into(),
-            );
-            return Ok(());
-        }
         let canonical_module_path = module_path
             .canonicalize()
             .map_err(|error| format!("Cannot resolve native mod DLL before loading: {error}"))?;
@@ -1766,6 +1760,76 @@ mod win {
             let shutdown_rva = match exported_rva(local_module, b"WmodShutdownV1\0") {
                 Ok(v) => v, Err(e) => { free_local_map(local_module); return Err(e); }
             };
+            let initialized_rva = match exported_rva(local_module, b"WmodIsInitializedV1\0") {
+                Ok(v) => v, Err(e) => { free_local_map(local_module); return Err(e); }
+            };
+            let can_unload_rva = match exported_rva(local_module, b"WmodCanUnloadV1\0") {
+                Ok(v) => v, Err(e) => { free_local_map(local_module); return Err(e); }
+            };
+
+            // A previously shut-down DLL can remain mapped if a hook callback
+            // was still active. Do not misreport it as initialized or re-enter
+            // its initializer until the module confirms it is quiescent.
+            let existing = match module_for_path(pid, module_path) {
+                Ok(value) => value,
+                Err(error) => { free_local_map(local_module); return Err(error); }
+            };
+            if let Some(existing) = existing {
+                let process = match open_modifiable_process(pid) {
+                    Ok(value) => value,
+                    Err(error) => { free_local_map(local_module); return Err(error); }
+                };
+                let base = existing.mod_base_addr as usize;
+                let initialized = remote_call(pid, process,
+                    (base + initialized_rva) as *mut c_void, ptr::null_mut());
+                match initialized {
+                    Ok(code) if code != 0 => {
+                        CloseHandle(process);
+                        free_local_map(local_module);
+                        on_phase(
+                            NativeModTargetState::Initialized,
+                            "The DLL is already initialized in this target.".into(),
+                        );
+                        return Ok(());
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        CloseHandle(process);
+                        free_local_map(local_module);
+                        return Err(format!("could not query the already-mapped DLL lifecycle: {error}"));
+                    }
+                }
+
+                let safe_to_reinitialize = remote_call(pid, process,
+                    (base + can_unload_rva) as *mut c_void, ptr::null_mut());
+                if !matches!(safe_to_reinitialize, Ok(code) if code != 0) {
+                    CloseHandle(process);
+                    free_local_map(local_module);
+                    let detail = match safe_to_reinitialize {
+                        Ok(_) => "the previous shutdown has not reached a safe quiescent state".to_string(),
+                        Err(error) => format!("the quiescence check failed: {error}"),
+                    };
+                    return Err(format!(
+                        "DLL remains mapped and will not be reinitialized until safe: {detail}"
+                    ));
+                }
+
+                let init = remote_call(pid, process,
+                    (base + init_rva) as *mut c_void, ptr::null_mut());
+                CloseHandle(process);
+                free_local_map(local_module);
+                if matches!(init, Ok(code) if code != 0) {
+                    on_phase(
+                        NativeModTargetState::Initialized,
+                        "The previously mapped DLL was safely reinitialized.".into(),
+                    );
+                    return Ok(());
+                }
+                return Err(format!(
+                    "the previously mapped DLL could not be reinitialized: {}",
+                    init.map(|code| code.to_string()).unwrap_or_else(|error| error)
+                ));
+            }
 
             let process = match open_modifiable_process(pid) {
                 Ok(h) => h, Err(e) => { free_local_map(local_module); return Err(e); }
@@ -1858,16 +1922,53 @@ mod win {
         unsafe {
             let local_module = local_map_module(module_path)?;
             let shutdown_rva = exported_rva(local_module, b"WmodShutdownV1\0")?;
+            let can_unload_rva = exported_rva(local_module, b"WmodCanUnloadV1\0")?;
             let base = module.mod_base_addr as usize;
             let process = open_modifiable_process(pid)?;
-            let shutdown_result = remote_call(pid, process, (base + shutdown_rva) as *mut c_void, ptr::null_mut());
-            if let Err(e) = shutdown_result {
-                CloseHandle(process); free_local_map(local_module);
-                return Err(format!("WmodShutdownV1 failed: {e}"));
+            let shutdown_result = remote_call(pid, process,
+                (base + shutdown_rva) as *mut c_void, ptr::null_mut());
+            if let Err(error) = shutdown_result {
+                CloseHandle(process);
+                free_local_map(local_module);
+                return Err(format!("WmodShutdownV1 failed; DLL was left mapped: {error}"));
             }
+
+            // Disabling hooks prevents new detours from entering the DLL, but
+            // another thread may still be returning through the mod's code.
+            // Poll a target-side stack/RIP check and fail closed if quiescence
+            // cannot be proven; never call FreeLibrary in that case.
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match remote_call(pid, process,
+                    (base + can_unload_rva) as *mut c_void, ptr::null_mut()) {
+                    Ok(code) if code != 0 => break,
+                    Ok(_) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Ok(_) => {
+                        CloseHandle(process);
+                        free_local_map(local_module);
+                        return Err(
+                            "native mod was shut down but still has in-flight module frames; it remains mapped to avoid unsafe DLL unload".into()
+                        );
+                    }
+                    Err(error) => {
+                        CloseHandle(process);
+                        free_local_map(local_module);
+                        return Err(format!(
+                            "could not prove native mod unload is safe; DLL was left mapped: {error}"
+                        ));
+                    }
+                }
+            }
+
             let free_library = match remote_system_proc(pid, b"FreeLibrary\0") {
-                Ok(p) => p,
-                Err(e) => { CloseHandle(process); free_local_map(local_module); return Err(e); }
+                Ok(pointer) => pointer,
+                Err(error) => {
+                    CloseHandle(process);
+                    free_local_map(local_module);
+                    return Err(error);
+                }
             };
             let free_result = remote_call(pid, process, free_library, base as *mut c_void);
             CloseHandle(process);
@@ -1875,7 +1976,7 @@ mod win {
             match free_result {
                 Ok(code) if code != 0 => Ok(true),
                 Ok(_) => Err("FreeLibrary returned FALSE in the target process".into()),
-                Err(e) => Err(format!("could not unload native mod: {e}")),
+                Err(error) => Err(format!("could not unload native mod: {error}")),
             }
         }
     }

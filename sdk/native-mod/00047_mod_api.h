@@ -22,5 +22,8 @@
 WMOD_00047_EXPORT std::uint32_t WINAPI WmodGetApiVersion(void);
 WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void);
 WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void);
+// The host uses these lifecycle queries to safely retry enable and unload operations.
+WMOD_00047_EXPORT BOOL WINAPI WmodIsInitializedV1(void);
+WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void);
 
 #endif // WMOD_00047_MOD_API_H

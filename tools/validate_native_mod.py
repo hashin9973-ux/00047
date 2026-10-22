@@ -29,6 +29,8 @@ REQUIRED_EXPORTS = {
     "WmodGetApiVersion",
     "WmodInitializeV1",
     "WmodShutdownV1",
+    "WmodIsInitializedV1",
+    "WmodCanUnloadV1",
 }
 ID_PATTERN = re.compile(r"^[a-z0-9._-]{1,100}$")
 

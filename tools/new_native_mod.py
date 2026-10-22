@@ -53,17 +53,33 @@ def create_project(mod_id: str, name: str, output_dir: str, target: str = "explo
         "mod.cpp": r'''#include "00047_mod_api.h"
 #include "windhawk_nonhook_compat.h"
 
+static bool g_initialized = false;
+
 WMOD_00047_EXPORT std::uint32_t WINAPI WmodGetApiVersion(void) {
     return WMOD_00047_ABI_VERSION;
 }
 
 WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void) {
+    if (g_initialized) return TRUE;
+    if (!wmod::windhawk_hook_compat::BeginHookOperations()) return FALSE;
     Wh_Log(L"Starter mod initialized");
+    g_initialized = true;
     return TRUE;
 }
 
 WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) {
+    if (!g_initialized) return;
     Wh_Log(L"Starter mod shutting down");
+    g_initialized = false;
+    wmod::windhawk_hook_compat::ShutdownHookOperations();
+}
+
+WMOD_00047_EXPORT BOOL WINAPI WmodIsInitializedV1(void) {
+    return g_initialized ? TRUE : FALSE;
+}
+
+WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) {
+    return wmod::windhawk_hook_compat::CanUnload();
 }
 ''',
         "CMakeLists.txt": f'''cmake_minimum_required(VERSION 3.21)

@@ -11,7 +11,7 @@ from package_native_mod import build_package
 from new_native_mod import create_project
 from validate_native_mod import ValidationError, inspect_pe_exports, validate_package
 
-EXPORTS = ["WmodGetApiVersion", "WmodInitializeV1", "WmodShutdownV1"]
+EXPORTS = ["WmodGetApiVersion", "WmodInitializeV1", "WmodShutdownV1", "WmodIsInitializedV1", "WmodCanUnloadV1"]
 
 
 def make_test_pe(exports=None, machine=0x8664):
