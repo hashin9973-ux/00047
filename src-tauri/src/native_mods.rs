@@ -15,7 +15,6 @@ use std::{
         Mutex,
     },
 };
-use std::time::{Duration, Instant};
 use zip::ZipArchive;
 
 const MAX_ZIP_BYTES: u64 = 20 * 1024 * 1024;
@@ -1939,13 +1938,13 @@ mod win {
             // another thread may still be returning through the mod's code.
             // Poll a target-side stack/RIP check and fail closed if quiescence
             // cannot be proven; never call FreeLibrary in that case.
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             loop {
                 match remote_call(pid, process,
                     (base + can_unload_rva) as *mut c_void, ptr::null_mut()) {
                     Ok(code) if code != 0 => break,
-                    Ok(_) if Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(50));
+                    Ok(_) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                     }
                     Ok(_) => {
                         CloseHandle(process);
