@@ -43,6 +43,12 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
           (mod.enabled ? 'native-eligible' : '') + '">' + (mod.enabled ? 'Enabled' : 'Disabled') + '</span></div>' +
           '<div class="native-mod-meta"><div><small class="mu">Architecture</small><b>' + esc(mod.architecture) + '</b></div><div><small class="mu">Module</small><code>' + esc(mod.module) + '</code></div><div><small class="mu">Targets</small><span>' + mod.targets.map(esc).join(', ') + '</span></div></div>' +
           '<div class="native-mod-status"><small class="mu">Runtime status</small><span>' + esc(mod.status) + '</span></div>' +
+          (Array.isArray(mod.targetStatuses) && mod.targetStatuses.length
+            ? '<div class="native-target-lifecycle"><small class="mu">Per-process lifecycle</small>' +
+              mod.targetStatuses.map((target) =>
+                '<div class="native-target-lifecycle-row"><div><b>' + esc(target.executable) + '</b><small class="mu">PID ' + esc(target.pid) + '</small></div><span class="native-lifecycle-state native-state-' + esc(target.state) + '">' + esc(target.state) + '</span><p>' + esc(target.detail) + '</p></div>'
+              ).join('') + '</div>'
+            : '') +
           '<div class="native-mod-actions">' +
           (mod.enabled
             ? '<button class="btn danger" data-native-action="disable" data-mod-id="' + esc(mod.id) + '">Disable and unload</button>'
