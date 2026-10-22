@@ -14,7 +14,7 @@ use std::{
 use tokio::io::AsyncReadExt;
 
 const CAPTURE_LIMIT: usize = 32 * 1024;
-type Probe<'a> = Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
+pub(super) type Probe<'a> = Pin<Box<dyn Future<Output = Result<bool, String>> + Send + 'a>>;
 
 async fn read_capped<R: tokio::io::AsyncRead + Unpin + Send>(reader: &mut R) -> Result<String, String> {
     let mut out = Vec::new();
@@ -28,11 +28,11 @@ async fn read_capped<R: tokio::io::AsyncRead + Unpin + Send>(reader: &mut R) -> 
     Ok(String::from_utf8_lossy(&out).trim().to_string())
 }
 
-fn ps_quote(value: &str) -> String {
+pub(super) fn ps_quote(value: &str) -> String {
     format!("'{}'", value.replace('\0', "").replace('\'', "''"))
 }
 
-async fn powershell(cx: &NodeCx, script: &str) -> Result<String, String> {
+pub(super) async fn powershell(cx: &NodeCx, script: &str) -> Result<String, String> {
     #[cfg(not(windows))]
     {
         let _ = (cx, script);
@@ -74,7 +74,7 @@ async fn ps_json<T: for<'de> Deserialize<'de>>(cx: &NodeCx, script: &str) -> Res
     serde_json::from_str::<T>(&out).map_err(|e| format!("Could not parse Windows status result: {e}; output: {}", out.chars().take(300).collect::<String>()))
 }
 
-fn behavior_fields() -> Vec<Value> {
+pub(super) fn behavior_fields() -> Vec<Value> {
     vec![
         json!({"key":"behavior","label":"Behavior","type":"select","default":"check","options":[["check","Check once (IF / ELSE)"],["wait","Wait until satisfied"],["change","Wait until state changes"]]}),
         json!({"key":"pollSec","label":"Poll every","type":"number","min":0.25,"max":3600,"step":0.25,"unit":"s","default":2,"show":{"key":"behavior","in":["wait","change"]}}),
@@ -84,7 +84,7 @@ fn behavior_fields() -> Vec<Value> {
     ]
 }
 
-async fn poll_condition<'a>(
+pub(super) async fn poll_condition<'a>(
     cx: &'a NodeCx, behavior: &str, poll_sec: f64, stable_sec: f64, timeout_sec: f64,
     mut probe: impl FnMut() -> Probe<'a>,
 ) -> Result<Outcome, String> {
@@ -115,7 +115,7 @@ async fn poll_condition<'a>(
     }
 }
 
-fn wait_settings(c: &Value) -> Result<(String, f64, f64, f64), String> {
+pub(super) fn wait_settings(c: &Value) -> Result<(String, f64, f64, f64), String> {
     let behavior = text(c, "behavior");
     let poll = rng(c, "pollSec", 2.0, 0.25, 3600.0, "Poll interval")?;
     let stable = rng(c, "stableForSec", 0.0, 0.0, 3600.0, "Stable duration")?;
