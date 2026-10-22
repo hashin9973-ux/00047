@@ -1,89 +1,114 @@
-#include "windhawk_hook_compat.h"
-
 #include <Windows.h>
+
 #include <atomic>
 #include <cstdio>
 #include <thread>
 
-using TestFunction = int(__cdecl*)(int);
-static void* g_originalAddress = nullptr;
-static std::atomic<bool> g_holdDetour{false};
-static std::atomic<bool> g_insideDetour{false};
+struct TestDisasmResult { size_t length; char text[96]; };
+using TargetFn = int (WINAPI*)(int);
+using DisasmFn = BOOL (WINAPI*)(TestDisasmResult*);
+using SimpleBoolFn = BOOL (WINAPI*)();
+using VoidFn = void (WINAPI*)();
+using HoldFn = void (WINAPI*)(BOOL);
+using InsideFn = BOOL (WINAPI*)();
 
 #define CHECK(expression) do { \
     if (!(expression)) { \
-        std::fprintf(stderr, "CHECK failed at %s:%d: %s\\n", __FILE__, __LINE__, #expression); \
+        std::fprintf(stderr, "CHECK failed at %s:%d: %s\n", __FILE__, __LINE__, #expression); \
         return __LINE__; \
     } \
 } while (0)
 
-extern "C" __declspec(noinline) int __cdecl HookTestTarget(int value) {
-    volatile int result = value + 2;
-    return result;
-}
-
-extern "C" __declspec(noinline) int __cdecl HookTestDetour(int value) {
-    if (g_holdDetour.load(std::memory_order_acquire)) {
-        g_insideDetour.store(true, std::memory_order_release);
-        while (g_holdDetour.load(std::memory_order_acquire)) {
-            Sleep(1);
-        }
-        // Do not invoke the trampoline here: shutdown removes it while this
-        // test call remains in flight, and the module must be kept mapped.
-        return 123;
+int wmain(int argc, wchar_t** argv) {
+    if (argc != 2) {
+        std::fwprintf(stderr, L"Usage: 00047_windhawk_hook_runtime_test.exe <hook-smoke-dll>\n");
+        return 2;
     }
-    auto original = reinterpret_cast<TestFunction>(g_originalAddress);
-    return original(value) + 10;
-}
 
-int main() {
-    CHECK(HookTestTarget(5) == 7);
+    HMODULE module = LoadLibraryW(argv[1]);
+    CHECK(module != nullptr);
+    auto target = reinterpret_cast<TargetFn>(GetProcAddress(module, "HookRuntimeTarget"));
+    auto disasm = reinterpret_cast<DisasmFn>(GetProcAddress(module, "HookRuntimeDisasm"));
+    auto begin = reinterpret_cast<SimpleBoolFn>(GetProcAddress(module, "HookRuntimeBegin"));
+    auto install = reinterpret_cast<SimpleBoolFn>(GetProcAddress(module, "HookRuntimeInstall"));
+    auto apply = reinterpret_cast<SimpleBoolFn>(GetProcAddress(module, "HookRuntimeApply"));
+    auto remove = reinterpret_cast<SimpleBoolFn>(GetProcAddress(module, "HookRuntimeRemove"));
+    auto shutdown = reinterpret_cast<VoidFn>(GetProcAddress(module, "HookRuntimeShutdown"));
+    auto canUnload = reinterpret_cast<SimpleBoolFn>(GetProcAddress(module, "HookRuntimeCanUnload"));
+    auto holdDetour = reinterpret_cast<HoldFn>(GetProcAddress(module, "HookRuntimeHoldDetour"));
+    auto insideDetour = reinterpret_cast<InsideFn>(GetProcAddress(module, "HookRuntimeInsideDetour"));
+    CHECK(target && disasm && begin && install && apply && remove &&
+          shutdown && canUnload && holdDetour && insideDetour);
 
-    WH_DISASM_RESULT instruction{};
-    CHECK(Wh_Disasm(reinterpret_cast<void*>(&HookTestTarget), &instruction) == TRUE);
-    CHECK(instruction.length > 0 && instruction.length <= 15);
-    CHECK(instruction.text[0] != '\0');
+    CHECK(target(5) == 7);
+    TestDisasmResult disasmResult{};
+    CHECK(disasm(&disasmResult) == TRUE);
+    CHECK(disasmResult.length > 0 && disasmResult.length <= 15);
+    CHECK(disasmResult.text[0] != '\0');
+    CHECK(begin() == TRUE);
+    CHECK(install() == TRUE);
+    CHECK(target(5) == 7); // registering a hook is deferred until apply
+    CHECK(apply() == TRUE);
+    CHECK(target(5) == 17);
 
-    CHECK(Wh_SetFunctionHook(
-        reinterpret_cast<void*>(&HookTestTarget),
-        reinterpret_cast<void*>(&HookTestDetour),
-        &g_originalAddress) == TRUE);
-    CHECK(g_originalAddress != nullptr);
-    CHECK(HookTestTarget(5) == 7); // registration is deferred until apply
+    CHECK(remove() == TRUE);
+    CHECK(target(5) == 17); // removals are queued too
+    CHECK(apply() == TRUE);
+    CHECK(target(5) == 7);
+    CHECK(canUnload() == FALSE); // lifecycle still accepts new hooks
+    shutdown();
+    CHECK(canUnload() == TRUE);
 
-    CHECK(Wh_ApplyHookOperations() == TRUE);
-    CHECK(HookTestTarget(5) == 17);
+    // Re-enter an initialized hook lifecycle and hold a detour on a second
+    // thread while shutdown runs. The module must not become unloadable until
+    // that thread returns out of its detour and the DLL image.
+    CHECK(begin() == TRUE);
+    CHECK(install() == TRUE);
+    CHECK(apply() == TRUE);
+    holdDetour(TRUE);
+    std::atomic<int> callResult{0};
+    std::thread caller([&] {
+        callResult.store(target(9), std::memory_order_release);
+    });
 
-    CHECK(Wh_RemoveFunctionHook(reinterpret_cast<void*>(&HookTestTarget)) == TRUE);
-    CHECK(HookTestTarget(5) == 17); // removal is also queued
-    CHECK(Wh_ApplyHookOperations() == TRUE);
-    CHECK(HookTestTarget(5) == 7);
-    CHECK(wmod::windhawk_hook_compat::CanUnload() == FALSE); // lifecycle is still accepting hooks
-
-    // Exercise the critical unload race: a detour may still be executing even
-    // after its entry point is restored. The quiescence query must fail closed
-    // until that callback and its return path have left the module image.
-    CHECK(Wh_SetFunctionHook(
-        reinterpret_cast<void*>(&HookTestTarget),
-        reinterpret_cast<void*>(&HookTestDetour),
-        &g_originalAddress) == TRUE);
-    CHECK(Wh_ApplyHookOperations() == TRUE);
-    g_insideDetour.store(false, std::memory_order_release);
-    g_holdDetour.store(true, std::memory_order_release);
-    int result = 0;
-    std::thread caller([&] { result = HookTestTarget(9); });
-
-    for (int i = 0; i < 2000 && !g_insideDetour.load(std::memory_order_acquire); ++i) {
+    bool entered = false;
+    for (int i = 0; i < 2000; ++i) {
+        if (insideDetour() == TRUE) {
+            entered = true;
+            break;
+        }
         Sleep(1);
     }
-    CHECK(g_insideDetour.load(std::memory_order_acquire));
+    if (!entered) {
+        holdDetour(FALSE);
+        caller.join();
+        shutdown();
+        FreeLibrary(module);
+        std::fprintf(stderr, "timed out waiting for the detour thread to enter\n");
+        return 30;
+    }
 
-    wmod::windhawk_hook_compat::ShutdownHookOperations();
-    CHECK(wmod::windhawk_hook_compat::CanUnload() == FALSE);
-
-    g_holdDetour.store(false, std::memory_order_release);
+    shutdown();
+    const BOOL unsafeWhileActive = canUnload();
+    holdDetour(FALSE);
     caller.join();
-    CHECK(result == 123);
-    CHECK(wmod::windhawk_hook_compat::CanUnload() == TRUE);
+
+    if (unsafeWhileActive != FALSE) {
+        FreeLibrary(module);
+        std::fprintf(stderr, "quiescence check incorrectly approved unload while detour was active\n");
+        return 31;
+    }
+    if (callResult.load(std::memory_order_acquire) != 123) {
+        FreeLibrary(module);
+        std::fprintf(stderr, "blocked detour did not return the expected sentinel value\n");
+        return 32;
+    }
+    if (canUnload() != TRUE) {
+        FreeLibrary(module);
+        std::fprintf(stderr, "quiescence check did not recover after detour thread exited\n");
+        return 33;
+    }
+
+    CHECK(FreeLibrary(module) != FALSE);
     return 0;
 }
