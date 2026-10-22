@@ -1007,7 +1007,7 @@ mod tests {
 
     #[test]
     fn all_advanced_blocks_are_registered() {
-        let expected: [(&str, Cat); 16] = [
+        let expected: [(&str, Cat); 17] = [
             ("cond.file_watcher", Cat::Condition), ("cond.file_content", Cat::Condition),
             ("cond.http_status", Cat::Condition), ("cond.window_state", Cat::Condition),
             ("act.set_variable", Cat::Action), ("act.get_variable", Cat::Action),
