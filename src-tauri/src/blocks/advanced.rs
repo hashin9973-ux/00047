@@ -768,36 +768,87 @@ impl Block for SetPowerPlan {
 
 struct AskUser;
 fn ask_user_spec() -> Value {
-    spec_action("Ask User / Confirm", "message-square", "Shows a native Yes / No / Cancel confirmation dialog and routes Yes through IF and No/Cancel through ELSE.", vec![
-        json!({"key":"title","label":"Dialog title","type":"text","default":"Automation confirmation","required":true,"maxLen":128}),
+    spec_action("Ask User / Input / Choice", "message-square", "Pauses the automation for confirmation, text input, or a choice and can save the answer to a workflow variable.", vec![
+        json!({"key":"mode","label":"Dialog type","type":"select","default":"confirm","options":[["confirm","Yes / No confirmation"],["input","Text input"],["choice","Choose from options"]]}),
+        json!({"key":"title","label":"Dialog title","type":"text","default":"Automation prompt","required":true,"maxLen":128}),
         json!({"key":"message","label":"Prompt","type":"textarea","rows":4,"required":true,"maxLen":2000}),
-        json!({"key":"buttons","label":"Buttons","type":"select","default":"yes_no","options":[["yes_no","Yes / No"],["yes_no_cancel","Yes / No / Cancel"]]}),
+        json!({"key":"buttons","label":"Buttons","type":"select","default":"yes_no","options":[["yes_no","Yes / No"],["yes_no_cancel","Yes / No / Cancel"]],"show":{"key":"mode","eq":"confirm"}}),
+        json!({"key":"defaultValue","label":"Default text","type":"text","maxLen":1000,"show":{"key":"mode","eq":"input"}}),
+        json!({"key":"choicesJson","label":"Choices (JSON array of 2–100 strings)","type":"textarea","rows":4,"default":"[\"Option A\", \"Option B\"]","maxLen":8000,"show":{"key":"mode","eq":"choice"}}),
+        json!({"key":"saveAs","label":"Save answer to variable","type":"text","required":true,"maxLen":64,"show":{"key":"mode","in":["input","choice"]}}),
+        json!({"preset":"timeout","default":0}),
         json!({"preset":"onFail"})
-    ], "Confirm: {title}", "This pauses the workflow until the user responds. Requires an interactive desktop; do not use when running unattended or in a locked session. Yes means satisfied; No or Cancel means not satisfied.")
+    ], "Ask user: {mode}", "Requires an interactive Windows desktop. Confirmation is satisfied only by Yes; Cancel, No, and dismissing the dialog follow ELSE. Input/choice modes save the accepted answer to the configured per-run variable; cancelled dialogs do not set a value. Timeout 0 means wait indefinitely.")
 }
 #[async_trait]
 impl Block for AskUser {
-    fn title(&self) -> &'static str { "Ask User / Confirm" }
+    fn title(&self) -> &'static str { "Ask User / Input / Choice" }
     fn category(&self) -> Cat { Cat::Action }
     fn risky(&self) -> bool { true }
+    fn supports_timeout(&self) -> bool { true }
     fn spec(&self) -> Option<Value> { Some(ask_user_spec()) }
     fn validate(&self, c: &Value) -> Result<(), String> {
         super::spec::validate(&ask_user_spec(), c)?;
-        no_nul(c, &["title", "message"])?;
-        if !matches!(txt(c, "buttons").as_str(), "yes_no"|"yes_no_cancel") { return Err("Unknown dialog button set".into()); }
-        Ok(())
+        no_nul(c, &["title", "message", "defaultValue", "choicesJson", "saveAs"])?;
+        let mode = txt(c, "mode");
+        if !matches!(mode.as_str(), "confirm"|"input"|"choice") { return Err("Unknown dialog type".into()); }
+        if mode == "confirm" && !matches!(txt(c, "buttons").as_str(), "yes_no"|"yes_no_cancel") {
+            return Err("Unknown confirmation button set".into());
+        }
+        if matches!(mode.as_str(), "input"|"choice") && !valid_name(&txt(c, "saveAs")) {
+            return Err("Answer variable name is invalid".into());
+        }
+        if mode == "choice" {
+            let options: Value = serde_json::from_str(&raw(c, "choicesJson")).map_err(|e| format!("Choices must be a JSON array: {e}"))?;
+            let arr = options.as_array().ok_or("Choices must be a JSON array")?;
+            if !(2..=100).contains(&arr.len()) { return Err("Provide between 2 and 100 choices".into()); }
+            let mut unique = std::collections::HashSet::new();
+            for (i, option) in arr.iter().enumerate() {
+                let Some(value) = option.as_str() else { return Err(format!("Choice {} must be text", i + 1)); };
+                if value.trim().is_empty() || value.chars().count() > 128 { return Err(format!("Choice {} must be 1–128 characters", i + 1)); }
+                if !unique.insert(value.to_lowercase()) { return Err("Choices must be unique (ignoring case)".into()); }
+            }
+        }
+        num(c, "timeoutSec", 0.0, 0.0, 86400.0, "Timeout").map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
+        let mode = txt(&cx.cfg, "mode");
         let title = template(cx, &txt(&cx.cfg, "title"))?;
         let message = template(cx, &raw(&cx.cfg, "message"))?;
-        let buttons = txt(&cx.cfg, "buttons");
-        let style = if buttons == "yes_no" { "YesNo" } else { "YesNoCancel" };
-        let script = format!("$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $r=[System.Windows.Forms.MessageBox]::Show({}, {}, [System.Windows.Forms.MessageBoxButtons]::{style}, [System.Windows.Forms.MessageBoxIcon]::Question); [string]$r", extra::ps_quote(&message), extra::ps_quote(&title));
+        let script = match mode.as_str() {
+            "confirm" => {
+                let buttons = txt(&cx.cfg, "buttons");
+                let style = if buttons == "yes_no" { "YesNo" } else { "YesNoCancel" };
+                format!("$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $r=[System.Windows.Forms.MessageBox]::Show({}, {}, [System.Windows.Forms.MessageBoxButtons]::{style}, [System.Windows.Forms.MessageBoxIcon]::Question); $s=[string]$r; [pscustomobject]@{{accepted=($s -eq 'Yes');cancelled=($s -eq 'Cancel');value=$s}} | ConvertTo-Json -Compress", extra::ps_quote(&message), extra::ps_quote(&title))
+            },
+            "input" => {
+                let default_value = template(cx, &raw(&cx.cfg, "defaultValue"))?;
+                format!("$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $form=New-Object System.Windows.Forms.Form; $form.Text={}; $form.StartPosition='CenterScreen'; $form.FormBorderStyle='FixedDialog'; $form.MaximizeBox=$false; $form.MinimizeBox=$false; $form.ShowInTaskbar=$true; $form.ClientSize=New-Object System.Drawing.Size(500,175); $label=New-Object System.Windows.Forms.Label; $label.Text={}; $label.Location=New-Object System.Drawing.Point(12,12); $label.Size=New-Object System.Drawing.Size(476,48); $box=New-Object System.Windows.Forms.TextBox; $box.Location=New-Object System.Drawing.Point(12,68); $box.Size=New-Object System.Drawing.Size(476,24); $box.Text={}; $ok=New-Object System.Windows.Forms.Button; $ok.Text='OK'; $ok.Location=New-Object System.Drawing.Point(324,120); $ok.Size=New-Object System.Drawing.Size(78,30); $ok.DialogResult=[System.Windows.Forms.DialogResult]::OK; $cancel=New-Object System.Windows.Forms.Button; $cancel.Text='Cancel'; $cancel.Location=New-Object System.Drawing.Point(410,120); $cancel.Size=New-Object System.Drawing.Size(78,30); $cancel.DialogResult=[System.Windows.Forms.DialogResult]::Cancel; $form.Controls.AddRange(@($label,$box,$ok,$cancel)); $form.AcceptButton=$ok; $form.CancelButton=$cancel; $form.Add_Shown({{$box.Focus()}}); try{{$r=$form.ShowDialog(); $accepted=($r -eq [System.Windows.Forms.DialogResult]::OK); $value=if($accepted){{$box.Text}}else{{''}}; [pscustomobject]@{{accepted=$accepted;cancelled=(-not $accepted);value=[string]$value}} | ConvertTo-Json -Compress}}finally{{$form.Dispose()}}", extra::ps_quote(&title), extra::ps_quote(&message), extra::ps_quote(&default_value))
+            },
+            _ => {
+                let choices = template(cx, &raw(&cx.cfg, "choicesJson"))?;
+                format!("$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $choices=@(ConvertFrom-Json -InputObject {} -ErrorAction Stop); if($choices.Count -lt 2){{throw 'At least two choices are required'}}; $form=New-Object System.Windows.Forms.Form; $form.Text={}; $form.StartPosition='CenterScreen'; $form.FormBorderStyle='FixedDialog'; $form.MaximizeBox=$false; $form.MinimizeBox=$false; $form.ShowInTaskbar=$true; $form.ClientSize=New-Object System.Drawing.Size(500,195); $label=New-Object System.Windows.Forms.Label; $label.Text={}; $label.Location=New-Object System.Drawing.Point(12,12); $label.Size=New-Object System.Drawing.Size(476,60); $combo=New-Object System.Windows.Forms.ComboBox; $combo.DropDownStyle=[System.Windows.Forms.ComboBoxStyle]::DropDownList; $combo.Location=New-Object System.Drawing.Point(12,82); $combo.Size=New-Object System.Drawing.Size(476,26); foreach($choice in $choices){{[void]$combo.Items.Add([string]$choice)}}; $combo.SelectedIndex=0; $ok=New-Object System.Windows.Forms.Button; $ok.Text='OK'; $ok.Location=New-Object System.Drawing.Point(324,136); $ok.Size=New-Object System.Drawing.Size(78,30); $ok.DialogResult=[System.Windows.Forms.DialogResult]::OK; $cancel=New-Object System.Windows.Forms.Button; $cancel.Text='Cancel'; $cancel.Location=New-Object System.Drawing.Point(410,136); $cancel.Size=New-Object System.Drawing.Size(78,30); $cancel.DialogResult=[System.Windows.Forms.DialogResult]::Cancel; $form.Controls.AddRange(@($label,$combo,$ok,$cancel)); $form.AcceptButton=$ok; $form.CancelButton=$cancel; try{{$r=$form.ShowDialog(); $accepted=($r -eq [System.Windows.Forms.DialogResult]::OK); $value=if($accepted){{$combo.SelectedItem.ToString()}}else{{''}}; [pscustomobject]@{{accepted=$accepted;cancelled=(-not $accepted);value=[string]$value}} | ConvertTo-Json -Compress}}finally{{$form.Dispose()}}", extra::ps_quote(&choices), extra::ps_quote(&title), extra::ps_quote(&message))
+            }
+        };
         let out = extra::powershell(cx, &script).await?;
-        let answer = out.trim();
-        (cx.log)("info", format!("Confirmation dialog response: {answer}"));
-        Ok(if answer.eq_ignore_ascii_case("Yes") { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let result: Value = serde_json::from_str(out.trim()).map_err(|e| format!("Could not read dialog result: {e}"))?;
+        let accepted = result.get("accepted").and_then(Value::as_bool).unwrap_or(false);
+        if mode == "confirm" {
+            let answer = result.get("value").and_then(Value::as_str).unwrap_or("Cancel");
+            (cx.log)("info", format!("Confirmation dialog response: {answer}"));
+            return Ok(if accepted { Outcome::Satisfied } else { Outcome::NotSatisfied });
+        }
+        if accepted {
+            let value = result.get("value").and_then(Value::as_str).unwrap_or("").to_string();
+            let name = txt(&cx.cfg, "saveAs");
+            cx.set_variable(name.clone(), Value::String(value.clone()))?;
+            (cx.log)("info", format!("User answer saved to variable {name} ({} characters)", value.chars().count()));
+            Ok(Outcome::Satisfied)
+        } else {
+            (cx.log)("info", "User cancelled the dialog; no variable was changed".into());
+            Ok(Outcome::NotSatisfied)
+        }
     }
 }
 
