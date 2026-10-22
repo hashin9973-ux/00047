@@ -898,3 +898,82 @@ mod input_condition_tests {
         assert!(audio.validate(&json!({"state":"unknown","onFail":"stop"})).is_err());
     }
 }
+
+
+#[cfg(test)]
+mod expanded_blocks_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn expanded_default_blocks_are_registered_with_specs() {
+        let expected: [(&str, Cat); 24] = [
+            ("cond.network", Cat::Condition),
+            ("cond.battery_power", Cat::Condition),
+            ("cond.cpu_usage", Cat::Condition),
+            ("cond.disk_space", Cat::Condition),
+            ("cond.file_folder", Cat::Condition),
+            ("cond.active_window", Cat::Condition),
+            ("cond.bluetooth", Cat::Condition),
+            ("cond.usb_device", Cat::Condition),
+            ("cond.audio_device", Cat::Condition),
+            ("cond.workstation_lock", Cat::Condition),
+            ("cond.user_idle", Cat::Condition),
+            ("cond.app_responsive", Cat::Condition),
+            ("act.open_url", Cat::Action),
+            ("act.set_volume", Cat::Action),
+            ("act.process_priority", Cat::Action),
+            ("act.control_window", Cat::Action),
+            ("act.copy_move_file", Cat::Action),
+            ("act.clipboard", Cat::Action),
+            ("act.http", Cat::Action),
+            ("act.media", Cat::Action),
+            ("act.power", Cat::Action),
+            ("act.delete_file", Cat::Action),
+            ("act.play_sound", Cat::Action),
+            ("act.service", Cat::Action),
+        ];
+        for (id, category) in expected {
+            let block = registry().get(id).unwrap_or_else(|| panic!("missing built-in block {id}"));
+            assert_eq!(block.category(), category, "wrong category for {id}");
+            assert!(block.spec().is_some(), "missing declarative spec for {id}");
+        }
+    }
+
+    #[test]
+    fn expanded_condition_specs_validate_defaults_and_reject_bad_inputs() {
+        let r = registry();
+        assert!(r["cond.network"].validate(&json!({"mode":"wifi_connected","behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.network"].validate(&json!({"mode":"bogus","behavior":"check","onFail":"stop"})).is_err());
+        assert!(r["cond.battery_power"].validate(&json!({"mode":"charging","behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.cpu_usage"].validate(&json!({"scope":"system","op":"above","thresholdPct":80,"behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.disk_space"].validate(&json!({"drive":"C:","metric":"free_pct","op":"below","threshold":15,"behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.file_folder"].validate(&json!({"path":"C:\\temp\\done.txt","state":"exists","behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.active_window"].validate(&json!({"match":"process","pattern":"notepad","state":"active","behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.bluetooth"].validate(&json!({"deviceName":"headset","state":"present","behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.usb_device"].validate(&json!({"deviceName":"flash","state":"present","behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.audio_device"].validate(&json!({"deviceName":"speaker","state":"present","behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.workstation_lock"].validate(&json!({"state":"locked","behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.user_idle"].validate(&json!({"state":"idle","seconds":300,"behavior":"check","onFail":"stop"})).is_ok());
+        assert!(r["cond.app_responsive"].validate(&json!({"processName":"notepad","state":"responsive","behavior":"check","onFail":"stop"})).is_ok());
+    }
+
+    #[test]
+    fn expanded_action_specs_validate_safe_baselines() {
+        let r=registry();
+        assert!(r["act.open_url"].validate(&json!({"url":"https://example.com","onFail":"stop"})).is_ok());
+        assert!(r["act.open_url"].validate(&json!({"url":"file:///C:/Windows","onFail":"stop"})).is_err());
+        assert!(r["act.set_volume"].validate(&json!({"mode":"set","percent":50,"onFail":"stop"})).is_ok());
+        assert!(r["act.process_priority"].validate(&json!({"processName":"notepad","priority":"Normal","onFail":"stop"})).is_ok());
+        assert!(r["act.control_window"].validate(&json!({"processName":"notepad","operation":"restore","onFail":"stop"})).is_ok());
+        assert!(r["act.copy_move_file"].validate(&json!({"operation":"copy","source":"C:\\a.txt","destination":"C:\\b.txt","collision":"fail","onFail":"stop"})).is_ok());
+        assert!(r["act.clipboard"].validate(&json!({"text":"hello","onFail":"stop"})).is_ok());
+        assert!(r["act.http"].validate(&json!({"url":"https://example.com","method":"GET","headersJson":"","timeoutSec":15,"onFail":"stop"})).is_ok());
+        assert!(r["act.http"].validate(&json!({"url":"file:///C:/secret","method":"GET","headersJson":"","timeoutSec":15,"onFail":"stop"})).is_err());
+        assert!(r["act.media"].validate(&json!({"operation":"play_pause","onFail":"stop"})).is_ok());
+        assert!(r["act.power"].validate(&json!({"operation":"lock","delaySec":60,"onFail":"stop"})).is_ok());
+        assert!(r["act.delete_file"].validate(&json!({"path":"C:\\temp\\old.txt","mode":"recycle","onFail":"stop"})).is_ok());
+        assert!(r["act.play_sound"].validate(&json!({"mode":"speak","text":"hello","onFail":"stop"})).is_ok());
+        assert!(r["act.service"].validate(&json!({"serviceName":"Spooler","operation":"stop","onFail":"stop","timeoutSec":0})).is_ok());
+    }
+}
