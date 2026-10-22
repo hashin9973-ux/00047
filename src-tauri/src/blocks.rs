@@ -607,13 +607,14 @@ fn run_command_spec() -> Value {
         "icon": "proc",
         "description": "Runs a PowerShell command in the background without opening a terminal window.",
         "fields": [
-            {"key":"command","label":"PowerShell command","type":"text","required":true,"maxLen":8000},
+            {"key":"command","label":"PowerShell command","type":"textarea","rows":5,"required":true,"maxLen":8000},
             {"key":"workingDirectory","label":"Working directory (optional)","type":"text","maxLen":1000,"default":""},
+            {"key":"saveOutputAs","label":"Save stdout to variable (optional)","type":"text","maxLen":64},
             {"preset":"timeout","default":30},
             {"preset":"onFail"}
         ],
         "summary": "Run PowerShell command",
-        "help": "Runs powershell.exe without a console window. Standard output and standard error are captured in workflow logs, up to 16 KiB each. Commands run with the current Windows user's permissions and are not sandboxed. Leave the working directory blank to inherit 00047's working directory; otherwise use an absolute path. Timeout 0 disables the timeout."
+        "help": "Runs powershell.exe without a console window. Standard output and standard error are captured in workflow logs, up to 16 KiB each. Commands run with the current Windows user's permissions and are not sandboxed. Use {{variable_name}} placeholders to insert variables; saved stdout is capped at 16 KiB. Leave working directory blank to inherit 00047's working directory. Timeout 0 disables the timeout."
     })
 }
 
@@ -634,6 +635,16 @@ impl Block for RunCommand {
         if text(c, "workingDirectory").contains('\0') {
             return Err("Working directory must not contain NUL characters.".into());
         }
+        if text(c, "saveOutputAs").contains('\0') {
+            return Err("Output variable name must not contain NUL characters.".into());
+        }
+        if !text(c, "saveOutputAs").is_empty() {
+            let name = text(c, "saveOutputAs");
+            if name.len() > 64 || !name.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+                || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')) {
+                return Err("Output variable name is invalid".into());
+            }
+        }
         Ok(())
     }
 
@@ -648,7 +659,7 @@ impl Block for RunCommand {
 
         #[cfg(windows)]
         {
-            let command = text(&cx.cfg, "command");
+            let command = cx.expand_template(&text(&cx.cfg, "command"))?;
             let script = format!(
                 "$ErrorActionPreference = 'Stop'; try {{\n{}\n}} catch {{ [Console]::Error.WriteLine($_.ToString()); exit 1 }}; if ($null -ne $LASTEXITCODE) {{ exit $LASTEXITCODE }}",
                 command
@@ -704,6 +715,10 @@ impl Block for RunCommand {
             }
 
             if status.success() {
+                let save_as = text(&cx.cfg, "saveOutputAs");
+                if !save_as.is_empty() {
+                    cx.set_variable(save_as, Value::String(stdout.clone()))?;
+                }
                 Ok(Outcome::Satisfied)
             } else {
                 let code = status.code().map(|c| c.to_string()).unwrap_or_else(|| "terminated".into());
