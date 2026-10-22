@@ -211,18 +211,18 @@ fn first_process(cx: &NodeCx) -> Result<(u32, String), String> {
 }
 
 fn visible_windows_spec() -> Value {
+    let mut fields = vec![
+        json!({"key":"op","label":"Match","type":"select","default":"at_least",
+             "options":[["at_least","At least"],["at_most","At most"],["exactly","Exactly"]]}),
+        json!({"key":"count","label":"Window count","type":"number","min":0,"max":10000,"step":1,"default":1}),
+    ];
+    fields.extend(extra::behavior_fields());
     json!({
         "category": "condition", "title": "Visible Windows", "icon": "window",
         "description": "Counts visible, non-minimized top-level windows owned by the connected process input.",
-        "requires": "tgt.process",
-        "fields": [
-            {"key":"op","label":"Match","type":"select","default":"at_least",
-             "options":[["at_least","At least"],["at_most","At most"],["exactly","Exactly"]]},
-            {"key":"count","label":"Window count","type":"number","min":0,"max":10000,"step":1,"default":1},
-            {"preset":"onFail"}
-        ],
+        "requires": "tgt.process", "fields": fields,
         "summary": "{op} {count} visible windows",
-        "help": "Requires a Process Input. Counts top-level windows Windows marks visible and that are not minimized. Windows hidden behind other windows may still count; this does not measure unobscured pixels."
+        "help": "Requires a Process Input. Supports check-once, wait-until-satisfied, and state-change behavior, including a polling interval and timeout. Windows hidden behind other windows may still count; this does not measure unobscured pixels."
     })
 }
 
@@ -241,38 +241,45 @@ struct VisibleWindows;
 impl Block for VisibleWindows {
     fn title(&self) -> &'static str { "Visible Windows" }
     fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn requires_target(&self) -> Option<&'static str> { Some("tgt.process") }
     fn spec(&self) -> Option<Value> { Some(visible_windows_spec()) }
     fn validate(&self, c: &Value) -> Result<(), String> {
         spec::validate(&visible_windows_spec(), c)?;
-        expected_window_count(c).map(|_| ())
+        expected_window_count(c)?;
+        extra::wait_settings(c).map(|_| ())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         let (pid, name) = first_process(cx)?;
         let expected = expected_window_count(&cx.cfg)?;
-        let count = tokio::task::spawn_blocking(move || sys::visible_window_count(pid))
-            .await.map_err(|e| e.to_string())??;
         let mode = text(&cx.cfg, "op");
-        let satisfied = window_count_matches(&mode, count, expected);
-        (cx.report)("running", None, format!("{name}: {count} visible window(s); needs {} {expected}", match mode.as_str() {
-            "at_most" => "at most", "exactly" => "exactly", _ => "at least"
-        }));
-        Ok(if satisfied { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+        extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+            let name = name.clone();
+            let mode = mode.clone();
+            Box::pin(async move {
+                let count = tokio::task::spawn_blocking(move || sys::visible_window_count(pid))
+                    .await.map_err(|e| e.to_string())??;
+                let satisfied = window_count_matches(&mode, count, expected);
+                (cx.report)("waiting", None, format!("{name}: {count} visible window(s); needs {} {expected}",
+                    match mode.as_str() { "at_most" => "at most", "exactly" => "exactly", _ => "at least" }));
+                Ok(satisfied)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
 fn process_audio_spec() -> Value {
+    let mut fields = vec![json!({"key":"state","label":"Condition","type":"select","default":"outputting",
+             "options":[["outputting","Outputting audio"],["not_outputting","Not outputting audio"]]})];
+    fields.extend(extra::behavior_fields());
     json!({
         "category": "condition", "title": "Process Outputting Audio", "icon": "bell",
         "requires": "tgt.process",
         "description": "Checks whether the connected process has an active Windows audio-render session.",
-        "fields": [
-            {"key":"state","label":"Condition","type":"select","default":"outputting",
-             "options":[["outputting","Outputting audio"],["not_outputting","Not outputting audio"]]},
-            {"preset":"onFail"}
-        ],
+        "fields": fields,
         "summary": "Process audio: {state}",
-        "help": "Requires a Process Input. A matching active audio-render session means the process has a running audio stream. A muted or silent stream can still count as active; this does not measure audible volume."
+        "help": "Requires a Process Input. Supports check-once, wait-until-satisfied, and state-change behavior, including polling interval, stable duration, and timeout. A muted or silent stream still counts as active."
     })
 }
 struct ProcessAudio;
@@ -280,17 +287,27 @@ struct ProcessAudio;
 impl Block for ProcessAudio {
     fn title(&self) -> &'static str { "Process Outputting Audio" }
     fn category(&self) -> Cat { Cat::Condition }
+    fn supports_timeout(&self) -> bool { true }
     fn requires_target(&self) -> Option<&'static str> { Some("tgt.process") }
     fn spec(&self) -> Option<Value> { Some(process_audio_spec()) }
-    fn validate(&self, c: &Value) -> Result<(), String> { spec::validate(&process_audio_spec(), c) }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        spec::validate(&process_audio_spec(), c)?;
+        extra::wait_settings(c).map(|_| ())
+    }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         let (pid, name) = first_process(cx)?;
         let state = text(&cx.cfg, "state");
-        let outputting = tokio::task::spawn_blocking(move || sys::process_outputting_audio(pid))
-            .await.map_err(|e| e.to_string())??;
-        let satisfied = (state == "not_outputting") != outputting;
-        (cx.report)("running", None, format!("{name}: {}", if outputting { "audio stream active" } else { "no active audio stream" }));
-        Ok(if satisfied { Outcome::Satisfied } else { Outcome::NotSatisfied })
+        let (behavior, poll, stable, timeout) = extra::wait_settings(&cx.cfg)?;
+        extra::poll_condition(cx, &behavior, poll, stable, timeout, || {
+            let name = name.clone();
+            let state = state.clone();
+            Box::pin(async move {
+                let outputting = tokio::task::spawn_blocking(move || sys::process_outputting_audio(pid))
+                    .await.map_err(|e| e.to_string())??;
+                (cx.report)("waiting", None, format!("{name}: {}", if outputting { "audio stream active" } else { "no active audio stream" }));
+                Ok((state == "not_outputting") != outputting)
+            }) as extra::Probe<'_>
+        }).await
     }
 }
 
