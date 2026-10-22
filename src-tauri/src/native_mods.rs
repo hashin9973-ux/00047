@@ -82,7 +82,7 @@ pub struct NativeTarget {
     pub detail: String,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum NativeModTargetState {
     Detected,
