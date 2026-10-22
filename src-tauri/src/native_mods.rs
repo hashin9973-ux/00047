@@ -1830,6 +1830,10 @@ mod win {
             let can_unload_rva = match exported_rva(local_module, b"WmodCanUnloadV1\0") {
                 Ok(v) => v, Err(e) => { free_local_map(local_module); return Err(e); }
             };
+            // Optional ABI-v2 adapter export. Older modules remain compatible and
+            // simply cannot request a settings-triggered full-image reload.
+            let reload_requested_rva =
+                exported_rva(local_module, b"WmodIsReloadRequestedV1\0").ok();
 
             // A previously shut-down DLL can remain mapped if a hook callback
             // was still active. Do not misreport it as initialized or re-enter
@@ -1844,57 +1848,151 @@ mod win {
                     Err(error) => { free_local_map(local_module); return Err(error); }
                 };
                 let base = existing.mod_base_addr as usize;
-                let initialized = remote_call(pid, process,
-                    (base + initialized_rva) as *mut c_void, ptr::null_mut());
-                match initialized {
-                    Ok(code) if code != 0 => {
-                        CloseHandle(process);
-                        free_local_map(local_module);
-                        on_phase(
-                            NativeModTargetState::Initialized,
-                            "The DLL is already initialized in this target.".into(),
-                        );
-                        return Ok(());
-                    }
-                    Ok(_) => {}
+                let reload_requested = if let Some(rva) = reload_requested_rva {
+                    remote_call(pid, process, (base + rva) as *mut c_void, ptr::null_mut())
+                } else {
+                    Ok(0)
+                };
+
+                match reload_requested {
                     Err(error) => {
                         CloseHandle(process);
                         free_local_map(local_module);
-                        return Err(format!("could not query the already-mapped DLL lifecycle: {error}"));
+                        return Err(format!("could not query the mod's reload request: {error}"));
+                    }
+                    Ok(code) if code != 0 => {
+                        on_phase(
+                            NativeModTargetState::Stopping,
+                            "The mod requested a reload after a settings change.".into(),
+                        );
+                        if let Err(error) = remote_call(
+                            pid, process,
+                            (base + shutdown_rva) as *mut c_void,
+                            ptr::null_mut(),
+                        ) {
+                            CloseHandle(process);
+                            free_local_map(local_module);
+                            return Err(format!(
+                                "reload requested but shutdown failed; DLL remains mapped: {error}"
+                            ));
+                        }
+                        if let Err(error) = wait_for_safe_unload(
+                            pid, process, base, can_unload_rva,
+                            std::time::Duration::from_secs(3),
+                        ) {
+                            CloseHandle(process);
+                            free_local_map(local_module);
+                            return Err(format!(
+                                "reload requested but the DLL was retained for safety: {error}"
+                            ));
+                        }
+                        let free_library = match remote_system_proc(pid, b"FreeLibrary\0") {
+                            Ok(value) => value,
+                            Err(error) => {
+                                CloseHandle(process);
+                                free_local_map(local_module);
+                                return Err(format!(
+                                    "reload requested but FreeLibrary could not be resolved: {error}"
+                                ));
+                            }
+                        };
+                        match remote_call(pid, process, free_library, base as *mut c_void) {
+                            Ok(freed) if freed != 0 => {}
+                            Ok(_) => {
+                                CloseHandle(process);
+                                free_local_map(local_module);
+                                return Err("reload requested but FreeLibrary returned FALSE; DLL remains mapped".into());
+                            }
+                            Err(error) => {
+                                CloseHandle(process);
+                                free_local_map(local_module);
+                                return Err(format!("reload requested but DLL unload was indeterminate: {error}"));
+                            }
+                        }
+                        match module_for_path(pid, module_path) {
+                            Ok(None) => {}
+                            Ok(Some(_)) => {
+                                CloseHandle(process);
+                                free_local_map(local_module);
+                                return Err("reload requested, but another reference kept the DLL mapped; refusing to initialize it as a fresh image".into());
+                            }
+                            Err(error) => {
+                                CloseHandle(process);
+                                free_local_map(local_module);
+                                return Err(format!("reload completed but the module list could not be verified: {error}"));
+                            }
+                        }
+                        CloseHandle(process);
+                        on_phase(
+                            NativeModTargetState::Loading,
+                            "Old DLL unloaded safely; loading a fresh image for the requested reload.".into(),
+                        );
+                    }
+                    Ok(_) => {
+                        // A previously shut-down DLL can remain mapped if a hook callback
+                        // was still active. Never re-enter its initializer until the module
+                        // explicitly confirms a safe quiescent state.
+                        let initialized = remote_call(
+                            pid, process,
+                            (base + initialized_rva) as *mut c_void,
+                            ptr::null_mut(),
+                        );
+                        match initialized {
+                            Ok(code) if code != 0 => {
+                                CloseHandle(process);
+                                free_local_map(local_module);
+                                on_phase(
+                                    NativeModTargetState::Initialized,
+                                    "The DLL is already initialized in this target.".into(),
+                                );
+                                return Ok(());
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                CloseHandle(process);
+                                free_local_map(local_module);
+                                return Err(format!("could not query the already-mapped DLL lifecycle: {error}"));
+                            }
+                        }
+
+                        let safe_to_reinitialize = remote_call(
+                            pid, process,
+                            (base + can_unload_rva) as *mut c_void,
+                            ptr::null_mut(),
+                        );
+                        if !matches!(safe_to_reinitialize, Ok(code) if code != 0) {
+                            CloseHandle(process);
+                            free_local_map(local_module);
+                            let detail = match safe_to_reinitialize {
+                                Ok(_) => "the previous shutdown has not reached a safe quiescent state".to_string(),
+                                Err(error) => format!("the quiescence check failed: {error}"),
+                            };
+                            return Err(format!(
+                                "DLL remains mapped and will not be reinitialized until safe: {detail}"
+                            ));
+                        }
+
+                        let init = remote_call(
+                            pid, process,
+                            (base + init_rva) as *mut c_void,
+                            ptr::null_mut(),
+                        );
+                        CloseHandle(process);
+                        free_local_map(local_module);
+                        if matches!(init, Ok(code) if code != 0) {
+                            on_phase(
+                                NativeModTargetState::Initialized,
+                                "The previously mapped DLL was safely reinitialized.".into(),
+                            );
+                            return Ok(());
+                        }
+                        return Err(format!(
+                            "the previously mapped DLL could not be reinitialized: {}",
+                            init.map(|code| code.to_string()).unwrap_or_else(|error| error)
+                        ));
                     }
                 }
-
-                let safe_to_reinitialize = remote_call(pid, process,
-                    (base + can_unload_rva) as *mut c_void, ptr::null_mut());
-                if !matches!(safe_to_reinitialize, Ok(code) if code != 0) {
-                    CloseHandle(process);
-                    free_local_map(local_module);
-                    let detail = match safe_to_reinitialize {
-                        Ok(_) => "the previous shutdown has not reached a safe quiescent state".to_string(),
-                        Err(error) => format!("the quiescence check failed: {error}"),
-                    };
-                    return Err(format!(
-                        "DLL remains mapped and will not be reinitialized until safe: {detail}"
-                    ));
-                }
-
-                let init = remote_call(pid, process,
-                    (base + init_rva) as *mut c_void, ptr::null_mut());
-                CloseHandle(process);
-                free_local_map(local_module);
-                if matches!(init, Ok(code) if code != 0) {
-                    on_phase(
-                        NativeModTargetState::Initialized,
-                        "The previously mapped DLL was safely reinitialized.".into(),
-                    );
-                    return Ok(());
-                }
-                return Err(format!(
-                    "the previously mapped DLL could not be reinitialized: {}",
-                    init.map(|code| code.to_string()).unwrap_or_else(|error| error)
-                ));
             }
-
             let process = match open_modifiable_process(pid) {
                 Ok(h) => h, Err(e) => { free_local_map(local_module); return Err(e); }
             };
