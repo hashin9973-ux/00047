@@ -1043,6 +1043,14 @@ mod expanded_blocks_tests {
     }
 
     #[test]
+    fn legacy_conditions_validate_wait_and_state_change_modes() {
+        let r = registry();
+        assert!(r["cond.ram"].validate(&json!({"op":"above","thresholdMb":800,"mode":"wait_change","pollSec":1,"stableForSec":0.5,"timeoutSec":10})).is_ok());
+        assert!(r["cond.proc_running"].validate(&json!({"name":"notepad.exe","mode":"wait_change","pollSec":1,"stableForSec":0.5,"timeoutSec":10})).is_ok());
+        assert!(r["cond.schedule"].validate(&json!({"start":"09:00","end":"17:00","days":"all","mode":"wait_change","pollSec":5,"stableForSec":1,"timeoutSec":30,"onFail":"stop"})).is_ok());
+    }
+
+    #[test]
     fn expanded_action_specs_validate_safe_baselines() {
         let r=registry();
         assert!(r["act.open_url"].validate(&json!({"url":"https://example.com","onFail":"stop"})).is_ok());
