@@ -6,7 +6,6 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs,
     path::{Path, PathBuf},
-    process::Stdio,
     time::{Duration, SystemTime},
 };
 
@@ -658,7 +657,7 @@ impl Block for SetBrightness {
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
         let percent = num(&cx.cfg, "percent", 50.0, 0.0, 100.0, "Brightness")? as u8;
-        let script = format("$ErrorActionPreference='Stop'; $m=@(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop); if($m.Count -eq 0){{throw 'No supported monitor brightness controls were found'}}; foreach($x in $m){{Invoke-CimMethod -InputObject $x -MethodName WmiSetBrightness -Arguments @{{Timeout=1;Brightness={percent}}} -ErrorAction Stop | Out-Null}}; 'Brightness updated on '+$m.Count+' monitor(s).");
+        let script = format!("$ErrorActionPreference='Stop'; $m=@(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods -ErrorAction Stop); if($m.Count -eq 0){{throw 'No supported monitor brightness controls were found'}}; foreach($x in $m){{Invoke-CimMethod -InputObject $x -MethodName WmiSetBrightness -Arguments @{{Timeout=1;Brightness={percent}}} -ErrorAction Stop | Out-Null}}; 'Brightness updated on '+$m.Count+' monitor(s).");
         let out = extra::powershell(cx, &script).await?;
         (cx.log)("info", out);
         Ok(Outcome::Satisfied)
@@ -692,7 +691,7 @@ impl Block for SetPowerPlan {
             "high_performance" => "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
             _ => "e9a42b02-d5df-448d-aa00-03f14749eb61",
         };
-        let script = format("$ErrorActionPreference='Stop'; $plans=powercfg /list 2>&1 | Out-String; if($LASTEXITCODE -ne 0){{throw 'powercfg /list failed'}}; if($plans -notmatch [regex]::Escape('{}')){{throw 'Requested power plan is not available on this PC'}}; powercfg /setactive {}; if($LASTEXITCODE -ne 0){{throw 'powercfg could not activate the requested plan'}}; 'Power plan activated.'", guid, guid);
+        let script = format!("$ErrorActionPreference='Stop'; $plans=powercfg /list 2>&1 | Out-String; if($LASTEXITCODE -ne 0){{throw 'powercfg /list failed'}}; if($plans -notmatch [regex]::Escape('{}')){{throw 'Requested power plan is not available on this PC'}}; powercfg /setactive {}; if($LASTEXITCODE -ne 0){{throw 'powercfg could not activate the requested plan'}}; 'Power plan activated.'", guid, guid);
         let out = extra::powershell(cx, &script).await?;
         (cx.log)("info", format!("Power plan {plan}: {}", out.trim()));
         Ok(Outcome::Satisfied)
@@ -726,7 +725,7 @@ impl Block for AskUser {
         let message = template(cx, &raw(&cx.cfg, "message"))?;
         let buttons = txt(&cx.cfg, "buttons");
         let style = if buttons == "yes_no" { "YesNo" } else { "YesNoCancel" };
-        let script = format("$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $r=[System.Windows.Forms.MessageBox]::Show({}, {}, [System.Windows.Forms.MessageBoxButtons]::{style}, [System.Windows.Forms.MessageBoxIcon]::Question); [string]$r", extra::ps_quote(&message), extra::ps_quote(&title));
+        let script = format!("$ErrorActionPreference='Stop'; Add-Type -AssemblyName System.Windows.Forms; $r=[System.Windows.Forms.MessageBox]::Show({}, {}, [System.Windows.Forms.MessageBoxButtons]::{style}, [System.Windows.Forms.MessageBoxIcon]::Question); [string]$r", extra::ps_quote(&message), extra::ps_quote(&title));
         let out = extra::powershell(cx, &script).await?;
         let answer = out.trim();
         (cx.log)("info", format!("Confirmation dialog response: {answer}"));
@@ -742,6 +741,7 @@ fn retry_command_spec() -> Value {
         json!({"key":"delaySec","label":"Initial delay (seconds)","type":"number","min":0,"max":3600,"step":0.5,"default":2}),
         json!({"key":"backoff","label":"Backoff","type":"select","default":"exponential","options":[["fixed","Fixed delay"],["exponential","Double delay after each failure"]]}),
         json!({"key":"saveOutputAs","label":"Save final stdout to variable (optional)","type":"text","maxLen":64}),
+        json!({"preset":"timeout","default":0}),
         json!({"preset":"onFail"})
     ], "Retry command ({attempts} attempts)", "A command that succeeds exits through IF. After every failed attempt the block waits according to Backoff, then tries again. The command runs with current-user permissions and is not sandboxed.")
 }
