@@ -82,6 +82,27 @@ pub struct NativeTarget {
     pub detail: String,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeModTargetState {
+    Running,
+    Ineligible,
+    Failed,
+    Indeterminate,
+    Unloaded,
+    NotLoaded,
+    RolledBack,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeModTargetStatus {
+    pub pid: u32,
+    pub executable: String,
+    pub state: NativeModTargetState,
+    pub detail: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeModRecord {
@@ -94,6 +115,7 @@ pub struct NativeModRecord {
     pub targets: Vec<String>,
     pub enabled: bool,
     pub status: String,
+    pub target_statuses: Vec<NativeModTargetStatus>,
 }
 
 #[derive(Serialize)]
@@ -113,6 +135,38 @@ pub struct NativeModManager {
     root: PathBuf,
     state: Mutex<PersistedState>,
     statuses: Mutex<HashMap<String, String>>,
+    target_statuses: Mutex<HashMap<String, Vec<NativeModTargetStatus>>>,
+}
+
+fn merge_rollback_statuses(
+    previous: &[NativeModTargetStatus],
+    rollback: &[NativeModTargetStatus],
+) -> Vec<NativeModTargetStatus> {
+    rollback
+        .iter()
+        .map(|current| {
+            let Some(old) = previous.iter().find(|old| old.pid == current.pid) else {
+                return current.clone();
+            };
+            match (&old.state, &current.state) {
+                (NativeModTargetState::Failed, NativeModTargetState::Indeterminate)
+                | (NativeModTargetState::Indeterminate, NativeModTargetState::Indeterminate) => {
+                    current.clone()
+                }
+                (NativeModTargetState::Failed, _) => old.clone(),
+                (NativeModTargetState::Running, NativeModTargetState::Unloaded)
+                | (NativeModTargetState::Running, NativeModTargetState::NotLoaded) => {
+                    NativeModTargetStatus {
+                        pid: current.pid,
+                        executable: current.executable.clone(),
+                        state: NativeModTargetState::RolledBack,
+                        detail: "This target's load was rolled back after another target failed.".into(),
+                    }
+                }
+                _ => current.clone(),
+            }
+        })
+        .collect()
 }
 
 impl NativeModManager {
@@ -123,6 +177,7 @@ impl NativeModManager {
             root,
             state: Mutex::new(state),
             statuses: Mutex::new(HashMap::new()),
+            target_statuses: Mutex::new(HashMap::new()),
         }
     }
 
@@ -193,11 +248,49 @@ impl NativeModManager {
         }
     }
 
+    fn target_status_snapshot(&self, id: &str) -> Vec<NativeModTargetStatus> {
+        self.target_statuses
+            .lock()
+            .ok()
+            .and_then(|statuses| statuses.get(id).cloned())
+            .unwrap_or_default()
+    }
+
+    fn set_target_statuses(&self, id: &str, statuses: Vec<NativeModTargetStatus>) {
+        if let Ok(mut stored) = self.target_statuses.lock() {
+            if statuses.is_empty() {
+                stored.remove(id);
+            } else {
+                stored.insert(id.to_string(), statuses);
+            }
+        }
+    }
+
     pub fn list(&self) -> NativeModList {
         let enabled = self.enabled_snapshot();
         let statuses = self.statuses.lock().map(|s| s.clone()).unwrap_or_default();
         let mut mods = Vec::new();
         let mut errors = Vec::new();
+
+        // Keep per-process lifecycle state only while the corresponding PID is still
+        // present. If process discovery fails, preserve the last known state instead
+        // of incorrectly treating every target as exited.
+        let (targets, discovery_succeeded) = match discover_targets() {
+            Ok(targets) => (targets, true),
+            Err(e) => {
+                errors.push(e);
+                (Vec::new(), false)
+            }
+        };
+        if discovery_succeeded {
+            let active_pids: HashSet<u32> = targets.iter().map(|target| target.pid).collect();
+            if let Ok(mut stored) = self.target_statuses.lock() {
+                stored.retain(|_, per_target| {
+                    per_target.retain(|status| active_pids.contains(&status.pid));
+                    !per_target.is_empty()
+                });
+            }
+        }
 
         let mut folders: Vec<PathBuf> = match fs::read_dir(self.packages_dir()) {
             Ok(entries) => entries.filter_map(Result::ok).map(|e| e.path())
@@ -246,13 +339,9 @@ impl NativeModManager {
                 targets: manifest.targets,
                 enabled: is_enabled,
                 status,
+                target_statuses: self.target_status_snapshot(&manifest.id),
             });
         }
-
-        let targets = match discover_targets() {
-            Ok(targets) => targets,
-            Err(e) => { errors.push(e); Vec::new() }
-        };
 
         NativeModList {
             dir: self.root.to_string_lossy().to_string(),
