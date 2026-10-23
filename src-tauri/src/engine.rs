@@ -19,6 +19,12 @@ use tauri::{AppHandle, Emitter};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+fn is_sensitive_variable_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    ["password", "passwd", "secret", "token", "api_key", "apikey", "authorization", "cookie", "credential"]
+        .iter().any(|needle| lower.contains(needle))
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -43,6 +49,10 @@ pub struct Engine {
     runs: Mutex<HashMap<String, RunHandle>>,
     autos: Mutex<HashMap<String, AutoRuntime>>,
     nodes: Mutex<HashMap<String, HashMap<String, NodeState>>>,
+    /// Active per-run variable stores, separate from the persisted automation configuration.
+    variable_stores: Mutex<HashMap<String, Arc<Mutex<HashMap<String, Value>>>>>,
+    /// Last completed run's safe-to-inspect variable snapshot, retained for debugger visibility.
+    last_variables: Mutex<HashMap<String, Value>>,
     logs: Mutex<VecDeque<LogEntry>>,
     hist: Mutex<HashMap<String, VecDeque<RunRecord>>>,
     seq: AtomicU64,
@@ -71,6 +81,8 @@ impl Engine {
             runs: Default::default(),
             autos: Default::default(),
             nodes: Default::default(),
+            variable_stores: Default::default(),
+            last_variables: Default::default(),
             logs: Mutex::new(logs),
             hist: Mutex::new(hist),
             seq: AtomicU64::new(seq),
@@ -157,6 +169,23 @@ impl Engine {
     }
     pub fn history(&self, id: &str) -> Vec<RunRecord> {
         self.hist.lock().unwrap().get(id).map(|h| h.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Returns an inspector snapshot of the active or most recently completed run.
+    /// Potential secrets are redacted before crossing the UI boundary.
+    pub fn workflow_variables(&self, id: &str) -> Value {
+        let active = self.variable_stores.lock().ok().and_then(|stores| stores.get(id).cloned());
+        let values = if let Some(store) = active {
+            store.lock().ok().map(|map| Value::Object(map.iter().map(|(key, value)| {
+                (key.clone(), if is_sensitive_variable_name(key) { Value::String("[REDACTED]".into()) } else { value.clone() })
+            }).collect())).unwrap_or_else(|| json!({}))
+        } else {
+            self.last_variables.lock().ok().and_then(|values| values.get(id).cloned()).unwrap_or_else(|| json!({}))
+        };
+        json!({
+            "active": self.variable_stores.lock().map(|stores| stores.contains_key(id)).unwrap_or(false),
+            "variables": values
+        })
     }
 
     // ----- control -----
@@ -302,12 +331,15 @@ impl Engine {
         });
         self.log("info", &auto.id, &auto.name, None, "Automation started".into());
         let entries = entry_nodes(&auto);
+        let variables = Arc::new(Mutex::new(HashMap::new()));
+        self.variable_stores.lock().unwrap().insert(auto.id.clone(), variables.clone());
+        self.last_variables.lock().unwrap().remove(&auto.id);
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
             auto: Arc::new(auto),
             token: parent.child_token(),
             visits: Default::default(),
-            variables: Arc::new(Mutex::new(HashMap::new())),
+            variables,
             rate: Default::default(),
             handles: Default::default(),
             errors: AtomicU32::new(0),
@@ -346,6 +378,11 @@ impl Engine {
             }
         }
         let label = if errors > 0 { format!("{outcome} ({errors} errors)") } else { outcome.to_string() };
+        let snapshot = ctx.variables.lock().ok().map(|values| Value::Object(values.iter().map(|(key, value)| {
+            (key.clone(), if is_sensitive_variable_name(key) { Value::String("[REDACTED]".into()) } else { value.clone() })
+        }).collect())).unwrap_or_else(|| json!({}));
+        self.last_variables.lock().unwrap().insert(aid.clone(), snapshot);
+        self.variable_stores.lock().unwrap().remove(&aid);
         self.set_auto(&aid, |r| {
             r.status = outcome.into();
             r.started_at = None;
