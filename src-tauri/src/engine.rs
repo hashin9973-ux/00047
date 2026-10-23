@@ -750,6 +750,10 @@ fn branch(ctx: Arc<Ctx>, start: String) -> BoxFuture<'static, ()> {
 async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     let eng = &ctx.eng;
     let aid = ctx.auto.id.clone();
+    if !eng.debug_gate(ctx, node).await {
+        eng.set_node(&aid, &node.id, "idle", None, "cancelled while paused".into());
+        return vec![];
+    }
     let Some(blk) = registry().get(node.kind.as_str()) else {
         ctx.errors.fetch_add(1, Ordering::SeqCst);
         ctx.log("error", Some(node), format!("unknown block type '{}'", node.kind));
@@ -802,6 +806,52 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         variables: ctx.variables.clone(),
     };
 
+    // Loop and subflow blocks are interpreted by the engine so they can execute graph regions,
+    // not merely perform one action like ordinary blocks.
+    if node.kind == "act.for_each_end" {
+        eng.set_node(&aid, &node.id, "done", None, "loop body boundary".into());
+        ctx.log("info", Some(node), "For Each End reached".into());
+        return vec![];
+    }
+    if node.kind == "act.for_each" {
+        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e); }
+        let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
+        let started = Instant::now();
+        let result = if timeout > 0.0 {
+            match tokio::time::timeout(Duration::from_secs_f64(timeout), execute_for_each(ctx.clone(), node)).await {
+                Ok(r) => r, Err(_) => Err(format!("For Each timed out after {timeout}s")),
+            }
+        } else { execute_for_each(ctx.clone(), node).await };
+        return match result {
+            Ok(()) => {
+                let dt = started.elapsed().as_secs_f64();
+                eng.set_node(&aid, &node.id, "done", None, format!("all items processed · {dt:.1}s"));
+                ctx.log("info", Some(node), format!("For Each processed all items ({dt:.2}s)"));
+                ctx.out(&node.id, &["after"])
+            }
+            Err(e) => route_node_error(ctx, node, e),
+        };
+    }
+    if node.kind == "act.call_subflow" {
+        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e); }
+        let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
+        let started = Instant::now();
+        let result = if timeout > 0.0 {
+            match tokio::time::timeout(Duration::from_secs_f64(timeout), execute_subflow(ctx.clone(), node)).await {
+                Ok(r) => r, Err(_) => Err(format!("Subflow timed out after {timeout}s")),
+            }
+        } else { execute_subflow(ctx.clone(), node).await };
+        return match result {
+            Ok(()) => {
+                let dt = started.elapsed().as_secs_f64();
+                eng.set_node(&aid, &node.id, "done", None, format!("subflow completed · {dt:.1}s"));
+                ctx.log("info", Some(node), format!("Subflow completed ({dt:.2}s)"));
+                ctx.out(&node.id, &["if", "after"])
+            }
+            Err(e) => route_node_error(ctx, node, e),
+        };
+    }
+
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
     let t0 = Instant::now();
     let res = if timeout > 0.0 {
@@ -846,22 +896,122 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             ctx.log("info", Some(node), format!("{txt} ({dt:.2}s)"));
             ctx.out(&node.id, kinds)
         }
-        Err(e) => {
-            ctx.errors.fetch_add(1, Ordering::SeqCst);
-            eng.set_node(&aid, &node.id, "failed", None, e.clone());
-            ctx.log("error", Some(node), format!("failed: {e}"));
-            match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
-                "else" => ctx.out(&node.id, &["else"]),
-                "after" => ctx.out(&node.id, &["after"]),
-                "abort" => {
-                    ctx.log("warn", Some(node), "Aborting automation (On failure = Abort)".into());
-                    ctx.abort();
-                    vec![]
-                }
-                _ => vec![],
-            }
-        }
+        Err(e) => route_node_error(ctx, node, e)
     }
+}
+
+
+fn route_node_error(ctx: &Arc<Ctx>, node: &Node, e: String) -> Vec<String> {
+    ctx.errors.fetch_add(1, Ordering::SeqCst);
+    ctx.eng.set_node(&ctx.auto.id, &node.id, "failed", None, e.clone());
+    ctx.log("error", Some(node), format!("failed: {e}"));
+    match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
+        "else" => ctx.out(&node.id, &["else"]),
+        "after" => ctx.out(&node.id, &["after"]),
+        "abort" => {
+            ctx.log("warn", Some(node), "Aborting automation (On failure = Abort)".into());
+            ctx.abort();
+            vec![]
+        }
+        _ => vec![],
+    }
+}
+
+/// Runs the IF-connected loop body sequentially for each array item. The marker block terminates each
+/// path; body branches are drained per item so later iterations never race earlier ones.
+async fn execute_for_each(ctx: Arc<Ctx>, node: &Node) -> Result<(), String> {
+    let cfg = &node.cfg;
+    let items_name = cfg.get("itemsVar").and_then(Value::as_str).unwrap_or("");
+    let item_name = cfg.get("itemVar").and_then(Value::as_str).unwrap_or("item");
+    let index_name = cfg.get("indexVar").and_then(Value::as_str).unwrap_or("index");
+    let items = ctx.variables.lock().map_err(|e|e.to_string())?.get(items_name).cloned()
+        .ok_or_else(||format!("array variable '{items_name}' is not set"))?;
+    let items = items.as_array().ok_or_else(||format!("variable '{items_name}' must contain a JSON array"))?.clone();
+    if items.len() > 100_000 { return Err("For Each input is limited to 100,000 items".into()); }
+    if items.is_empty() {
+        ctx.log("info",Some(node),"For Each received an empty array; body skipped".into());
+        return Ok(());
+    }
+    let starts = ctx.out(&node.id,&["if"]);
+    if starts.is_empty() { return Err("For Each needs an IF wire to the first block in its loop body".into()); }
+    if !ctx.auto.nodes.iter().any(|n|n.kind=="act.for_each_end") {
+        return Err("Add a For Each End marker to the loop body".into());
+    }
+    for (i,item) in items.into_iter().enumerate() {
+        if ctx.token.is_cancelled(){return Err("cancelled".into())}
+        {
+            let mut vars=ctx.variables.lock().map_err(|e|e.to_string())?;
+            vars.insert(item_name.to_string(),item);
+            vars.insert(index_name.to_string(),Value::from(i as u64));
+        }
+        (ctx.eng.app.emit("for-each-progress",json!({"autoId":ctx.auto.id,"nodeId":node.id,"index":i+1,"total":ctx.variables.lock().ok().and_then(|v|v.get(items_name).and_then(Value::as_array).map(|a|a.len())).unwrap_or(i+1)}))).ok();
+        ctx.log("debug",Some(node),format!("For Each item {} starting",i+1));
+        let mut found_end=false;
+        for start in &starts {
+            found_end |= run_loop_path(ctx.clone(),start.clone()).await?;
+        }
+        if !found_end { return Err("Loop body path did not reach a For Each End marker".into()); }
+    }
+    // Leave the last item value available for diagnostics, matching typical iterator semantics.
+    Ok(())
+}
+
+async fn run_loop_path(ctx: Arc<Ctx>, start: String) -> Result<bool,String> {
+    let mut pending=vec![start];
+    let mut reached_end=false;
+    while let Some(id)=pending.pop() {
+        if ctx.token.is_cancelled(){return Err("cancelled".into())}
+        let Some(node)=ctx.node(&id) else {continue};
+        if node.kind=="act.for_each_end" {
+            ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"loop body boundary".into());
+            ctx.log("info",Some(&node),"For Each End reached".into());
+            reached_end=true;
+            continue;
+        }
+        let next=exec_node(&ctx,&node).await;
+        for id in next.into_iter().rev(){pending.push(id)}
+    }
+    Ok(reached_end)
+}
+
+async fn execute_subflow(ctx: Arc<Ctx>, node: &Node) -> Result<(),String> {
+    if ctx.depth >= 8 { return Err("Subflow nesting is limited to 8 levels".into()); }
+    let id=node.cfg.get("automationId").and_then(Value::as_str).unwrap_or("").trim();
+    if id.is_empty(){return Err("Subflow automation ID is required".into())}
+    if id==ctx.auto.id{return Err("An automation cannot directly call itself as a subflow".into())}
+    let child=ctx.eng.store.get(id).ok_or_else(||format!("Subflow automation '{id}' was not found"))?;
+    if let Err(errors)=validate_automation(&child){return Err(format!("Subflow is invalid: {}",errors.join("; ")))}
+    let mut values=HashMap::<String,Value>::new();
+    let input_map:Value=serde_json::from_str(node.cfg.get("inputMapJson").and_then(Value::as_str).unwrap_or("{}"))
+        .map_err(|e|format!("Input mapping JSON invalid: {e}"))?;
+    for (child_var,parent_var) in input_map.as_object().ok_or("Input map must be a JSON object")? {
+        let source=ctx.variables.lock().map_err(|e|e.to_string())?.get(parent_var.as_str().ok_or("Parent mapping must be a variable name")?).cloned()
+            .ok_or_else(||format!("Parent input variable '{parent_var}' is not set"))?;
+        values.insert(child_var.clone(),source);
+    }
+    let entries=entry_nodes(&child);
+    if entries.is_empty(){return Err("Subflow has no entry point".into())}
+    ctx.log("info",Some(node),format!("Calling subflow '{}' with {} entry path(s)",child.name,entries.len()));
+    let child_ctx=Arc::new(Ctx{
+        eng:ctx.eng.clone(),auto:Arc::new(child),token:ctx.token.child_token(),
+        visits:Default::default(),variables:Arc::new(Mutex::new(values)),rate:Default::default(),
+        handles:Default::default(),errors:AtomicU32::new(0),aborted:AtomicBool::new(false),
+        single:entries.len()==1,depth:ctx.depth+1,
+    });
+    let tasks:Vec<_>=entries.into_iter().map(|entry|tokio::spawn(run_entry(child_ctx.clone(),entry))).collect();
+    for task in tasks { task.await.map_err(|e|format!("Subflow task failed: {e}"))?; }
+    if ctx.token.is_cancelled(){return Err("cancelled".into())}
+    let errors=child_ctx.errors.load(Ordering::SeqCst);
+    if child_ctx.aborted.load(Ordering::SeqCst)||errors>0{return Err(format!("Subflow '{}' failed with {errors} block error(s)",child_ctx.auto.name))}
+    let output_map:Value=serde_json::from_str(node.cfg.get("outputMapJson").and_then(Value::as_str).unwrap_or("{}"))
+        .map_err(|e|format!("Output mapping JSON invalid: {e}"))?;
+    for (child_var,parent_var) in output_map.as_object().ok_or("Output map must be a JSON object")? {
+        let parent_var=parent_var.as_str().ok_or("Output mapping must use variable names")?;
+        let value=child_ctx.variables.lock().map_err(|e|e.to_string())?.get(child_var).cloned()
+            .ok_or_else(||format!("Subflow output variable '{child_var}' was not set"))?;
+        ctx.variables.lock().map_err(|e|e.to_string())?.insert(parent_var.to_string(),value);
+    }
+    Ok(())
 }
 
 
