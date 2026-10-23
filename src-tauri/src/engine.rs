@@ -54,7 +54,7 @@ pub struct Engine {
     debug_step_next: Mutex<HashSet<String>>,
     debug_notify: Notify,
     run_variables: Mutex<HashMap<String, Arc<Mutex<HashMap<String, Value>>>>>,
-    last_variables: Mutex<HashMap<String, HashMap<String, Value>>>,
+    last_variables: Mutex<HashMap<String, Vec<Value>>>,
     disk: LogStore,
 }
 
@@ -197,21 +197,14 @@ impl Engine {
         Ok(snapshot)
     }
 
-    /// Returns current or last-run variable diagnostics, suppressing likely credentials and never reading secrets from the vault.
+    /// Returns current or last-run variable diagnostics without cloning full arrays/objects into the WebView.
     pub fn workflow_variables(&self, id: &str) -> Value {
         let current = self.run_variables.lock().ok().and_then(|m|m.get(id).cloned());
-        let values = current.as_ref().and_then(|v|v.lock().ok().map(|x|x.clone()))
-            .or_else(||self.last_variables.lock().ok().and_then(|m|m.get(id).cloned()))
-            .unwrap_or_default();
-        let variables: Vec<Value> = values.into_iter().map(|(name,value)| {
-            let suspicious = {
-                let low=name.to_ascii_lowercase();
-                ["password","passwd","secret","token","credential","api_key","apikey","private_key"].iter().any(|needle|low.contains(needle))
-            };
-            let kind=match &value {Value::Null=>"null",Value::Bool(_)=>"boolean",Value::Number(_)=>"number",Value::String(_)=>"text",Value::Array(_)=>"array",Value::Object(_)=>"object"};
-            let rendered=match value {Value::String(s)=>s,other=>other.to_string()};
-            json!({"name":name,"type":kind,"value":if suspicious{"[redacted]".to_string()}else if rendered.chars().count()>2048{format!("{}…",rendered.chars().take(2048).collect::<String>())}else{rendered},"redacted":suspicious})
-        }).collect();
+        let variables = if let Some(store)=current.as_ref() {
+            store.lock().map(|values|values.iter().map(|(name,value)|variable_view(name,value)).collect::<Vec<_>>()).unwrap_or_default()
+        } else {
+            self.last_variables.lock().ok().and_then(|m|m.get(id).cloned()).unwrap_or_default()
+        };
         json!({"running":current.is_some(),"variables":variables})
     }
 
@@ -461,7 +454,7 @@ impl Engine {
         let outcome = if stopped { "stopped" } else if aborted { "failed" } else { "completed" };
         let ended = now_ms();
         let aid = ctx.auto.id.clone();
-        let variable_snapshot = ctx.variables.lock().map(|v|v.clone()).unwrap_or_default();
+        let variable_snapshot: Vec<Value> = ctx.variables.lock().map(|v|v.iter().map(|(name,value)|variable_view(name,value)).collect()).unwrap_or_default();
         self.last_variables.lock().unwrap().insert(aid.clone(), variable_snapshot);
         self.run_variables.lock().unwrap().remove(&aid);
         if let Some(m) = self.nodes.lock().unwrap().get_mut(&aid) {
@@ -494,6 +487,22 @@ impl Engine {
         let lvl = if aborted { "error" } else { "info" };
         self.log(lvl, &aid, &ctx.auto.name, None, format!("Automation {label} after {:.1}s", (ended - started) as f64 / 1000.0));
     }
+}
+
+fn variable_view(name:&str,value:&Value)->Value {
+    let low=name.to_ascii_lowercase();
+    let suspicious=["password","passwd","secret","token","credential","api_key","apikey","private_key"].iter().any(|needle|low.contains(needle));
+    let kind=match value {Value::Null=>"null",Value::Bool(_)=>"boolean",Value::Number(_)=>"number",Value::String(_)=>"text",Value::Array(_)=>"array",Value::Object(_)=>"object"};
+    let rendered=if suspicious {"[redacted]".to_string()} else {
+        match value {
+            Value::String(s) if s.chars().count()>2048=>format!("{}…",s.chars().take(2048).collect::<String>()),
+            Value::String(s)=>s.clone(),
+            Value::Array(a)=>format!("[array: {} items]",a.len()),
+            Value::Object(o)=>format!("[object: {} keys]",o.len()),
+            other=>other.to_string(),
+        }
+    };
+    json!({"name":name,"type":kind,"value":rendered,"redacted":suspicious})
 }
 
 struct Ctx {
