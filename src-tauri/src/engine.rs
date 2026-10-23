@@ -402,7 +402,7 @@ impl Engine {
         for h in hs {
             let _ = h.await;
         }
-        self.debug_resume(&auto.id);
+        self.debug_resume(&ctx.auto.id);
         let stopped = parent.is_cancelled();
         let aborted = ctx.aborted.load(Ordering::SeqCst);
         let errors = ctx.errors.load(Ordering::SeqCst);
