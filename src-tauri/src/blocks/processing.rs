@@ -598,7 +598,7 @@ fn foreach_spec()->Value{
 impl Block for ForEach{
     fn title(&self)-> &'static str{"For Each Item"} fn category(&self)->Cat{Cat::Action} fn supports_timeout(&self)->bool{true}
     fn spec(&self)->Option<Value>{Some(foreach_spec())}
-    fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&foreach_spec(),c)?;no_nul(c,&["itemsVar","itemVar","indexVar"])?;for k in ["itemsVar","itemVar","indexVar"]{if !valid_name(&txt(c,k)){return Err(format!("{k} must be a valid variable name"))}}if txt(c,"itemVar")==txt(c,"indexVar"){return Err("Item and index variables must be different".into())}Ok(())}
+    fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&foreach_spec(),c)?;no_nul(c,&["itemsVar","itemVar","indexVar"])?;for k in ["itemsVar","itemVar","indexVar"]{if !valid_name(&txt(c,k)){return Err(format!("{k} must be a valid variable name"))}}if txt(c,"itemVar")==txt(c,"indexVar"){return Err("Item and index variables must be different".into())}if txt(c,"itemsVar")==txt(c,"itemVar")||txt(c,"itemsVar")==txt(c,"indexVar"){return Err("Array source, item, and index variables must all be different".into())}Ok(())}
     async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Err("For Each Item is executed by the workflow engine.".into())}
 }
 struct ForEachEnd;
