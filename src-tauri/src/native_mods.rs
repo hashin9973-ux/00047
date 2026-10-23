@@ -1860,7 +1860,17 @@ mod win {
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
         fn CloseHandle(handle: Handle) -> i32;
         fn GetLastError() -> u32;
+        fn GetCurrentProcess() -> Handle;
         fn GetCurrentProcessId() -> u32;
+        fn DuplicateHandle(
+            source_process: Handle,
+            source_handle: Handle,
+            target_process: Handle,
+            target_handle: *mut Handle,
+            desired_access: u32,
+            inherit_handle: i32,
+            options: u32,
+        ) -> i32;
         fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> Handle;
         fn Process32FirstW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
         fn Process32NextW(snapshot: Handle, entry: *mut ProcessEntry32W) -> i32;
@@ -1929,11 +1939,17 @@ mod win {
             return;
         }
 
-        // Keep the quarantine until this exact process object exits. If opening a
-        // watcher or spawning its thread fails, leave this PID quarantined for the
-        // rest of the app session rather than risking another operation.
-        let watcher = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
-        if is_invalid(watcher) {
+        // Duplicate the original process handle instead of reopening by PID.
+        // A process can exit and its PID can be reused between the earlier liveness
+        // check and OpenProcess(pid); waiting on a new process would then clear or
+        // retain quarantine for the wrong process. A duplicated handle references
+        // the same kernel process object even after PID reuse.
+        let mut watcher: Handle = std::ptr::null_mut();
+        let current = unsafe { GetCurrentProcess() };
+        let duplicated = unsafe {
+            DuplicateHandle(current, process, current, &mut watcher, SYNCHRONIZE, 0, 0)
+        };
+        if duplicated == 0 || is_invalid(watcher) {
             if unsafe { WaitForSingleObject(process, 0) } == WAIT_OBJECT_0 {
                 if let Ok(mut pids) = indeterminate_pids().lock() {
                     pids.remove(&pid);
