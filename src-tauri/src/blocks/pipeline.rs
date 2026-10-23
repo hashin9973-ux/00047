@@ -130,7 +130,7 @@ struct UiClick;
 impl Block for UiClick {
  fn title(&self)->&'static str{"Click UI Element"} fn category(&self)->Cat{Cat::Action} fn supports_timeout(&self)->bool{true} fn risky(&self)->bool{true}
  fn spec(&self)->Option<Value>{Some(ui_action_spec("Click UI Element","mouse-pointer-2","click"))}
- fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&ui_action_spec("Click UI Element","mouse-pointer-2","click"),c)?;no_nul(c,&["windowTitle","elementName","automationId"])?;if ["windowTitle","elementName","automationId"].iter().all(|k|txt(c,k).is_empty()){return Err("Specify at least one UI selector".into())};Ok(())}
+ fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&ui_action_spec("Click UI Element","mouse-pointer-2","click"),c)?;no_nul(c,&["windowTitle","elementName","automationId"])?;if ["elementName","automationId","controlType"].iter().all(|k|txt(c,k).is_empty()){return Err("Specify at least one UI selector".into())};Ok(())}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let c=ui_cfg(cx)?;let t=cx.cfg["timeoutSec"].as_f64().unwrap_or(10.0);let start=std::time::Instant::now();loop{match ui_probe(cx,&c,"click").await{Ok(s) if s.found=>{(cx.log)("info",format!("Invoked UI control '{}'",s.name));return Ok(Outcome::Satisfied)},Ok(_)=>{},Err(e) if e.contains("Could not find")=>{},Err(e)=>return Err(e)}if t<=0.0||start.elapsed().as_secs_f64()>=t{return Err("UI element was not found before timeout".into())}tokio::select!{_=tokio::time::sleep(Duration::from_millis(250))=>{},_=cx.token.cancelled()=>return Err("cancelled".into())}}}
 }
 struct UiSetValue;
@@ -138,7 +138,7 @@ struct UiSetValue;
 impl Block for UiSetValue {
  fn title(&self)->&'static str{"Set UI Element Value"} fn category(&self)->Cat{Cat::Action} fn supports_timeout(&self)->bool{true} fn risky(&self)->bool{true}
  fn spec(&self)->Option<Value>{Some(ui_action_spec("Set UI Element Value","app-window","set"))}
- fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&ui_action_spec("Set UI Element Value","app-window","set"),c)?;no_nul(c,&["windowTitle","elementName","automationId","value"])?;if ["windowTitle","elementName","automationId"].iter().all(|k|txt(c,k).is_empty()){return Err("Specify at least one UI selector".into())};Ok(())}
+ fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&ui_action_spec("Set UI Element Value","app-window","set"),c)?;no_nul(c,&["windowTitle","elementName","automationId","value"])?;if ["elementName","automationId","controlType"].iter().all(|k|txt(c,k).is_empty()){return Err("Specify at least one UI selector".into())};Ok(())}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let c=ui_cfg(cx)?;let t=cx.cfg["timeoutSec"].as_f64().unwrap_or(10.0);let start=std::time::Instant::now();loop{match ui_probe(cx,&c,"set").await{Ok(s) if s.found=>{(cx.log)("info",format!("Set value on UI control '{}'",s.name));return Ok(Outcome::Satisfied)},Ok(_)=>{},Err(e)=>return Err(e)}if t<=0.0||start.elapsed().as_secs_f64()>=t{return Err("UI element was not found before timeout".into())}tokio::select!{_=tokio::time::sleep(Duration::from_millis(250))=>{},_=cx.token.cancelled()=>return Err("cancelled".into())}}}
 }
 struct UiGetValue;
@@ -146,7 +146,7 @@ struct UiGetValue;
 impl Block for UiGetValue {
  fn title(&self)->&'static str{"Read UI Element Value"} fn category(&self)->Cat{Cat::Action} fn supports_timeout(&self)->bool{true}
  fn spec(&self)->Option<Value>{Some(ui_action_spec("Read UI Element Value","app-window","get"))}
- fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&ui_action_spec("Read UI Element Value","app-window","get"),c)?;no_nul(c,&["windowTitle","elementName","automationId","saveAs"])?;if ["windowTitle","elementName","automationId"].iter().all(|k|txt(c,k).is_empty()){return Err("Specify at least one UI selector".into())};require_var(c,"saveAs")}
+ fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&ui_action_spec("Read UI Element Value","app-window","get"),c)?;no_nul(c,&["windowTitle","elementName","automationId","saveAs"])?;if ["elementName","automationId","controlType"].iter().all(|k|txt(c,k).is_empty()){return Err("Specify at least one UI selector".into())};require_var(c,"saveAs")}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let c=ui_cfg(cx)?;let s=ui_probe(cx,&c,"probe").await?;if !s.found{return Err("UI element was not found".into())};cx.set_variable(txt(&cx.cfg,"saveAs"),Value::String(if s.value.is_empty(){s.name}else{s.value}))?;Ok(Outcome::Satisfied)}
 }
 
@@ -156,7 +156,7 @@ fn csv_parse(input:&str)->Result<Vec<Vec<String>>,String>{
  while let Some(ch)=it.next(){if quoted {if ch=='"' {if it.peek()==Some(&'"'){it.next();field.push('"')}else{quoted=false}}else{field.push(ch)}}else{match ch{','=>row.push(std::mem::take(&mut field)),'\r'=>{if it.peek()==Some(&'\n'){it.next();}row.push(std::mem::take(&mut field));if !(row.len()==1&&row[0].is_empty()){rows.push(std::mem::take(&mut row));}},'\n'=>{row.push(std::mem::take(&mut field));if !(row.len()==1&&row[0].is_empty()){rows.push(std::mem::take(&mut row));}},'"' if field.is_empty()=>quoted=true,'"'=>return Err("Unexpected quote inside unquoted CSV field".into()),_=>field.push(ch)}}}
  if quoted{return Err("CSV has an unclosed quoted field".into())}if !field.is_empty()||!row.is_empty(){row.push(field);rows.push(row)}if rows.len()>100_001{return Err("CSV exceeds 100,000 data rows".into())}Ok(rows)
 }
-fn csv_encode(s:&str)->String { if s.contains([',','"','\n','\r']){format!("\"{}\"",s.replace('"',"\"\""))}else{s.to_string()} }
+fn csv_encode(s:&str)->String { if s.chars().any(|ch|matches!(ch,','|'"'|'\n'|'\r')){format!("\"{}\"",s.replace('"',"\"\""))}else{s.to_string()} }
 fn value_string(v:&Value)->String { match v {Value::Null=>String::new(),Value::String(s)=>s.clone(),_=>v.to_string()} }
 struct CsvRead;
 fn csv_read_spec()->Value{action_spec("Read CSV into Variable","file-spreadsheet","Reads a bounded CSV file into an array of objects keyed by the header row.",vec![json!({"key":"path","label":"CSV path","type":"text","required":true,"maxLen":1000}),json!({"key":"saveAs","label":"Array variable","type":"text","required":true,"maxLen":64}),json!({"key":"maxBytes","label":"Maximum file size","type":"number","min":1,"max":10485760,"default":2097152,"unit":"bytes"}),json!({"preset":"onFail"})],"Read CSV → {saveAs}","CSV is parsed in-process. File size and row count are bounded to avoid loading unbounded inputs into memory.")}
@@ -289,8 +289,8 @@ fn secret_exists_spec()->Value{let f=vec![json!({"key":"key","label":"Secret nam
 #[async_trait] impl Block for SecretExists{
  fn title(&self)->&'static str{"Secret Exists"} fn category(&self)->Cat{Cat::Condition}
  fn spec(&self)->Option<Value>{Some(secret_exists_spec())}
- fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&secret_exists_spec(),c)?;no_nul(c,&["key"])?;if secret_key(c).is_empty(){return Err("Secret name is required".into())};Ok(())}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let s=secret_script(r#"Write-Output ([bool]$store.ContainsKey($key)|ConvertTo-Json -Compress)"#,&secret_key(&cx.cfg));let out=extra::powershell(cx,&s).await?;let exists=serde_json::from_str::<bool>(out.trim()).map_err(|e|e.to_string())?;Ok(condition_ok(exists))}
+ fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&secret_exists_spec(),c)?;no_nul(c,&["key"])?;if secret_key(c).is_empty(){return Err("Secret name is required".into())};extra::wait_settings(c).map(|_|())}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let key=secret_key(&cx.cfg);let(behavior,poll,stable,timeout)=extra::wait_settings(&cx.cfg)?;extra::poll_condition(cx,&behavior,poll,stable,timeout,||{let key=key.clone();Box::pin(async move{let s=secret_script(r#"Write-Output ([bool]$store.ContainsKey($key)|ConvertTo-Json -Compress)"#,&key);let out=extra::powershell(cx,&s).await?;let exists=serde_json::from_str::<bool>(out.trim()).map_err(|e|e.to_string())?;Ok(exists)}) as extra::Probe<'_>}).await}
 }
 
 // ---------------- Reusable workflows (engine executes this marker inline) ----------------
