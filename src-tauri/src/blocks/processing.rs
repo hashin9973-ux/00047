@@ -599,6 +599,11 @@ impl Block for ForEach{
     fn title(&self)-> &'static str{"For Each Item"} fn category(&self)->Cat{Cat::Action} fn supports_timeout(&self)->bool{true}
     fn spec(&self)->Option<Value>{Some(foreach_spec())}
     fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&foreach_spec(),c)?;no_nul(c,&["itemsVar","itemVar","indexVar"])?;for k in ["itemsVar","itemVar","indexVar"]{if !valid_name(&txt(c,k)){return Err(format!("{k} must be a valid variable name"))}}if txt(c,"itemVar")==txt(c,"indexVar"){return Err("Item and index variables must be different".into())}if txt(c,"itemsVar")==txt(c,"itemVar")||txt(c,"itemsVar")==txt(c,"indexVar"){return Err("Array source, item, and index variables must all be different".into())}Ok(())}
+    #[cfg(test)]
+    fn validate_loop_variable_aliases() {
+        assert!(ForEach.validate(&json!({"itemsVar":"rows","itemVar":"rows","indexVar":"index","timeoutSec":0,"onFail":"stop"})).is_err());
+        assert!(ForEach.validate(&json!({"itemsVar":"rows","itemVar":"item","indexVar":"index","timeoutSec":0,"onFail":"stop"})).is_ok());
+    }
     async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Err("For Each Item is executed by the workflow engine.".into())}
 }
 struct ForEachEnd;
@@ -685,7 +690,7 @@ impl Block for CallSubflow{
     fn validate(&self,c:&Value)->Result<(),String>{
         spec::validate(&subflow_spec(),c)?;no_nul(c,&["automationId","inputMapJson","outputMapJson"])?;
         if txt(c,"automationId").is_empty(){return Err("Automation ID is required".into())}
-        for key in ["inputMapJson","outputMapJson"]{let v:Value=serde_json::from_str(&raw(c,key)).map_err(|e|format!("{key} must be valid JSON: {e}"))?;if !v.is_object(){return Err(format!("{key} must be a JSON object"))}for (a,b) in v.as_object().unwrap(){if !valid_name(a)||!b.as_str().is_some_and(valid_name){return Err(format!("{key} must map valid variable names to variable names"))}}}
+        for key in ["inputMapJson","outputMapJson"]{let raw_map=c.get(key).and_then(Value::as_str).filter(|s|!s.trim().is_empty()).unwrap_or("{}");let v:Value=serde_json::from_str(raw_map).map_err(|e|format!("{key} must be valid JSON: {e}"))?;if !v.is_object(){return Err(format!("{key} must be a JSON object"))}for (a,b) in v.as_object().unwrap(){if !valid_name(a)||!b.as_str().is_some_and(valid_name){return Err(format!("{key} must map valid variable names to variable names"))}}}
         Ok(())
     }
     async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Err("Call Subflow is executed by the workflow engine.".into())}
@@ -754,6 +759,7 @@ mod tests {
     #[test]
     fn reusable_flow_blocks_validate_safe_references(){
         assert!(CallSubflow.validate(&json!({"automationId":"abc","inputMapJson":"{\"param\":\"source\"}","outputMapJson":"{\"result\":\"target\"}","timeoutSec":30,"onFail":"stop"})).is_ok());
+        assert!(CallSubflow.validate(&json!({"automationId":"abc","timeoutSec":30,"onFail":"stop"})).is_ok());
         assert!(TryCatch.validate(&json!({"tryAutomationId":"try-id","catchAutomationId":"catch-id","errorVar":"err","timeoutSec":60,"onFail":"stop"})).is_ok());
         assert!(TryCatch.validate(&json!({"tryAutomationId":"same","catchAutomationId":"same","errorVar":"err","timeoutSec":60,"onFail":"stop"})).is_err());
     }
