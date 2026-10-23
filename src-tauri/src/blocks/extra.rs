@@ -643,10 +643,37 @@ impl Block for MediaControl{
 fn power_spec()->Value{simple_action_spec("Power Control","power","Locks, sleeps, hibernates, restarts, shuts down, or cancels a scheduled shutdown.",vec![json!({"key":"operation","label":"Operation","type":"select","default":"lock","options":[["lock","Lock workstation"],["sleep","Sleep"],["hibernate","Hibernate"],["shutdown","Shut down"],["restart","Restart"],["cancel_shutdown","Cancel pending shutdown"]]}),json!({"key":"delaySec","label":"Shutdown/restart delay","type":"number","min":0,"max":600,"step":5,"unit":"s","default":60,"show":{"key":"operation","in":["shutdown","restart"]}}),json!({"preset":"onFail"})],"Power: {operation}","Shutdown/restart default to a 60-second cancellation window. Sleep/hibernate availability depends on hardware and power policy. This block is marked risky; use it only in workflows you trust.")}
 struct PowerControl;
 #[async_trait]
-impl Block for PowerControl{
- fn title(&self)-> &'static str{"Power Control"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn supports_timeout(&self)->bool{true}fn spec(&self)->Option<Value>{Some(power_spec())}
- fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&power_spec(),c)}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let op=text(&cx.cfg,"operation");let delay=rng(&cx.cfg,"delaySec",60.0,0.0,600.0,"Shutdown delay")? as u32;let script=match op.as_str(){"lock"=>"rundll32.exe user32.dll,LockWorkStation".to_string(),"sleep"=>"Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class PowerNative { [DllImport(\"powrprof.dll\", SetLastError=true)] public static extern bool SetSuspendState(bool hibernate,bool forceCritical,bool disableWakeEvent); }'; [void][PowerNative]::SetSuspendState($false,$false,$false)".into(),"hibernate"=>"shutdown.exe /h".into(),"shutdown"=>format!("shutdown.exe /s /t {delay} /c \"Scheduled by 00047; use Cancel shutdown to abort.\""),"restart"=>format!("shutdown.exe /r /t {delay} /c \"Scheduled by 00047; use Cancel shutdown to abort.\""),"cancel_shutdown"=>"shutdown.exe /a".into(),_=>return Err("Unknown power operation".into())};let out=powershell(cx,&format!("$ErrorActionPreference='Stop'; {script}; 'Power operation requested.'")).await?;(cx.log)("warn",format!("Power control action '{}': {}",op,out));Ok(Outcome::Satisfied)}
+impl Block for PowerControl {
+    fn title(&self) -> &'static str { "Power Control" }
+    fn category(&self) -> Cat { Cat::Action }
+    fn risky(&self) -> bool { true }
+    fn supports_timeout(&self) -> bool { true }
+    fn spec(&self) -> Option<Value> { Some(power_spec()) }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        spec::validate(&power_spec(), c)?;
+        let op = text(c, "operation");
+        if !matches!(op.as_str(), "lock" | "sleep" | "hibernate" | "shutdown" | "restart" | "cancel_shutdown") {
+            return Err("Unknown power operation".into());
+        }
+        num(c, "delaySec", 60.0, 0.0, 600.0, "Shutdown delay").map(|_| ())
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        self.validate(&cx.cfg)?;
+        let op = text(&cx.cfg, "operation");
+        let delay = rng(&cx.cfg, "delaySec", 60.0, 0.0, 600.0, "Shutdown delay")? as u32;
+        let script = match op.as_str() {
+            "lock" => "rundll32.exe user32.dll,LockWorkStation; if($LASTEXITCODE -ne 0){throw \"LockWorkStation exited with code $LASTEXITCODE\"}".to_string(),
+            "sleep" => "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class PowerNative { [DllImport(\"powrprof.dll\", SetLastError=true)] public static extern bool SetSuspendState(bool hibernate,bool forceCritical,bool disableWakeEvent); }'; $ok=[PowerNative]::SetSuspendState($false,$false,$false); if(-not $ok){$code=[Runtime.InteropServices.Marshal]::GetLastWin32Error(); throw \"Windows refused sleep (Win32 error $code)\"}".to_string(),
+            "hibernate" => "shutdown.exe /h; if($LASTEXITCODE -ne 0){throw \"Hibernate request failed with exit code $LASTEXITCODE\"}".to_string(),
+            "shutdown" => format!("shutdown.exe /s /t {delay} /c \"Scheduled by 00047; use Cancel shutdown to abort.\"; if($LASTEXITCODE -ne 0){{throw \"Shutdown request failed with exit code $LASTEXITCODE\"}}"),
+            "restart" => format!("shutdown.exe /r /t {delay} /c \"Scheduled by 00047; use Cancel shutdown to abort.\"; if($LASTEXITCODE -ne 0){{throw \"Restart request failed with exit code $LASTEXITCODE\"}}"),
+            "cancel_shutdown" => "shutdown.exe /a; if($LASTEXITCODE -ne 0){throw \"Cancel shutdown failed with exit code $LASTEXITCODE\"}".to_string(),
+            _ => return Err("Unknown power operation".into()),
+        };
+        let out = powershell(cx, &format!("$ErrorActionPreference='Stop'; {script}; 'Power operation accepted by Windows.'")).await?;
+        (cx.log)("warn", format!("Power control action '{}': {}", op, out));
+        Ok(Outcome::Satisfied)
+    }
 }
 
 fn delete_spec()->Value{simple_action_spec("Delete or Recycle File","trash-2","Deletes a file or sends it to the Windows Recycle Bin.",vec![json!({"key":"path","label":"File path","type":"text","required":true,"maxLen":2048}),json!({"key":"mode","label":"Deletion method","type":"select","default":"recycle","options":[["recycle","Send to Recycle Bin"],["permanent","Delete permanently"]]}),json!({"preset":"onFail"})],"Delete: {path}","Does not support wildcard patterns. Permanent deletion is irreversible. Recycle Bin behavior depends on volume and Windows policy.")}
