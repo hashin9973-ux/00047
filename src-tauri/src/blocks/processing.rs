@@ -570,12 +570,14 @@ mod tests {
         let appended=fs::read_to_string(&path).unwrap();
         assert_eq!(appended.matches("name,value").count(),1);
         assert!(appended.contains("second,2"));
-        // Force the staged write to fail by providing a directory as the file destination.
-        let impossible=root.join("destination.csv");
-        fs::create_dir(&impossible).unwrap();
-        assert!(write_csv(&impossible,&[json!({"name":"third"})],',',false).is_err());
-        let backup_or_dir=fs::metadata(&impossible).unwrap();
-        assert!(backup_or_dir.is_dir());
+        // Force staging to fail by creating the exact temporary-path directory; the original file must remain intact.
+        let original=root.join("preserve.csv");
+        fs::write(&original,"original\r\n").unwrap();
+        let temporary=original.with_extension(format!("csv.{}.tmp",std::process::id()));
+        fs::create_dir(&temporary).unwrap();
+        assert!(write_csv(&original,&[json!({"name":"third"})],',',false).is_err());
+        assert_eq!(fs::read_to_string(&original).unwrap(),"original\r\n");
+        fs::remove_dir(&temporary).unwrap();
         fs::remove_dir_all(&root).unwrap();
     }
     #[test]
