@@ -458,7 +458,7 @@ fn foreach_spec()->Value{
         json!({"key":"itemVariable","label":"Current item variable","type":"text","required":true,"maxLen":64,"default":"item"}),
         json!({"key":"indexVariable","label":"Index variable (optional, zero-based)","type":"text","maxLen":64,"default":""}),
         json!({"preset":"onFail"})
-    ],"For each item in {arrayVariable}","The array must be a typed JSON array produced by Extract JSON Value, CSV to JSON, Split, or another data block. On every visit the current item and zero-based index are written to variables. Connect IF to the body, wire the end of the body back to this block, and use ELSE for the exit path. Break/Continue Loop use the same Loop name.");
+    ],"For each item in {arrayVariable}","The array must be a typed JSON array produced by Extract JSON Value, CSV to JSON, Split, or another data block. On every visit the current item and zero-based index are written to variables. Connect IF to the body, wire the end of the body back to this block, and use ELSE for the exit path. Break/Continue Loop use the same Loop name.")
 }
 struct ForEachItem;
 #[async_trait]
