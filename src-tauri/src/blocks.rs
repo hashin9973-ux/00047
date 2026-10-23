@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) mod extra;
 mod extra_more;
 mod advanced;
+mod nextgen;
 
 #[cfg(windows)]
 const MAX_COMMAND_OUTPUT_BYTES: usize = 16 * 1024;
@@ -903,6 +904,7 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         extra::register_into(&mut m);
         extra_more::register_into(&mut m);
         advanced::register_into(&mut m);
+        nextgen::register_into(&mut m);
         crate::custom::load_into(&mut m);
         m
     })
