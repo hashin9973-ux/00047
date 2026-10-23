@@ -1046,6 +1046,7 @@ mod tests {
             variables: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             secret_reader: std::sync::Arc::new(|name: &str| Err(format!("secret {name} unavailable in test"))),
             sensitive_values: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            subflow_return: std::sync::Arc::new(std::sync::Mutex::new(None)),
         };
         cx.set_variable("folder".into(), json!("C:\\Temp\\logs")).unwrap();
         cx.set_variable("count".into(), json!(3)).unwrap();

@@ -85,6 +85,8 @@ pub struct NodeCx {
     pub secret_reader: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
     /// Secret values acquired during this run, used exclusively for log redaction.
     pub sensitive_values: Arc<Mutex<Vec<String>>>,
+    /// A scoped return slot for nested Call Subflow actions.
+    pub subflow_return: Arc<Mutex<Option<Value>>>,
 }
 
 impl NodeCx {

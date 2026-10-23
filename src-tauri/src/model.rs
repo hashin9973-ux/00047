@@ -12,6 +12,8 @@ pub struct Node {
     #[serde(default)]
     pub disabled: bool,
     #[serde(default)]
+    pub breakpoint: bool,
+    #[serde(default)]
     pub cfg: Value,
 }
 
@@ -84,6 +86,19 @@ impl Default for AutoRuntime {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeTrace {
+    pub automation_id: String,
+    pub node_id: String,
+    pub block_title: String,
+    pub started_at: u64,
+    pub ended_at: u64,
+    pub duration_ms: u64,
+    pub state: String,
+    pub detail: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRecord {
@@ -92,4 +107,6 @@ pub struct RunRecord {
     pub ended_at: u64,
     pub outcome: String,
     pub errors: u32,
+    #[serde(default)]
+    pub trace: Vec<NodeTrace>,
 }

@@ -30,6 +30,69 @@ const HIST_CAP: usize = 50;
 struct RunHandle {
     token: CancellationToken,
     run_id: u64,
+    debug: Arc<DebugControl>,
+}
+
+#[derive(Default)]
+struct DebugControl {
+    paused: AtomicBool,
+    step_budget: AtomicU64,
+    step_active: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl DebugControl {
+    fn pause(&self) {
+        self.step_budget.store(0, Ordering::SeqCst);
+        self.paused.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+    fn resume(&self) {
+        self.step_budget.store(0, Ordering::SeqCst);
+        self.step_active.store(false, Ordering::SeqCst);
+        self.paused.store(false, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+    fn step(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+        self.step_budget.store(1, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+    fn is_paused(&self) -> bool { self.paused.load(Ordering::SeqCst) }
+
+    async fn before_node(&self, breakpoint: bool, token: &CancellationToken) -> bool {
+        if breakpoint {
+            self.pause();
+        }
+        loop {
+            if token.is_cancelled() { return false; }
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.paused.load(Ordering::SeqCst) { return true; }
+            let mut budget = self.step_budget.load(Ordering::SeqCst);
+            while budget > 0 {
+                match self.step_budget.compare_exchange(budget, budget - 1, Ordering::SeqCst, Ordering::SeqCst) {
+                    Ok(_) => {
+                        self.step_active.store(true, Ordering::SeqCst);
+                        return true;
+                    }
+                    Err(now) => budget = now,
+                }
+            }
+            tokio::select! {
+                _ = token.cancelled() => return false,
+                _ = notified => {}
+            }
+        }
+    }
+
+    fn after_node(&self) {
+        if self.step_active.swap(false, Ordering::SeqCst) {
+            self.paused.store(true, Ordering::SeqCst);
+            self.notify.notify_waiters();
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -51,6 +114,7 @@ pub struct Engine {
     run_seq: AtomicU64,
     ui: AtomicBool,
     disk: LogStore,
+    vault: Arc<SecretVault>,
 }
 
 impl Engine {
@@ -176,13 +240,14 @@ impl Engine {
             return Err(errs.join("\n"));
         }
         let token = CancellationToken::new();
+        let debug = Arc::new(DebugControl::default());
         let run_id = self.run_seq.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut r = self.runs.lock().unwrap();
             if r.contains_key(id) {
                 return Err("already running".into());
             }
-            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id });
+            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id, debug });
         }
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
@@ -192,11 +257,31 @@ impl Engine {
     }
 
     pub fn stop(&self, id: &str) {
-        let t = self.runs.lock().unwrap().get(id).map(|r| r.token.clone());
-        if let Some(t) = t {
-            t.cancel();
+        let handle = self.runs.lock().unwrap().get(id).map(|r| (r.token.clone(), r.debug.clone()));
+        if let Some((token, debug)) = handle {
+            debug.resume();
+            token.cancel();
             self.set_auto(id, |r| r.status = "stopping".into());
         }
+    }
+
+    pub fn pause(&self, id: &str) -> Result<(), String> {
+        let debug = self.runs.lock().unwrap().get(id).map(|r| r.debug.clone()).ok_or_else(|| "automation is not running".to_string())?;
+        debug.pause();
+        self.set_auto(id, |r| r.status = "paused".into());
+        Ok(())
+    }
+    pub fn resume(&self, id: &str) -> Result<(), String> {
+        let debug = self.runs.lock().unwrap().get(id).map(|r| r.debug.clone()).ok_or_else(|| "automation is not running".to_string())?;
+        debug.resume();
+        self.set_auto(id, |r| r.status = "running".into());
+        Ok(())
+    }
+    pub fn step(&self, id: &str) -> Result<(), String> {
+        let debug = self.runs.lock().unwrap().get(id).map(|r| r.debug.clone()).ok_or_else(|| "automation is not running".to_string())?;
+        debug.step();
+        self.set_auto(id, |r| r.status = "paused".into());
+        Ok(())
     }
 
     pub async fn stop_and_wait(&self, id: &str) -> Result<(), String> {
@@ -256,6 +341,7 @@ impl Engine {
                 Arc::new(move |name: &str| vault.get(name))
             },
             sensitive_values: test_secrets.clone(),
+            subflow_return: Arc::new(Mutex::new(None)),
         };
         let out = tokio::time::timeout(Duration::from_secs(60), blk.run(&cx))
             .await
@@ -315,6 +401,11 @@ impl Engine {
         });
         self.log("info", &auto.id, &auto.name, None, "Automation started".into());
         let entries = entry_nodes(&auto);
+        let debug = {
+            let runs = self.runs.lock().unwrap();
+            runs.get(&auto.id).map(|h| h.debug.clone()).unwrap_or_else(|| Arc::new(DebugControl::default()))
+        };
+        let root_id = auto.id.clone();
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
             auto: Arc::new(auto),
@@ -322,6 +413,11 @@ impl Engine {
             visits: Default::default(),
             variables: Arc::new(Mutex::new(HashMap::new())),
             secret_values: Arc::new(Mutex::new(Vec::new())),
+            trace: Arc::new(Mutex::new(Vec::new())),
+            debug,
+            call_stack: vec![root_id],
+            returned: AtomicBool::new(false),
+            subflow_return: Arc::new(Mutex::new(None)),
             rate: Default::default(),
             handles: Default::default(),
             errors: AtomicU32::new(0),
@@ -349,7 +445,8 @@ impl Engine {
         {
             let mut h = self.hist.lock().unwrap();
             let q = h.entry(aid.clone()).or_default();
-            q.push_front(RunRecord { id: run_id, started_at: started, ended_at: ended, outcome: outcome.into(), errors });
+            let trace = ctx.trace.lock().unwrap().clone();
+            q.push_front(RunRecord { id: run_id, started_at: started, ended_at: ended, outcome: outcome.into(), errors, trace });
             q.truncate(HIST_CAP);
             self.disk.save_history(&h);
         }
@@ -377,6 +474,11 @@ struct Ctx {
     visits: Mutex<HashMap<String, u64>>,
     variables: Arc<Mutex<HashMap<String, Value>>>,
     secret_values: Arc<Mutex<Vec<String>>>,
+    trace: Arc<Mutex<Vec<NodeTrace>>>,
+    debug: Arc<DebugControl>,
+    call_stack: Vec<String>,
+    returned: AtomicBool,
+    subflow_return: Arc<Mutex<Option<Value>>>,
     rate: Mutex<HashMap<String, VecDeque<Instant>>>,
     handles: Mutex<Vec<JoinHandle<()>>>,
     errors: AtomicU32,
@@ -676,7 +778,7 @@ fn branch(ctx: Arc<Ctx>, start: String) -> BoxFuture<'static, ()> {
     Box::pin(async move {
         let mut cur = Some(start);
         while let Some(id) = cur.take() {
-            if ctx.token.is_cancelled() {
+            if ctx.token.is_cancelled() || ctx.returned.load(Ordering::SeqCst) {
                 break;
             }
             let Some(node) = ctx.node(&id) else { break };
@@ -692,6 +794,40 @@ fn branch(ctx: Arc<Ctx>, start: String) -> BoxFuture<'static, ()> {
 }
 
 async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
+    if node.breakpoint {
+        ctx.eng.set_auto(&ctx.auto.id, |r| r.status = "paused".into());
+    } else if ctx.debug.is_paused() {
+        ctx.eng.set_auto(&ctx.auto.id, |r| r.status = "paused".into());
+    }
+    if !ctx.debug.before_node(node.breakpoint, &ctx.token).await {
+        return vec![];
+    }
+    ctx.eng.set_auto(&ctx.auto.id, |r| r.status = "running".into());
+    let started_at = now_ms();
+    let next = exec_node_inner(ctx, node).await;
+    ctx.debug.after_node();
+    if ctx.debug.is_paused() {
+        ctx.eng.set_auto(&ctx.auto.id, |r| r.status = "paused".into());
+    }
+    let ended_at = now_ms();
+    let state = ctx.eng.nodes.lock().ok().and_then(|states| states.get(&ctx.auto.id).and_then(|map| map.get(&node.id)).cloned()).unwrap_or_default();
+    let title = registry().get(node.kind.as_str()).map(|b| b.title()).unwrap_or("Unknown").to_string();
+    if let Ok(mut trace) = ctx.trace.lock() {
+        trace.push(NodeTrace {
+            automation_id: ctx.auto.id.clone(),
+            node_id: node.id.clone(),
+            block_title: title,
+            started_at,
+            ended_at,
+            duration_ms: ended_at.saturating_sub(started_at),
+            state: state.state,
+            detail: state.detail,
+        });
+    }
+    next
+}
+
+async fn exec_node_inner(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     let eng = &ctx.eng;
     let aid = ctx.auto.id.clone();
     let Some(blk) = registry().get(node.kind.as_str()) else {
@@ -749,17 +885,28 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             Arc::new(move |name: &str| vault.get(name))
         },
         sensitive_values: ctx.secret_values.clone(),
+        subflow_return: ctx.subflow_return.clone(),
     };
 
+    if node.kind == "act.for_each" {
+        return advance_for_each(ctx, node, &cx);
+    }
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
     let t0 = Instant::now();
+    let run_future = async {
+        if node.kind == "act.call_subflow" {
+            execute_subflow(ctx, node, &cx).await
+        } else {
+            blk.run(&cx).await
+        }
+    };
     let res = if timeout > 0.0 {
-        match tokio::time::timeout(Duration::from_secs_f64(timeout), blk.run(&cx)).await {
+        match tokio::time::timeout(Duration::from_secs_f64(timeout), run_future).await {
             Ok(r) => r,
             Err(_) => Err(format!("timed out after {timeout}s")),
         }
     } else {
-        blk.run(&cx).await
+        run_future.await
     };
     if ctx.token.is_cancelled() {
         eng.set_node(&aid, &node.id, "idle", None, String::new());
@@ -775,6 +922,12 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             } else {
                 ("not satisfied", &["else", "after"])
             };
+            if node.kind == "act.return_value" && ctx.call_stack.len() > 1 {
+                ctx.returned.store(true, Ordering::SeqCst);
+                eng.set_node(&aid, &node.id, "done", None, format!("returned from subflow · {dt:.1}s"));
+                ctx.log("info", Some(node), "Returned a value to the calling subflow block".into());
+                return vec![];
+            }
             if node.kind == "act.loop" {
                 match loop_start_id(&ctx.auto) {
                     Ok(start_id) => {
@@ -814,6 +967,149 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
 }
 
 
+async fn advance_for_each(ctx: &Arc<Ctx>, node: &Node, cx: &NodeCx) -> Vec<String> {
+    if let Some(blk) = registry().get(node.kind.as_str()) {
+        if let Err(error) = blk.validate(&node.cfg) {
+            ctx.errors.fetch_add(1, Ordering::SeqCst);
+            ctx.eng.set_node(&ctx.auto.id, &node.id, "failed", None, error.clone());
+            ctx.log("error", Some(node), error);
+            return match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
+                "else" => ctx.out(&node.id, &["else"]),
+                "after" => ctx.out(&node.id, &["after"]),
+                "abort" => { ctx.abort(); vec![] },
+                _ => vec![],
+            };
+        }
+    }
+    let source = node.cfg.get("sourceVariable").and_then(Value::as_str).unwrap_or("");
+    let item_name = node.cfg.get("itemVariable").and_then(Value::as_str).unwrap_or("item");
+    let index_name = node.cfg.get("indexVariable").and_then(Value::as_str).unwrap_or("index");
+    let items_key = format!("__foreach_items:{}:{}", ctx.auto.id, node.id);
+    let index_key = format!("__foreach_index:{}:{}", ctx.auto.id, node.id);
+    let mut variables = ctx.variables.lock().unwrap();
+    if !variables.contains_key(&items_key) {
+        let items = variables.get(source).cloned().and_then(|v| v.as_array().cloned());
+        let Some(items) = items else {
+            drop(variables);
+            ctx.errors.fetch_add(1, Ordering::SeqCst);
+            let message = format!("For Each source variable '{source}' is missing or is not an array");
+            ctx.eng.set_node(&ctx.auto.id, &node.id, "failed", None, message.clone());
+            ctx.log("error", Some(node), message);
+            return match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
+                "else" => ctx.out(&node.id, &["else"]),
+                "after" => ctx.out(&node.id, &["after"]),
+                "abort" => { ctx.abort(); vec![] },
+                _ => vec![],
+            };
+        };
+        if items.len() > 10000 {
+            drop(variables);
+            ctx.errors.fetch_add(1, Ordering::SeqCst);
+            let message = "For Each source array exceeds 10,000 items".to_string();
+            ctx.eng.set_node(&ctx.auto.id, &node.id, "failed", None, message.clone());
+            ctx.log("error", Some(node), message);
+            return match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
+                "else" => ctx.out(&node.id, &["else"]),
+                "after" => ctx.out(&node.id, &["after"]),
+                "abort" => { ctx.abort(); vec![] },
+                _ => vec![],
+            };
+        }
+        variables.insert(items_key.clone(), Value::Array(items));
+        variables.insert(index_key.clone(), json!(0));
+    }
+    let items = variables.get(&items_key).and_then(Value::as_array).cloned().unwrap_or_default();
+    let index = variables.get(&index_key).and_then(Value::as_u64).unwrap_or(0) as usize;
+    if index >= items.len() {
+        variables.remove(&items_key);
+        variables.remove(&index_key);
+        variables.remove(item_name);
+        variables.remove(index_name);
+        drop(variables);
+        ctx.eng.set_node(&ctx.auto.id, &node.id, "done", None, format!("completed {} items", items.len()));
+        ctx.log("info", Some(node), format!("For Each finished after {} items", items.len()));
+        return ctx.out(&node.id, &["after"]);
+    }
+    variables.insert(item_name.to_string(), items[index].clone());
+    variables.insert(index_name.to_string(), json!(index));
+    variables.insert(index_key, json!(index + 1));
+    drop(variables);
+    ctx.eng.set_node(&ctx.auto.id, &node.id, "done", None, format!("item {} of {}", index + 1, items.len()));
+    ctx.log("info", Some(node), format!("For Each item {} of {}", index + 1, items.len()));
+    let outgoing = ctx.out(&node.id, &["if"]);
+    if outgoing.len() != 1 {
+        ctx.errors.fetch_add(1, Ordering::SeqCst);
+        let message = "For Each requires exactly one IF wire to its loop body".to_string();
+        ctx.eng.set_node(&ctx.auto.id, &node.id, "failed", None, message.clone());
+        ctx.log("error", Some(node), message);
+        return vec![];
+    }
+    outgoing
+}
+
+async fn execute_subflow(ctx: &Arc<Ctx>, node: &Node, cx: &NodeCx) -> Result<Outcome, String> {
+    let id = cx.expand_template(node.cfg.get("automationId").and_then(Value::as_str).unwrap_or(""))?;
+    if ctx.call_stack.contains(&id) { return Err(format!("Recursive subflow call blocked: {id}")); }
+    if ctx.call_stack.len() >= 8 { return Err("Maximum subflow nesting depth (8) reached".into()); }
+    let automation = ctx.eng.store.get(&id).ok_or_else(|| format!("Subflow automation '{id}' was not found"))?;
+    validate_automation(&automation).map_err(|e| format!("Subflow is invalid: {}", e.join("; ")))?;
+    let entries = entry_nodes(&automation);
+    if entries.is_empty() { return Err("Subflow has no entry point".into()); }
+    *cx.subflow_return.lock().map_err(|_| "subflow return slot is unavailable".to_string())? = None;
+    let mut stack = ctx.call_stack.clone();
+    stack.push(id.clone());
+    let child_token = ctx.token.child_token();
+    let child = Arc::new(Ctx {
+        eng: ctx.eng.clone(),
+        auto: Arc::new(automation.clone()),
+        token: child_token.clone(),
+        visits: Default::default(),
+        variables: ctx.variables.clone(),
+        secret_values: ctx.secret_values.clone(),
+        trace: ctx.trace.clone(),
+        debug: ctx.debug.clone(),
+        call_stack: stack,
+        returned: AtomicBool::new(false),
+        subflow_return: Arc::new(Mutex::new(None)),
+        rate: Default::default(),
+        handles: Default::default(),
+        errors: AtomicU32::new(0),
+        aborted: AtomicBool::new(false),
+        single: entries.len() == 1,
+    });
+    let execute = async {
+        let handles: Vec<_> = entries.into_iter().map(|entry| tokio::spawn(run_entry(child.clone(), entry))).collect();
+        for handle in handles { let _ = handle.await; }
+        loop {
+            let handle = child.handles.lock().unwrap().pop();
+            match handle { Some(handle) => { let _ = handle.await; }, None => break }
+        }
+        if child_token.is_cancelled() && !ctx.token.is_cancelled() {
+            return Err("Subflow was cancelled".to_string());
+        }
+        if child.aborted.load(Ordering::SeqCst) {
+            return Err(format!("Subflow '{}' aborted after {} error(s)", automation.name, child.errors.load(Ordering::SeqCst)));
+        }
+        Ok(())
+    };
+    let timeout = node.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
+    if timeout > 0.0 {
+        if tokio::time::timeout(Duration::from_secs_f64(timeout), execute).await.is_err() {
+            child_token.cancel();
+            return Err(format!("Subflow '{}' timed out after {timeout} seconds", automation.name));
+        }
+    } else {
+        execute.await?;
+    }
+    if ctx.token.is_cancelled() { return Err("cancelled".into()); }
+    if let Some(output) = node.cfg.get("returnAs").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        let value = child.subflow_return.lock().ok().and_then(|v| v.clone()).unwrap_or(Value::Null);
+        ctx.variables.lock().map_err(|_| "workflow variable store is unavailable".to_string())?.insert(output.to_string(), value);
+    }
+    ctx.log("info", Some(node), format!("Subflow '{}' returned", automation.name));
+    Ok(Outcome::Satisfied)
+}
+
 #[cfg(test)]
 mod loop_semantics_tests {
     use super::*;
@@ -827,6 +1123,7 @@ mod loop_semantics_tests {
             y: 0.0,
             collapsed: false,
             disabled: false,
+            breakpoint: false,
             cfg,
         }
     }
