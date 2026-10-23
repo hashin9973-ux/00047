@@ -387,3 +387,13 @@ textarea.glass.liquidglass-variant {
 .native-signature-status{font-size:11px;border:1px solid var(--line);border-radius:99px;padding:4px 8px;color:var(--mu)}
 .native-signature-status.is-required{color:var(--tx);border-color:rgba(255,255,255,.3)}
 @media(max-width:760px){.native-signature-policy{align-items:stretch;flex-direction:column}}
+
+.secret-vault{max-width:min(560px,92vw);max-height:84vh;overflow:auto;text-align:left}
+.secret-vault>p{color:var(--mu);font-size:12px;line-height:1.55}
+.secret-list{display:flex;flex-direction:column;gap:6px;margin:12px 0;max-height:150px;overflow:auto}
+.secret-entry{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--line);border-radius:9px;padding:6px 8px}
+.secret-entry code{overflow-wrap:anywhere;color:var(--tx)}
+.secret-field{display:flex;flex-direction:column;gap:5px;margin:10px 0;font-size:12px;color:var(--mu)}
+.secret-field input{width:100%;min-width:0}
+.secret-vault .mbtn{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.secret-vault .empty{font-size:12px;color:var(--mu);padding:8px}
