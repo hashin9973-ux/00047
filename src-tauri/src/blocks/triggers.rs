@@ -6,6 +6,10 @@ use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener, time::Duration}
 
 fn text(c:&Value,k:&str)->String{c.get(k).and_then(Value::as_str).unwrap_or("").trim().to_string()}
 fn raw(c:&Value,k:&str)->String{c.get(k).and_then(Value::as_str).unwrap_or("").to_string()}
+fn no_nul(c:&Value,keys:&[&str])->Result<(),String>{
+ for k in keys{if raw(c,k).contains('\0'){return Err(format!("{k} must not contain NUL characters"))}}
+ Ok(())
+}
 fn name_ok(s:&str)->bool{!s.is_empty()&&s.len()<=64&&s.chars().next().is_some_and(|c|c.is_ascii_alphabetic()||c=='_')&&s.chars().all(|c|c.is_ascii_alphanumeric()||matches!(c,'_'|'-'|'.'))}
 fn hotkey_spec()->Value{
  let mut f=vec![
