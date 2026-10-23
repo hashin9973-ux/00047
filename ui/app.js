@@ -23,7 +23,7 @@ const fmtAgo = ts => {
 };
 
 const LABEL = { running: 'Running', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
-const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
+const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], vars: { active: false, variables: {} }, tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
 const isRun = id => ['running', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
@@ -264,6 +264,25 @@ function editorStatus() {
   S.edSt = st;
 }
 
+let varsRefreshTimer = 0;
+async function refreshVariables() {
+  if (!S.editId) return;
+  const id = S.editId;
+  try {
+    const snapshot = await invoke('get_workflow_variables', { id });
+    if (id !== S.editId) return;
+    S.vars = snapshot && typeof snapshot === 'object' ? snapshot : { active: false, variables: {} };
+  } catch {
+    if (id !== S.editId) return;
+    S.vars = { active: false, variables: {} };
+  }
+  if (S.view === 'editor' && S.tab === 'variables') renderDock();
+}
+function scheduleVariablesRefresh() {
+  clearTimeout(varsRefreshTimer);
+  varsRefreshTimer = setTimeout(() => { void refreshVariables(); }, 180);
+}
+
 function renderDock() {
   if (S.view !== 'editor') return;
   document.querySelectorAll('#dock-tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === S.tab));
@@ -279,6 +298,18 @@ function renderDock() {
     el.innerHTML = S.hist.length
       ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
       : '<div class="empty">No finished runs yet.</div>';
+  } else if (S.tab === 'variables') {
+    const values = S.vars?.variables && typeof S.vars.variables === 'object' ? S.vars.variables : {};
+    const keys = Object.keys(values).sort((a, b) => a.localeCompare(b));
+    const content = keys.map(key => {
+      let value;
+      try { value = typeof values[key] === 'string' ? values[key] : JSON.stringify(values[key]); }
+      catch { value = '[unavailable]'; }
+      return `<div class="var-row"><span class="var-key">${esc(key)}</span><code class="var-value">${esc(value ?? 'null')}</code></div>`;
+    }).join('');
+    el.innerHTML = `<div class="var-head"><span>${S.vars?.active ? 'Live variables' : 'Last run snapshot'} · ${keys.length}</span><button class="btn" type="button" data-refresh-vars>Refresh</button></div>`
+      + (content || `<div class="empty">${S.vars?.active ? 'No variables have been set in this run yet.' : 'No saved variables from the latest run. Start the automation to inspect values as blocks execute.'}</div>`)
+      + '<div class="var-foot">Variables are isolated per automation run. Variable names suggesting passwords, tokens, secrets, credentials, cookies, or authorization values are redacted here.</div>';
   } else el.innerHTML = HELP;
 }
 
@@ -290,7 +321,7 @@ async function refreshHist() {
 
 function openEditor(id) {
   const a = S.autos.find(x => x.id === id); if (!a) return;
-  S.editId = id; S.edSt = '';
+  S.editId = id; S.edSt = ''; S.vars = { active: false, variables: {} };
   show('editor');
   editor.load(a);
   $('#ed-name').value = a.name;
@@ -311,7 +342,12 @@ $('#dock-toggle').addEventListener('click', () => { $('#ed-dock').classList.togg
 $('#dock-tabs').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   S.tab = b.dataset.tab; $('#ed-dock').classList.remove('closed');
-  if (S.tab === 'history') refreshHist(); else renderDock();
+  if (S.tab === 'history') refreshHist();
+  else if (S.tab === 'variables') refreshVariables();
+  else renderDock();
+});
+$('#dock-body').addEventListener('click', e => {
+  if (e.target.closest('[data-refresh-vars]')) refreshVariables();
 });
 
 // ---------- controls ----------
@@ -543,11 +579,15 @@ async function bindEvents() {
   await listen('node-state', e => {
     const { autoId, nodeId, state } = e.payload;
     (S.rt.nodes[autoId] ||= {})[nodeId] = state;
-    if (S.editId === autoId) editor.setNodeState(nodeId, state);
+    if (S.editId === autoId) {
+      editor.setNodeState(nodeId, state);
+      if (S.tab === 'variables') scheduleVariablesRefresh();
+    }
   });
   await listen('auto-state', e => {
     const { id, runtime } = e.payload;
     S.rt.autos[id] = runtime;
+    if (S.editId === id && S.tab === 'variables') scheduleVariablesRefresh();
     if (runtime.status === 'running') {
       S.rt.nodes[id] = {};
       if (S.editId === id) editor.clearStates();
