@@ -22,10 +22,10 @@ const fmtAgo = ts => {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`; return new Date(ts).toLocaleDateString();
 };
 
-const LABEL = { running: 'Running', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
+const LABEL = { running: 'Running', paused: 'Paused', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
 const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], vars: { active: false, variables: {} }, tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
-const isRun = id => ['running', 'stopping'].includes(stOf(id));
+const isRun = id => ['running', 'paused', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
 
  
