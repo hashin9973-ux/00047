@@ -36,6 +36,12 @@ const I = {
   layers: ic('<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/>'),
   lock: ic('<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/>'),
   'message-square': ic('<path d="M21 11.5a8.5 8.5 0 0 1-9 8.5 9 9 0 0 1-4-.9L3 21l1.9-4.5A8.5 8.5 0 1 1 21 11.5z"/>'),
+  'file-json': ic('<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h2v-2H8v4h2M13 11h2v2h-2v2h2"/>'),
+  regex: ic('<path d="M4 5h5M6.5 2.5v5M13 5l3 3-3 3M16 8h4M4 17l3-3 3 3M7 14v6M13 16h7M13 20h5"/>'),
+  'file-spreadsheet': ic('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>'),
+  square: ic('<rect x="5" y="5" width="14" height="14" rx="1"/>'),
+  'skip-forward': ic('<path d="M5 5l10 7-10 7zM19 5v14"/>'),
+
   'monitor-down': ic('<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8M12 16v5M8 8l4 4 4-4"/>'),
   'mouse-pointer-2': ic('<path d="m5 3 14 11-7 1-3 6z"/>'),
   network: ic('<circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="m11 7-5 9M13 7l5 9M7 18h10"/>'),
