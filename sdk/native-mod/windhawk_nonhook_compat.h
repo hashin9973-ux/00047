@@ -796,8 +796,10 @@ inline bool WriteUrlContentFile(PCWSTR target, const std::string& content) noexc
 
 inline const WH_URL_CONTENT* GetUrlContent(PCWSTR url,
     const WH_GET_URL_CONTENT_OPTIONS* options,
-    ULONGLONG requestTimeoutMs = kMaxUrlRequestMs) noexcept {
-    if (requestTimeoutMs == 0 || requestTimeoutMs > kMaxUrlRequestMs) return nullptr;
+    ULONGLONG requestTimeoutMs = kMaxUrlRequestMs,
+    DWORD maxRedirects = 10) noexcept {
+    if (requestTimeoutMs == 0 || requestTimeoutMs > kMaxUrlRequestMs ||
+        maxRedirects > 10) return nullptr;
     if (options && options->optionsSize != sizeof(WH_GET_URL_CONTENT_OPTIONS)) return nullptr;
     if (options && options->targetFilePath && !*options->targetFilePath) return nullptr;
     if (options && options->targetFilePath) {
@@ -879,7 +881,13 @@ inline const WH_URL_CONTENT* GetUrlContent(PCWSTR url,
         request = WinHttpOpenRequest(connection, L"GET", request_path.c_str(), nullptr,
             WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
             parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
-        if (!request || !WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+        // Explicitly bound redirect chains. The public Wh_GetUrlContent helper
+        // keeps WinHTTP's usual limit; latency-sensitive internal callers can
+        // request a smaller cap and fail closed if the setting cannot be applied.
+        if (!request ||
+            !WinHttpSetOption(request, WINHTTP_OPTION_MAX_HTTP_AUTOMATIC_REDIRECTS,
+                &maxRedirects, sizeof(maxRedirects)) ||
+            !WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                 WINHTTP_NO_REQUEST_DATA, 0, 0, 0) || !WinHttpReceiveResponse(request, nullptr)) {
             cleanup();
             return nullptr;

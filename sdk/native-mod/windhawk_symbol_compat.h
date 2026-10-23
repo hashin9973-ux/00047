@@ -885,9 +885,11 @@ inline bool FetchOnlineHookCache(
         // Symbol lookup runs inside the target shell process. Keep network
         // fallback bounded well below the host's 10-second remote-operation wait.
         constexpr ULONGLONG kOnlineSymbolCacheTimeoutMs = 3500;
+        constexpr DWORD kOnlineSymbolCacheMaxRedirects = 1;
         const WH_URL_CONTENT* content =
             ::wmod::windhawk_compat::GetUrlContent(
-                url.c_str(), nullptr, kOnlineSymbolCacheTimeoutMs);
+                url.c_str(), nullptr, kOnlineSymbolCacheTimeoutMs,
+                kOnlineSymbolCacheMaxRedirects);
         if (!content) return false;
 
         bool decoded = false;
