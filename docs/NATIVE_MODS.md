@@ -42,6 +42,8 @@ Include sdk/native-mod/00047_mod_api.h when building a native x64 DLL. The exact
 - WmodIsInitializedV1() reports whether initialization is active.
 - WmodCanUnloadV1() reports whether the module has no remaining registered hooks or detectable thread instruction/stack references to its image. The host requires this check to pass before FreeLibrary; otherwise it leaves the DLL mapped.
 
+Mods that opt into `windhawk_settings_changed_adapter.h` may additionally export `WmodIsReloadRequestedV1()`. This optional query reports a pending reload from `BOOL Wh_ModSettingsChanged(BOOL* bReload)` and is not a required package export.
+
 ABI version 2 adds the two lifecycle-query exports needed to recover safely from a deferred unload. Packages with only the original three exports are not accepted by this SDK version.
 
 A no-op C++ sample is in samples/native-mod. It writes debug output only, so it is safe as a loader-lifecycle example without modifying the desktop.
@@ -114,7 +116,7 @@ The compatibility layer now provides source-level `Wh_SetFunctionHook`, `Wh_Remo
 
 Native mods are arbitrary machine code and are not sandboxed. Loading them can crash or hang their target process. The UI requires a second confirmation before enabling a mod and states the target names before install. Test new DLLs in a VM or with a recoverable Windows user profile. If Explorer becomes unstable, use Task Manager to restart Windows Explorer or launch 00047 and disable the offending mod. Mods are not loaded into arbitrary user-selected processes.
 
-This engine does not yet have digital-signature trust enforcement, a stable cross-process host callback API, a compiler/build service, or guaranteed recovery from a DLL that crashes a target after successful initialization. The current x64 allow-list and explicit enable/disable flow are first-stage restrictions, not a sandbox.
+The engine does not yet provide a stable cross-process host callback API, an in-app compiler/build service, or guaranteed recovery from a DLL that crashes or permanently hangs a target after successful initialization. Optional Authenticode publisher-trust enforcement is available, but it is not a sandbox. The current x64 allow-list and explicit enable/disable flow are first-stage restrictions, not a security boundary.
 
 
 ## Porting a Windhawk mod
@@ -122,7 +124,7 @@ This engine does not yet have digital-signature trust enforcement, a stable cros
 Use [WINDHAWK_COMPATIBILITY.md](WINDHAWK_COMPATIBILITY.md) and `tools/audit_windhawk_mod.py` to identify supported API calls, unsupported APIs, and lifecycle callbacks that require manual adaptation. Hooking is implemented through a bundled x64 MinHook backend, but the source-level subset is not a drop-in Windhawk runtime. The audit is static source analysis only and does not certify compatibility or safety.
 
 
-## Non-hook Windhawk lifecycle adapter
+## Windhawk lifecycle adapter
 
 For source ports that use the supported API subset, `sdk/native-mod/windhawk_nonhook_adapter.h` offers an opt-in mapping from the common `Wh_ModInit`, `Wh_ModAfterInit`, `Wh_ModBeforeUninit`, and `Wh_ModUninit` callbacks to the versioned `Wmod*` ABI. With this adapter, queued hooks are applied after initialization and tracked hooks are removed after the before-uninit callback and before DLL unload. Generated CMake projects compile the hook shim and vendored MinHook sources automatically. See [WINDHAWK_COMPATIBILITY.md](WINDHAWK_COMPATIBILITY.md) for details.
 
