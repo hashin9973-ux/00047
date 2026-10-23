@@ -85,7 +85,7 @@ The author tools do not replace the application's independent validation at inst
 
     python -m unittest discover -s tools/tests -v
 
-Windows CI runs those tests and builds/validates the real no-op sample package.
+Windows CI runs those tests, builds/validates the real no-op sample package, and exercises the remote loader against a test-only process whose output name is `explorer.exe`. That process is not the user's Windows shell: a separate test DLL hooks its exported probe function, verifies that the result changes from 7 to 17 while enabled, then confirms it returns to 7 after unload. CI also checks ABI/init failure rollback and repeated load/unload cycles.
 
 ## Build and install from source in the app
 
@@ -128,7 +128,7 @@ The compatibility layer provides source-level `Wh_SetFunctionHook`, `Wh_RemoveFu
 
 Native mods are arbitrary machine code and are not sandboxed. Loading them can crash or hang their target process. The UI requires a second confirmation before enabling a mod and states the target names before install. Test new DLLs in a VM or with a recoverable Windows user profile. If Explorer becomes unstable, use Task Manager to restart Windows Explorer or launch 00047 and disable the offending mod. Mods are not loaded into arbitrary user-selected processes.
 
-The engine does not yet provide a stable cross-process host callback API, an in-app compiler/build service, or guaranteed recovery from a DLL that crashes or permanently hangs a target after successful initialization. Optional Authenticode publisher-trust enforcement is available, but it is not a sandbox. The current x64 allow-list and explicit enable/disable flow are first-stage restrictions, not a security boundary.
+The engine does not yet provide a stable cross-process host callback API or guaranteed recovery from a DLL that crashes or permanently hangs a target after successful initialization. The in-app builder invokes the installed CMake/Visual Studio toolchain and packages the result; project build scripts can execute arbitrary commands with the current user's permissions and are not sandboxed. Optional Authenticode publisher-trust enforcement is available, but it is not a sandbox. The current x64 allow-list and explicit enable/disable flow are first-stage restrictions, not a security boundary.
 
 
 ## Porting a Windhawk mod
