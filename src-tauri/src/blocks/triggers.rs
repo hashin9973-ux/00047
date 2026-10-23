@@ -114,6 +114,63 @@ impl Block for Webhook{
  }
 }
 
+
+fn file_event_spec()->Value{
+ json!({"category":"condition","title":"File System Event","icon":"folder-search","description":"Waits for native Windows FileSystemWatcher notifications for files or folders.","fields":[
+  {"key":"path","label":"Directory to watch","type":"text","required":true,"maxLen":4000},
+  {"key":"pattern","label":"Name filter","type":"text","default":"*","required":true,"maxLen":260},
+  {"key":"recursive","label":"Include subdirectories","type":"bool","default":false},
+  {"key":"event","label":"Event type","type":"select","default":"any","options":[["created","Created"],["modified","Modified"],["deleted","Deleted"],["renamed","Renamed"],["any","Any file-system event"]]},
+  {"key":"savePathAs","label":"Save triggering path to variable (optional)","type":"text","maxLen":64},
+  {"preset":"timeout"},{"preset":"onFail"}],
+  "summary":"Wait for {event} in {path}",
+  "help":"Uses Windows FileSystemWatcher notifications instead of periodic snapshots. Can report the full path of the triggering item to a variable. Network shares, inaccessible directories and OS notification buffer overflow can affect reliability."})
+}
+struct FileEvent;
+#[async_trait]
+impl Block for FileEvent{
+ fn title(&self)-> &'static str{"File System Event"}fn category(&self)->Cat{Cat::Condition}fn supports_timeout(&self)->bool{true}
+ fn spec(&self)->Option<Value>{Some(file_event_spec())}
+ fn validate(&self,c:&Value)->Result<(),String>{
+  spec::validate(&file_event_spec(),c)?;
+  if text(c,"path").is_empty(){return Err("Directory to watch is required".into())}
+  if text(c,"pattern").is_empty(){return Err("Name filter is required".into())}
+  no_nul(c,&["path","pattern","savePathAs"])?;
+  if !matches!(text(c,"event").as_str(),"created"|"modified"|"deleted"|"renamed"|"any"){return Err("Unknown file-system event".into())}
+  if !text(c,"savePathAs").is_empty()&&!name_ok(&text(c,"savePathAs")){return Err("Output variable name is invalid".into())}
+  let t=c.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);if !t.is_finite()||!(0.0..=86400.0).contains(&t){return Err("Timeout must be between 0 and 86400 seconds".into())}
+  Ok(())
+ }
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+  self.validate(&cx.cfg)?;
+  let path=cx.expand_template(&text(&cx.cfg,"path"))?;
+  let pattern=cx.expand_template(&text(&cx.cfg,"pattern"))?;
+  let recursive=cx.cfg.get("recursive").and_then(Value::as_bool).unwrap_or(false);
+  let event=text(&cx.cfg,"event");
+  let save_as=text(&cx.cfg,"savePathAs");
+  let path_q=extra::ps_quote(&path);let pattern_q=extra::ps_quote(&pattern);
+  let recursive_q=if recursive{"$true"}else{"$false"};
+  let registrations=match event.as_str(){
+   "created"=>vec!["Created"],"modified"=>vec!["Changed"],"deleted"=>vec!["Deleted"],"renamed"=>vec!["Renamed"],
+   _=>vec!["Created","Changed","Deleted","Renamed"]
+  };
+  let registrations=registrations.iter().map(|e|format!("Register-ObjectEvent -InputObject $watcher -EventName {e} -SourceIdentifier ($src+'-{e}') | Out-Null;")).collect::<String>();
+  let script=format!(r#"$ErrorActionPreference='Stop';$directory={path};$filter={pattern};if(-not(Test-Path -LiteralPath $directory -PathType Container)){{throw 'Watch directory does not exist'}};
+$watcher=New-Object IO.FileSystemWatcher;$watcher.Path=$directory;$watcher.Filter=$filter;$watcher.IncludeSubdirectories={recursive};$watcher.NotifyFilter=[IO.NotifyFilters]::FileName -bor [IO.NotifyFilters]::DirectoryName -bor [IO.NotifyFilters]::LastWrite -bor [IO.NotifyFilters]::Size;
+$src='00047-'+[guid]::NewGuid().ToString('N');{registrations}$watcher.EnableRaisingEvents=$true;
+try{{while($true){{$ev=Wait-Event;$match=$false;foreach($suffix in @('Created','Changed','Deleted','Renamed')){{if($ev.SourceIdentifier -eq ($src+'-'+$suffix)){{$match=$true;break}}}};if(-not $match){{continue}};$args=$ev.SourceEventArgs;$full=[string]$args.FullPath;$kind=$ev.SourceIdentifier.Substring($src.Length+1);$old='';if($args -is [System.IO.RenamedEventArgs]){{$old=[string]$args.OldFullPath}};Remove-Event -EventIdentifier $ev.EventIdentifier -ErrorAction SilentlyContinue;[pscustomobject]@{{event=$kind;path=$full;oldPath=$old}}|ConvertTo-Json -Compress;break}}}}
+finally{{foreach($suffix in @('Created','Changed','Deleted','Renamed')){{Unregister-Event -SourceIdentifier ($src+'-'+$suffix) -ErrorAction SilentlyContinue}};$watcher.EnableRaisingEvents=$false;$watcher.Dispose();Get-Event -ErrorAction SilentlyContinue|Where-Object{{$_.SourceIdentifier -like ($src+'-*')}}|Remove-Event -ErrorAction SilentlyContinue}}"#,
+ path=path_q,pattern=pattern_q,recursive=recursive_q,registrations=registrations);
+  (cx.report)("waiting",None,format!("Watching {path} for {event} events matching {pattern}"));
+  let out=extra::powershell(cx,&script).await?;
+  if out.is_empty(){return Err("File system watcher ended without an event".into())}
+  let v:Value=serde_json::from_str(&out).map_err(|e|format!("Could not parse file-system event: {e}"))?;
+  if !save_as.is_empty(){cx.set_variable(save_as,Value::String(v.get("path").and_then(Value::as_str).unwrap_or("").to_string()))?}
+  (cx.log)("info",format!("File system event {}: {}",v.get("event").and_then(Value::as_str).unwrap_or("unknown"),v.get("path").and_then(Value::as_str).unwrap_or("")));
+  Ok(Outcome::Satisfied)
+ }
+}
+
 fn process_event_spec()->Value{
  json!({"category":"condition","title":"Process Start / Exit Event","icon":"activity","description":"Waits for the Windows process-event provider to report a matching process start or exit.","fields":[
   {"key":"event","label":"Event","type":"select","default":"started","options":[["started","Process started"],["exited","Process exited"]]},
@@ -206,12 +263,18 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
  m.insert("act.webhook_trigger",Box::new(Webhook));
  m.insert("cond.process_event",Box::new(ProcessEvent));
  m.insert("cond.windows_event",Box::new(WindowsEvent));
+ m.insert("cond.file_event",Box::new(FileEvent));
 }
 #[cfg(test)]
 mod tests{
  use super::*;
  #[test]fn hotkey_map_has_safe_known_keys(){assert_eq!(vk("F8"),Some(0x77));assert_eq!(vk("F12"),Some(0x7B));assert_eq!(vk("Unknown"),None);}
  #[test]fn webhook_requires_separate_valid_variables(){assert!(Webhook.validate(&json!({"port":48747,"tokenVar":"hookToken","saveBodyAs":"body","saveHeadersAs":"headers","timeoutSec":0,"onFail":"stop"})).is_ok());assert!(Webhook.validate(&json!({"port":48747,"tokenVar":"x","saveBodyAs":"x","saveHeadersAs":"headers","timeoutSec":0,"onFail":"stop"})).is_err());}
+ #[test]fn file_event_fields_are_validated(){
+  assert!(FileEvent.validate(&json!({"path":"C:\\\\Temp","pattern":"*.log","recursive":true,"event":"created","savePathAs":"changedPath","timeoutSec":30,"onFail":"stop"})).is_ok());
+  assert!(FileEvent.validate(&json!({"path":"","pattern":"*","event":"any","timeoutSec":0,"onFail":"stop"})).is_err());
+  assert!(FileEvent.validate(&json!({"path":"C:\\\\Temp","pattern":"*","event":"wrong","timeoutSec":0,"onFail":"stop"})).is_err());
+ }
  #[test]fn windows_event_ids_are_validated(){assert!(WindowsEvent.validate(&json!({"logName":"System","eventIds":"4801,1074","provider":"","messageContains":"","behavior":"check","pollSec":2,"stableForSec":0,"timeoutSec":0,"onFail":"stop"})).is_ok());assert!(WindowsEvent.validate(&json!({"logName":"System","eventIds":"bad","behavior":"check","onFail":"stop"})).is_err());}
  #[test]fn process_event_requires_executable_name(){assert!(ProcessEvent.validate(&json!({"event":"started","processName":"notepad.exe","timeoutSec":30,"onFail":"stop"})).is_ok());assert!(ProcessEvent.validate(&json!({"event":"started","processName":"C:\\\\Windows\\\\notepad.exe","timeoutSec":30,"onFail":"stop"})).is_err());}
 }
