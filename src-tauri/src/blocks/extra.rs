@@ -237,7 +237,7 @@ try {{
 }} catch {{}};
 $wlanText='';
 try {{$wlanText=(& netsh.exe wlan show interfaces 2>$null | Out-String)}} catch {{}};
-[pscustomobject]@{{connected=$profileConnected;ssid='';rx=$rx;tx=$tx;adapter_found=$adapterFound;wlan_text=$wlanText}} | ConvertTo-Json -Compress"#);
+[pscustomobject]@{{connected=$profileConnected;network_connected=$false;ssid='';rx=$rx;tx=$tx;adapter_found=$adapterFound;wlan_text=$wlanText}} | ConvertTo-Json -Compress"#);
     let mut sample: NetSample = ps_json(cx, &script).await?;
     let (wlan_connected, ssid) = parse_wlan_status(&sample.wlan_text);
     sample.connected |= wlan_connected;
