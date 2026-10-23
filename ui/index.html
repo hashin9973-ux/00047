@@ -25,6 +25,7 @@
       <button data-view="plugins">Block Plugins</button>
       <button data-view="extensions">Extensions</button>
       <button data-view="native-mods">Native Mods</button>
+      <button data-view="secrets">Secrets</button>
     </nav>
     <div class="top-right">
       <span id="save-ind" class="save ok" title="Auto-save status">Saved</span>
@@ -39,6 +40,7 @@
     <section id="view-plugins" class="view" hidden></section>
     <section id="view-extensions" class="view" hidden></section>
     <section id="view-native-mods" class="view" hidden></section>
+    <section id="view-secrets" class="view" hidden></section>
 
     <section id="view-editor" class="view editor" hidden>
       <div class="ed-bar glass">
@@ -49,6 +51,9 @@
           <button class="btn" data-ed="start">▶ Start</button>
           <button class="btn" data-ed="stop">■ Stop</button>
           <button class="btn" data-ed="restart">↻ Restart</button>
+          <button class="btn" data-ed="pause">Ⅱ Pause</button>
+          <button class="btn" data-ed="resume">▶ Resume</button>
+          <button class="btn" data-ed="step">↦ Step</button>
         </div>
         <label class="chk"><input type="checkbox" id="ed-auto"> Run at app launch</label>
         <span id="ed-note" class="note"></span>
