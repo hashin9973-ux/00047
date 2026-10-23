@@ -880,6 +880,10 @@ impl Block for FileTarget {
     }
 }
 
+pub(super) fn is_call_subflow_block(kind: &str) -> bool { pipeline::is_call_subflow(kind) }
+pub(super) fn call_subflow_id(cfg: &Value) -> String { pipeline::subflow_id(cfg) }
+pub(super) fn is_debug_breakpoint(kind: &str, cfg: &Value) -> bool { pipeline::is_breakpoint(kind, cfg) }
+
 pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
     static R: OnceLock<HashMap<&'static str, Box<dyn Block>>> = OnceLock::new();
     R.get_or_init(|| {
