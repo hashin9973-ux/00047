@@ -12,19 +12,43 @@ fn no_nul(c:&Value,keys:&[&str])->Result<(),String>{
 }
 fn name_ok(s:&str)->bool{!s.is_empty()&&s.len()<=64&&s.chars().next().is_some_and(|c|c.is_ascii_alphabetic()||c=='_')&&s.chars().all(|c|c.is_ascii_alphanumeric()||matches!(c,'_'|'-'|'.'))}
 fn hotkey_spec()->Value{
- let mut f=vec![
+ let f=vec![
   json!({"key":"key","label":"Key","type":"select","default":"F8","options":[["F6","F6"],["F7","F7"],["F8","F8"],["F9","F9"],["F10","F10"],["F11","F11"],["F12","F12"],["Pause","Pause"],["PrintScreen","Print Screen"],["Home","Home"],["End","End"],["Insert","Insert"],["Delete","Delete"],["PageUp","Page Up"],["PageDown","Page Down"]]}),
   json!({"key":"ctrl","label":"Ctrl","type":"bool","default":false}),
   json!({"key":"alt","label":"Alt","type":"bool","default":false}),
   json!({"key":"shift","label":"Shift","type":"bool","default":false}),
+  json!({"preset":"timeout"}),
+  json!({"preset":"onFail"}),
  ];
- f.extend(extra::behavior_fields());
- json!({"category":"condition","title":"Global Hotkey Condition","icon":"keyboard","description":"Detects a configured global key or modifier chord using the Windows keyboard state API.","fields":f,"summary":"Hotkey {key}","help":"This is a polling condition, not a registered exclusive shortcut. Prefer function keys and avoid combinations used by Windows or other apps. Repeated automation entries can retrigger while the key remains down; use an appropriate stable duration or separate debounce logic."})
+ json!({"category":"condition","title":"Global Hotkey Trigger","icon":"keyboard","description":"Waits for a registered global hotkey chord and continues when the user presses it.","fields":f,"summary":"Hotkey {key}","help":"Uses RegisterHotKey with no-repeat behavior instead of polling key state. The chord is reserved for this listener while it runs and may fail to register if another app already owns it. Prefer function keys and avoid OS-reserved combinations."})
 }
 fn vk(key:&str)->Option<u16>{match key{"F6"=>Some(0x75),"F7"=>Some(0x76),"F8"=>Some(0x77),"F9"=>Some(0x78),"F10"=>Some(0x79),"F11"=>Some(0x7A),"F12"=>Some(0x7B),"Pause"=>Some(0x13),"PrintScreen"=>Some(0x2C),"Home"=>Some(0x24),"End"=>Some(0x23),"Insert"=>Some(0x2D),"Delete"=>Some(0x2E),"PageUp"=>Some(0x21),"PageDown"=>Some(0x22),_=>None}}
 fn hotkey_script(key:u16,ctrl:bool,alt:bool,shift:bool)->String{
- format!(r#"$ErrorActionPreference='Stop'; Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class KeyProbe {{ [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key); }}'; $down=(([KeyProbe]::GetAsyncKeyState({key}) -band 0x8000) -ne 0); $ctrl=(([KeyProbe]::GetAsyncKeyState(0x11) -band 0x8000) -ne 0); $alt=(([KeyProbe]::GetAsyncKeyState(0x12) -band 0x8000) -ne 0); $shift=(([KeyProbe]::GetAsyncKeyState(0x10) -band 0x8000) -ne 0); [bool]($down -and ($ctrl -eq {ctrl}) -and ($alt -eq {alt}) -and ($shift -eq {shift})) | ConvertTo-Json -Compress"#,
- key=key,ctrl=if ctrl{"$true"}else{"$false"},alt=if alt{"$true"}else{"$false"},shift=if shift{"$true"}else{"$false"})
+ let mut modifiers=0u32;
+ if alt {modifiers|=0x0001;} if ctrl {modifiers|=0x0002;} if shift {modifiers|=0x0004;}
+ let script=r#"$ErrorActionPreference='Stop';
+Add-Type -AssemblyName System.Windows.Forms
+$source=@'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+public sealed class HotKeyWaiter : Form {
+  [DllImport("user32.dll", SetLastError=true)] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint key);
+  [DllImport("user32.dll", SetLastError=true)] static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+  readonly uint mods; readonly uint keyCode;
+  public bool Matched {get; private set;}
+  public HotKeyWaiter(uint m, uint k) { mods=m; keyCode=k; ShowInTaskbar=false; FormBorderStyle=FormBorderStyle.FixedToolWindow; WindowState=FormWindowState.Minimized; Opacity=0; }
+  protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); if(!RegisterHotKey(Handle,1,mods | 0x4000,keyCode)) throw new Win32Exception(Marshal.GetLastWin32Error(), "RegisterHotKey failed. Another app may own this shortcut."); }
+  protected override void WndProc(ref Message m) { if(m.Msg==0x0312) { Matched=true; Close(); } base.WndProc(ref m); }
+  protected override void OnFormClosed(FormClosedEventArgs e) { if(IsHandleCreated) UnregisterHotKey(Handle,1); base.OnFormClosed(e); }
+}
+'@
+Add-Type -TypeDefinition $source -ReferencedAssemblies System.Windows.Forms,System.Drawing
+$form=$null
+try { $form=[HotKeyWaiter]::new([uint32]__MOD__,[uint32]__VK__); $form.Show(); [System.Windows.Forms.Application]::Run($form); [bool]$form.Matched | ConvertTo-Json -Compress }
+finally { if($null -ne $form) { $form.Close(); $form.Dispose() } }"#;
+ script.replace("__MOD__",&modifiers.to_string()).replace("__VK__",&key.to_string())
 }
 struct Hotkey;
 #[async_trait]
@@ -33,14 +57,15 @@ impl Block for Hotkey{
  fn spec(&self)->Option<Value>{Some(hotkey_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&hotkey_spec(),c)?;if vk(&text(c,"key")).is_none(){return Err("Unknown hotkey key".into())}extra::wait_settings(c).map(|_|())}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
-  self.validate(&cx.cfg)?;let k=vk(&text(&cx.cfg,"key")).unwrap();let script=hotkey_script(k,cx.cfg.get("ctrl").and_then(Value::as_bool).unwrap_or(false),cx.cfg.get("alt").and_then(Value::as_bool).unwrap_or(false),cx.cfg.get("shift").and_then(Value::as_bool).unwrap_or(false));
-  let(behavior,poll,stable,timeout)=extra::wait_settings(&cx.cfg)?;
-  extra::poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{
-   let out=extra::powershell(cx,&script).await?;
-   let down=serde_json::from_str::<bool>(out.trim()).map_err(|e|format!("Could not parse keyboard state: {e}"))?;
-   (cx.report)("waiting",None,format!("Hotkey {} is {}",text(&cx.cfg,"key"),if down{"pressed"}else{"not pressed"}));
-   Ok(down)
-  }) as extra::Probe<'_>).await
+  self.validate(&cx.cfg)?;
+  let k=vk(&text(&cx.cfg,"key")).unwrap();
+  let script=hotkey_script(k,cx.cfg.get("ctrl").and_then(Value::as_bool).unwrap_or(false),cx.cfg.get("alt").and_then(Value::as_bool).unwrap_or(false),cx.cfg.get("shift").and_then(Value::as_bool).unwrap_or(false));
+  (cx.report)("waiting",None,format!("Registered global hotkey Ctrl={} Alt={} Shift={} {}",cx.cfg.get("ctrl").and_then(Value::as_bool).unwrap_or(false),cx.cfg.get("alt").and_then(Value::as_bool).unwrap_or(false),cx.cfg.get("shift").and_then(Value::as_bool).unwrap_or(false),text(&cx.cfg,"key")));
+  let out=extra::powershell(cx,&script).await?;
+  let matched=serde_json::from_str::<bool>(out.trim()).map_err(|e|format!("Could not parse hotkey result: {e}"))?;
+  if !matched{return Err("Global hotkey listener ended without a matching key press".into())}
+  (cx.log)("info","Registered global hotkey pressed".into());
+  Ok(Outcome::Satisfied)
  }
 }
 
@@ -273,6 +298,10 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
 mod tests{
  use super::*;
  #[test]fn hotkey_map_has_safe_known_keys(){assert_eq!(vk("F8"),Some(0x77));assert_eq!(vk("F12"),Some(0x7B));assert_eq!(vk("Unknown"),None);}
+ #[test]fn global_hotkey_script_uses_registered_nonrepeating_shortcut(){
+  let s=hotkey_script(0x77,true,false,true);
+  assert!(s.contains("RegisterHotKey"));assert!(s.contains("__MOD__")==false);assert!(s.contains("[uint32]6"));assert!(s.contains("[uint32]119"));
+ }
  #[test]fn webhook_requires_separate_valid_variables(){assert!(Webhook.validate(&json!({"port":48747,"tokenVar":"hookToken","saveBodyAs":"body","saveHeadersAs":"headers","timeoutSec":0,"onFail":"stop"})).is_ok());assert!(Webhook.validate(&json!({"port":48747,"tokenVar":"x","saveBodyAs":"x","saveHeadersAs":"headers","timeoutSec":0,"onFail":"stop"})).is_err());}
  #[test]fn file_event_fields_are_validated(){
   assert!(FileEvent.validate(&json!({"path":"C:\\\\Temp","pattern":"*.log","recursive":true,"event":"created","savePathAs":"changedPath","timeoutSec":30,"onFail":"stop"})).is_ok());
