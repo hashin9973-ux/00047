@@ -715,6 +715,67 @@ async function reloadBlocks() {
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
 
+async function openSecretsVault() {
+  let names;
+  try { names = await invoke('list_secrets'); }
+  catch (e) { toast('Could not load Secret Vault: ' + (e?.message || e), 'err'); return; }
+  const m = $('#modal');
+  const entries = (Array.isArray(names) ? names : []).map(name =>
+    `<div class="secret-entry"><code>${esc(name)}</code><button class="btn danger" type="button" data-secret-delete="${esc(name)}">Delete</button></div>`
+  ).join('');
+  m.innerHTML = `<div class="mbox glass secret-vault">
+    <h3>Secret Vault</h3>
+    <p>Secrets are encrypted with Windows DPAPI for the current Windows user. They are not stored in exported automation files. Use <code>{{secret.name}}</code> in supported text fields to reference a secret.</p>
+    <div class="secret-list">${entries || '<div class="empty">No secrets saved yet.</div>'}</div>
+    <form id="secret-form" autocomplete="off">
+      <label class="secret-field"><span>Secret name</span><input id="secret-name" type="text" maxlength="64" required autocomplete="off" placeholder="api_key"></label>
+      <label class="secret-field"><span>Secret value</span><input id="secret-value" type="password" maxlength="16384" required autocomplete="new-password" spellcheck="false" placeholder="Paste credential"></label>
+      <div class="mbtn"><button class="btn primary" type="submit">Save secret</button><button class="btn" type="button" data-secret-close>Close</button></div>
+    </form>
+  </div>`;
+  m.hidden = false;
+  const close = () => { m.hidden = true; m.innerHTML = ''; };
+  m.onclick = async e => {
+    if (e.target === m || e.target.closest('[data-secret-close]')) { close(); return; }
+    const button = e.target.closest('[data-secret-delete]');
+    if (!button) return;
+    const name = button.dataset.secretDelete;
+    close();
+    const confirmed = await modal({ title: 'Delete secret?', body: `Delete "${name}" from this Windows user’s vault? Workflows referencing it will fail until it is saved again.`, buttons: [['cancel', 'Cancel'], ['del', 'Delete', 'danger']] });
+    if (confirmed !== 'del') { await openSecretsVault(); return; }
+    try {
+      await invoke('delete_secret', { name });
+      toast(`Deleted secret "${name}"`);
+    } catch (err) { toast('Delete failed: ' + (err?.message || err), 'err'); }
+    await openSecretsVault();
+  };
+  const form = $('#secret-form', m);
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = $('#secret-name', form).value.trim();
+    const value = $('#secret-value', form).value;
+    if (!name || !value) return;
+    const submit = form.querySelector('[type="submit"]');
+    submit.disabled = true;
+    try {
+      await invoke('save_secret', { name, value });
+      toast(`Saved secret "${name}"`);
+      await openSecretsVault();
+      const nextName = $('#secret-name', $('#modal'));
+      if (nextName) nextName.focus();
+    } catch (err) {
+      toast('Secret could not be saved: ' + (err?.message || err), 'err');
+      submit.disabled = false;
+      $('#secret-value', form).value = '';
+      $('#secret-value', form).focus();
+    }
+  });
+}
+$('#btn-secrets').addEventListener('click', () => {
+  $('#pop-settings').hidden = true;
+  openSecretsVault();
+});
+
 function startWindhawkGlassBridge() {
   const status = $('#glass-refresh-status');
   if (!/Win/i.test(navigator.userAgent)) {
