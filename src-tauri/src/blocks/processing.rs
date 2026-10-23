@@ -213,7 +213,9 @@ fn write_csv(path:&Path,rows:&[Value],delim:char,append:bool)->Result<(),String>
     let parent=path.parent().ok_or("CSV output path has no parent")?;
     fs::create_dir_all(parent).map_err(|e|format!("create CSV directory: {e}"))?;
     let mut content=String::new();
-    if !append&&!columns.is_empty(){content.push_str(&columns.iter().map(|x|csv_quote(x,delim)).collect::<Vec<_>>().join(&delim.to_string()));content.push_str("\r\n");}
+    // A new append destination needs a header just like a replacement destination.
+    let write_header = !append || !path.exists();
+    if write_header && !columns.is_empty(){content.push_str(&columns.iter().map(|x|csv_quote(x,delim)).collect::<Vec<_>>().join(&delim.to_string()));content.push_str("\r\n");}
     for r in rows {
         let m=r.as_object().ok_or("CSV rows must be JSON objects")?;
         content.push_str(&columns.iter().map(|k|{
@@ -228,10 +230,26 @@ fn write_csv(path:&Path,rows:&[Value],delim:char,append:bool)->Result<(),String>
         let mut f=fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e|format!("open CSV output: {e}"))?;
         f.write_all(content.as_bytes()).map_err(|e|format!("write CSV output: {e}"))?;
     } else {
-        let tmp=path.with_extension(format!("{}.tmp",path.extension().and_then(|x|x.to_str()).unwrap_or("csv")));
-        fs::write(&tmp,content).map_err(|e|format!("write staged CSV: {e}"))?;
-        if path.exists(){fs::remove_file(path).map_err(|e|format!("replace CSV output: {e}"))?;}
-        fs::rename(&tmp,path).map_err(|e|format!("install CSV output: {e}"))?;
+        let ext=path.extension().and_then(|x|x.to_str()).unwrap_or("csv");
+        let tmp=path.with_extension(format!("{ext}.{}.tmp",std::process::id()));
+        let backup=path.with_extension(format!("{ext}.{}.bak",std::process::id()));
+        fs::write(&tmp,&content).map_err(|e|format!("write staged CSV: {e}"))?;
+        let had_old=path.exists();
+        if had_old {
+            if backup.exists() { fs::remove_file(&backup).map_err(|e|format!("remove stale CSV backup: {e}"))?; }
+            if let Err(e)=fs::rename(path,&backup) {
+                let _=fs::remove_file(&tmp);
+                return Err(format!("stage existing CSV for replacement: {e}"));
+            }
+        }
+        if let Err(e)=fs::rename(&tmp,path) {
+            let _=fs::remove_file(&tmp);
+            if had_old {
+                let _=fs::rename(&backup,path);
+            }
+            return Err(format!("install staged CSV: {e}; previous file restoration was {}",if had_old && path.exists(){"successful"}else if had_old{"unsuccessful"}else{"not needed"}));
+        }
+        if had_old { let _=fs::remove_file(&backup); }
     }
     Ok(())
 }
@@ -538,6 +556,27 @@ mod tests {
     fn csv_parser_handles_quotes_delimiters_and_newlines(){
         let r=parse_csv("name,value\r\n\"Hana, Inc\",2\r\n\"a \"\"quote\"\"\",3\n",',').unwrap();
         assert_eq!(r,vec![vec!["name","value"],vec!["Hana, Inc","2"],vec!["a \"quote\"","3"]]);
+    }
+    #[test]
+    fn csv_writer_creates_header_on_first_append_and_preserves_existing_file_on_stage_failure(){
+        use std::{env,fs,time::{SystemTime,UNIX_EPOCH}};
+        let root=env::temp_dir().join(format!("00047-csv-test-{}",SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&root).unwrap();
+        let path=root.join("out.csv");
+        write_csv(&path,&[json!({"name":"first","value":1})],',',true).unwrap();
+        let first=fs::read_to_string(&path).unwrap();
+        assert!(first.starts_with("name,value\r\n"));
+        write_csv(&path,&[json!({"name":"second","value":2})],',',true).unwrap();
+        let appended=fs::read_to_string(&path).unwrap();
+        assert_eq!(appended.matches("name,value").count(),1);
+        assert!(appended.contains("second,2"));
+        // Force the staged write to fail by providing a directory as the file destination.
+        let impossible=root.join("destination.csv");
+        fs::create_dir(&impossible).unwrap();
+        assert!(write_csv(&impossible,&[json!({"name":"third"})],',',false).is_err());
+        let backup_or_dir=fs::metadata(&impossible).unwrap();
+        assert!(backup_or_dir.is_dir());
+        fs::remove_dir_all(&root).unwrap();
     }
     #[test]
     fn csv_parser_rejects_unclosed_quotes(){
