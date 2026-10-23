@@ -890,7 +890,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
         let started = Instant::now();
         let result = if timeout > 0.0 {
-            match tokio::time::timeout(Duration::from_secs_f64(timeout), execute_for_each(ctx.clone(), node)).await {
+            match tokio::time::timeout(Duration::from_secs_f64(timeout), Box::pin(execute_for_each(ctx.clone(), node))).await {
                 Ok(r) => r, Err(_) => Err(format!("For Each timed out after {timeout}s")),
             }
         } else { execute_for_each(ctx.clone(), node).await };
@@ -909,7 +909,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
         let started = Instant::now();
         let result = if timeout > 0.0 {
-            match tokio::time::timeout(Duration::from_secs_f64(timeout), execute_try_catch(ctx.clone(), node)).await {
+            match tokio::time::timeout(Duration::from_secs_f64(timeout), Box::pin(execute_try_catch(ctx.clone(), node))).await {
                 Ok(r) => r, Err(_) => Err(format!("Try / Catch timed out after {timeout}s")),
             }
         } else { execute_try_catch(ctx.clone(), node).await };
@@ -933,7 +933,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
         let started = Instant::now();
         let result = if timeout > 0.0 {
-            match tokio::time::timeout(Duration::from_secs_f64(timeout), execute_subflow(ctx.clone(), node)).await {
+            match tokio::time::timeout(Duration::from_secs_f64(timeout), Box::pin(execute_subflow(ctx.clone(), node))).await {
                 Ok(r) => r, Err(_) => Err(format!("Subflow timed out after {timeout}s")),
             }
         } else { execute_subflow(ctx.clone(), node).await };
@@ -1084,7 +1084,7 @@ async fn run_loop_path(ctx: Arc<Ctx>, start: String) -> Result<LoopMarker,String
             }
             _ => {}
         }
-        let next=exec_node(&ctx,&node).await;
+        let next=Box::pin(exec_node(&ctx,&node)).await;
         for id in next.into_iter().rev(){pending.push(id)}
     }
     Ok(LoopMarker::None)
@@ -1096,14 +1096,14 @@ async fn execute_try_catch(ctx: Arc<Ctx>, node: &Node) -> Result<bool,String> {
     let error_var=node.cfg.get("errorVar").and_then(Value::as_str).unwrap_or("errorMessage");
     let mut proxy=node.clone();
     proxy.cfg=json!({"automationId":try_id,"inputMapJson":"{}","outputMapJson":"{}","onFail":"stop"});
-    match execute_subflow(ctx.clone(),&proxy).await {
+    match Box::pin(execute_subflow(ctx.clone(),&proxy)).await {
         Ok(()) => Ok(false),
         Err(try_error) => {
             if ctx.token.is_cancelled(){return Err("cancelled".into())}
             let detail:String=try_error.chars().take(2048).collect();
             ctx.variables.lock().map_err(|e|e.to_string())?.insert(error_var.to_string(),Value::String(detail));
             proxy.cfg=json!({"automationId":catch_id,"inputMapJson":"{}","outputMapJson":"{}","onFail":"stop"});
-            execute_subflow(ctx.clone(),&proxy).await.map_err(|catch_error|format!("Try subflow failed ({try_error}); catch subflow also failed ({catch_error})"))?;
+            Box::pin(execute_subflow(ctx.clone(),&proxy)).await.map_err(|catch_error|format!("Try subflow failed ({try_error}); catch subflow also failed ({catch_error})"))?;
             Ok(true)
         }
     }
