@@ -67,6 +67,12 @@ pub struct NodeState {
     pub state: String,
     pub progress: Option<f64>,
     pub detail: String,
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 #[derive(Serialize, Clone, Debug)]
