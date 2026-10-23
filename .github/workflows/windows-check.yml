@@ -106,6 +106,7 @@ jobs:
           if (-not (Test-Path $hookTestExe)) { throw "Native hook runtime test executable was not created." }
           if (-not (Test-Path $hookTestDll)) { throw "Native hook runtime smoke DLL was not created." }
           & $hookTestExe $hookTestDll
+          cmake --build $build --config Release --target 00047_signature_verifier_smoke
           $signatureTestExe = Join-Path $build "Release/00047_signature_verifier_smoke.exe"
           if (-not (Test-Path $signatureTestExe)) { throw "Authenticode verifier smoke test was not created." }
           $unsignedFixture = Join-Path $env:RUNNER_TEMP "00047-native-mod-build/Release/00047_sample_native_mod.dll"
