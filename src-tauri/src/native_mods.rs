@@ -2687,7 +2687,7 @@ mod win {
             let request_temporary = root.join(format!("probe.request.{request_id}.tmp"));
             let response = root.join("probe.response");
             let _ = std::fs::remove_file(&response);
-            std::fs::write(&request_temporary, format!("{request_id}\\n"))
+            std::fs::write(&request_temporary, format!("{request_id}\n"))
                 .expect("write remote probe request");
             std::fs::rename(&request_temporary, &request)
                 .expect("publish remote probe request");
