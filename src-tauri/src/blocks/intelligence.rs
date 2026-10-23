@@ -467,6 +467,28 @@ mod tests{
         assert!(validate_ui_selector(&json!({"controlName":"Save"})).is_err());
     }
     #[test]
+    fn all_intelligence_blocks_are_registered_with_specs() {
+        let r = super::super::registry();
+        let expected = [
+            ("cond.ui_element", Cat::Condition),
+            ("act.ui_find", Cat::Action),
+            ("act.ui_click", Cat::Action),
+            ("act.ui_set_value", Cat::Action),
+            ("act.ui_select_item", Cat::Action),
+            ("act.json_extract", Cat::Action),
+            ("act.regex_extract", Cat::Action),
+            ("act.csv_to_json", Cat::Action),
+            ("act.json_to_csv", Cat::Action),
+            ("act.transform_value", Cat::Action),
+        ];
+        for (id, category) in expected {
+            let block = r.get(id).unwrap_or_else(|| panic!("{id} missing"));
+            assert_eq!(block.category(), category, "{id}");
+            assert!(block.spec().is_some(), "{id} must expose editor fields");
+        }
+    }
+
+    #[test]
     fn valid_variable_names_are_bounded_and_explicit(){
         assert!(valid_name("result_1"));assert!(valid_name("file.path"));assert!(!valid_name("1bad"));assert!(!valid_name("bad name"));
     }
