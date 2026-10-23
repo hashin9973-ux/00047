@@ -23,7 +23,7 @@ const fmtAgo = ts => {
 };
 
 const LABEL = { running: 'Running', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
-const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
+const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '', secrets: [] };
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
 const isRun = id => ['running', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
@@ -391,11 +391,58 @@ document.addEventListener('click', e => {
 // ---------- views ----------
 function show(view) {
   S.view = view;
-  for (const v of ['overview', 'automations', 'logs', 'plugins', 'extensions', 'native-mods', 'editor']) $('#view-' + v).hidden = v !== view;
+  for (const v of ['overview', 'automations', 'logs', 'plugins', 'extensions', 'native-mods', 'secrets', 'editor']) $('#view-' + v).hidden = v !== view;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? 'automations' : view)));
   editor.setActive(view === 'editor');
   render();
 }
+
+function renderSecrets() {
+  const host = $('#view-secrets');
+  host.innerHTML = `<div class="glass card secret-page">
+    <div class="chead"><h3>Secrets Vault</h3><button class="btn" id="secret-refresh">Refresh</button></div>
+    <p class="mu">Secrets are encrypted with Windows DPAPI for the current Windows user. Only names are listed; saved values are never read back into this form. Use <code>{{secret:NAME}}</code> in supported block text fields. Do not print secret values in commands or logs.</p>
+    <form id="secret-form" class="secret-form">
+      <label>Secret name<input id="secret-name" required maxlength="64" spellcheck="false" placeholder="API_TOKEN"></label>
+      <label>Secret value<input id="secret-value" required maxlength="16384" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste secret; never shown again"></label>
+      <button class="btn primary" type="submit">Save / Replace</button>
+    </form>
+    <div id="secret-status" class="mu" role="status"></div>
+    <div id="secret-rows" class="secret-rows"><div class="empty">Loading secrets…</div></div>
+  </div>`;
+  const status = $('#secret-status', host), rows = $('#secret-rows', host);
+  const refresh = async () => {
+    try {
+      S.secrets = await invoke('list_secrets');
+      rows.innerHTML = S.secrets.length ? S.secrets.map(k => `<div class="secret-row"><div><strong>${esc(k)}</strong><small>Encrypted for this Windows user</small></div><button class="btn danger" type="button" data-secret-delete="${esc(k)}">Delete</button></div>`).join('') : '<div class="empty">No saved secrets. Create one above.</div>';
+      status.textContent = `${S.secrets.length} secret name(s) stored. Values are not retrievable through the listing API.`;
+    } catch (e) { status.textContent = 'Could not load the vault: ' + String(e?.message || e); rows.innerHTML = ''; }
+  };
+  $('#secret-refresh', host).addEventListener('click', refresh);
+  $('#secret-form', host).addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = $('#secret-name', host).value.trim(), value = $('#secret-value', host).value;
+    if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(name)) { toast('Use 1–64 letters, digits, underscore, dash, or dot; start with a letter, digit, or underscore.', 'err'); return; }
+    try {
+      await invoke('secret_set', { name, value });
+      $('#secret-value', host).value = '';
+      $('#secret-name', host).value = '';
+      toast('Secret saved to the encrypted vault.');
+      await refresh();
+    } catch (err) { toast('Secret save failed: ' + String(err?.message || err), 'err'); }
+  });
+  rows.addEventListener('click', async e => {
+    const b = e.target.closest('[data-secret-delete]');
+    if (!b) return;
+    const n = b.dataset.secretDelete;
+    const answer = await modal({ title: 'Delete secret?', body: `The encrypted value “${n}” will be removed. Workflows referencing it will fail until it is saved again.`, buttons: [['cancel','Cancel'],['delete','Delete','danger']] });
+    if (answer !== 'delete') return;
+    try { await invoke('secret_delete', { name: n }); toast('Secret deleted.'); await refresh(); }
+    catch (err) { toast('Secret delete failed: ' + String(err?.message || err), 'err'); }
+  });
+  refresh();
+}
+
 function render() {
   if (S.view === 'overview') buildOverview();
   else if (S.view === 'automations') renderAutomations();
@@ -403,6 +450,7 @@ function render() {
   else if (S.view === 'plugins') renderPlugins();
   else if (S.view === 'extensions') renderExtensions();
   else if (S.view === 'native-mods') renderNativeMods();
+  else if (S.view === 'secrets') renderSecrets();
   else renderDock();
 }
 document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => { if (S.view === 'editor') flushSaves(); show(b.dataset.view); }));
