@@ -125,6 +125,14 @@ const editor = new Editor($('#ed-host'), {
   toast,
   pickFile: async () => { try { return await invoke('pick_file'); } catch (e) { toast('File picker failed: ' + e, 'err'); return null; } },
   testBlock: id => testBlock(id),
+  toggleBreakpoint: async (nodeId, enabled) => {
+    if (!S.editId) return;
+    try {
+      const actual = await invoke('set_breakpoint', { id: S.editId, nodeId, enabled });
+      editor.setBreakpoint(nodeId, !!actual);
+      toast(actual ? 'Breakpoint added' : 'Breakpoint removed');
+    } catch (e) { toast('Breakpoint update failed: ' + (e?.message || e), 'err'); }
+  },
 });
 
 async function testBlock(nodeId) {
@@ -260,6 +268,8 @@ function editorStatus() {
   p.className = 'pill ' + st; p.textContent = LABEL[st] || st;
   $('[data-ed=start]').disabled = run;
   $('[data-ed=stop]').disabled = !run;
+  $('[data-ed=pause]').disabled = !run || st === 'paused' || st === 'stopping';
+  $('[data-ed=resume]').disabled = !run || st !== 'paused';
   if (!run || (st === 'running' && S.edSt !== 'running')) $('#ed-note').textContent = '';
   S.edSt = st;
 }
@@ -324,6 +334,8 @@ function openEditor(id) {
   S.editId = id; S.edSt = ''; S.vars = { active: false, variables: {} };
   show('editor');
   editor.load(a);
+  editor.setBreakpoints([]);
+  invoke('get_breakpoints', { id }).then(ids => { if (S.editId === id) editor.setBreakpoints(ids); }).catch(() => {});
   $('#ed-name').value = a.name;
   $('#ed-auto').checked = !!a.autoStart;
   for (const [nid, st] of Object.entries(S.rt.nodes[id] || {})) editor.setNodeState(nid, st);
