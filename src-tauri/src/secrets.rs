@@ -1,5 +1,5 @@
 //! Per-user DPAPI-protected secrets. Plaintext is never written to disk.
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::{collections::BTreeMap, fs, io::Write, path::{Path,PathBuf}, process::{Command,Stdio}, sync::{Mutex,OnceLock}};
 
 struct Vault { path:PathBuf, encrypted:BTreeMap<String,String> }
@@ -38,7 +38,7 @@ fn decode64(s:&str)->Result<Vec<u8>,String>{
  Ok(out)
 }
 impl Vault {
- fn flush(&self)->Result<(),String>{let data=serde_json::to_vec_pretty(&self.encrypted).map_err(|e|e.to_string())?;let tmp=self.path.with_extension("json.tmp");fs::write(&tmp,&data).map_err(|e|format!("Write encrypted vault: {e}"))?;let f=fs::OpenOptions::new().read(true).open(&tmp).map_err(|e|e.to_string())?;f.sync_all().map_err(|e|e.to_string())?;drop(f);if self.path.exists(){let backup=self.path.with_extension("json.bak");if backup.exists(){let _=fs::remove_file(&backup)};fs::rename(&self.path,&backup).map_err(|e|e.to_string())?;if let Err(e)=fs::rename(&tmp,&self.path){let _=fs::rename(&backup,&self.path);return Err(format!("Replace vault failed: {e}"))};let _=fs::remove_file(backup);}else{fs::rename(tmp,&self.path).map_err(|e|e.to_string())?}Ok(())}
+ fn flush(&self)->Result<(),String>{let data=serde_json::to_vec_pretty(&self.encrypted).map_err(|e|e.to_string())?;let tmp=self.path.with_extension("json.tmp");fs::write(&tmp,&data).map_err(|e|format!("Write encrypted vault: {e}"))?;let f=fs::OpenOptions::new().write(true).open(&tmp).map_err(|e|e.to_string())?;f.sync_all().map_err(|e|e.to_string())?;drop(f);if self.path.exists(){let backup=self.path.with_extension("json.bak");if backup.exists(){let _=fs::remove_file(&backup);};fs::rename(&self.path,&backup).map_err(|e|e.to_string())?;if let Err(e)=fs::rename(&tmp,&self.path){let _=fs::rename(&backup,&self.path);return Err(format!("Replace vault failed: {e}"))};let _=fs::remove_file(backup);}else{fs::rename(tmp,&self.path).map_err(|e|e.to_string())?}Ok(())}
 }
 pub fn init(path:impl AsRef<Path>)->Result<(),String>{
  let path=path.as_ref().to_path_buf();
