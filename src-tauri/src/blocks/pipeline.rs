@@ -273,7 +273,7 @@ fn secret_get_spec()->Value{action_spec("Get Secret from Vault","lock","Decrypts
 #[async_trait] impl Block for SecretGet{
  fn title(&self)->&'static str{"Get Secret from Vault"} fn category(&self)->Cat{Cat::Action}
  fn spec(&self)->Option<Value>{Some(secret_get_spec())}
- fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&secret_get_spec(),c)?;no_nul(c,&["key","saveAs"])?;if secret_key(c).is_empty(){return Err("Secret name is required".into())};require_var(c,"saveAs")}
+ fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&secret_get_spec(),c)?;no_nul(c,&["key","saveAs"])?;if secret_key(c).is_empty(){return Err("Secret name is required".into())};require_var(c,"saveAs")?;if !txt(c,"saveAs").starts_with("secret."){return Err("Secret variable names must start with 'secret.' so the debugger can redact them".into())};Ok(())}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let key=secret_key(&cx.cfg);let s=secret_script(r#"if(-not $store.ContainsKey($key)){throw 'Secret was not found'};$secure=ConvertTo-SecureString ([string]$store[$key]);$ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure);try{$plain=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr);[Console]::Out.Write($plain)}finally{[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)}"#,&key);let out=extra::powershell(cx,&s).await?;if out.len()>65536{return Err("Secret exceeds the supported 64 KiB limit".into())};cx.set_variable(txt(&cx.cfg,"saveAs"),json!(out))?;Ok(Outcome::Satisfied)}
 }
 struct SecretDelete;
@@ -295,7 +295,7 @@ fn secret_exists_spec()->Value{let f=vec![json!({"key":"key","label":"Secret nam
 
 // ---------------- Reusable workflows (engine executes this marker inline) ----------------
 struct CallSubflow;
-fn call_subflow_spec()->Value{action_spec("Call Subflow","layers","Runs another saved automation inline using this run's variables, then resumes the caller when the subflow finishes.",vec![json!({"key":"automationId","label":"Automation ID","type":"text","required":true,"maxLen":128}),json!({"preset":"timeout","default":0}),json!({"preset":"onFail"})],"Call automation {automationId}","Subflows run sequentially in the caller's run context. Avoid direct or indirect recursive calls; the engine enforces a maximum nesting depth.")}
+fn call_subflow_spec()->Value{action_spec("Call Subflow","layers","Runs another saved automation inline using this run's variables, then resumes the caller when the subflow finishes.",vec![json!({"key":"automationId","label":"Automation ID or exact automation name","type":"text","required":true,"maxLen":128}),json!({"preset":"timeout","default":0}),json!({"preset":"onFail"})],"Call automation {automationId}","Subflows run sequentially in the caller's run context. Avoid direct or indirect recursive calls; the engine enforces a maximum nesting depth.")}
 #[async_trait] impl Block for CallSubflow{
  fn title(&self)->&'static str{"Call Subflow"} fn category(&self)->Cat{Cat::Action} fn supports_timeout(&self)->bool{true}
  fn spec(&self)->Option<Value>{Some(call_subflow_spec())}
