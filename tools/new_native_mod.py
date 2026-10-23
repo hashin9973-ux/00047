@@ -52,6 +52,8 @@ def create_project(mod_id: str, name: str, output_dir: str, target: str = "explo
         "manifest.json": json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         "mod.cpp": r'''#include "00047_mod_api.h"
 #include "windhawk_nonhook_compat.h"
+#include "windhawk_hook_compat.h"
+#include "windhawk_symbol_compat.h"
 
 static bool g_initialized = false;
 
@@ -63,6 +65,12 @@ WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void) {
     if (g_initialized) return TRUE;
     if (!wmod::windhawk_hook_compat::BeginHookOperations()) return FALSE;
     Wh_Log(L"Starter mod initialized");
+    // Windhawk applies queued registrations automatically after its init
+    // callback; this source-level ABI template must do so explicitly.
+    if (!Wh_ApplyHookOperations()) {
+        wmod::windhawk_hook_compat::ShutdownHookOperations();
+        return FALSE;
+    }
     g_initialized = true;
     return TRUE;
 }
@@ -109,6 +117,7 @@ set(WMOD_HOOK_ENGINE_SOURCES
 add_library({module_name} SHARED mod.cpp ${{WMOD_HOOK_ENGINE_SOURCES}})
 target_compile_features({module_name} PRIVATE cxx_std_17)
 target_compile_definitions({module_name} PRIVATE WMOD_BUILD_DLL WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries({module_name} PRIVATE winhttp dbghelp psapi)
 target_include_directories({module_name} PRIVATE
   "${{WMOD_SDK_DIR}}"
   "${{WMOD_SDK_DIR}}/third_party/minhook/include"

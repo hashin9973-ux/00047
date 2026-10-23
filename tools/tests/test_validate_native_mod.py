@@ -231,11 +231,15 @@ class NativeModValidatorTests(unittest.TestCase):
             cmake = handle.read()
         self.assertIn("$" + "{WMOD_SDK_DIR}", cmake)
         self.assertNotIn("\\" + "$" + "{WMOD_SDK_DIR}", cmake)
+        self.assertIn("target_link_libraries(com_example_generated PRIVATE winhttp dbghelp psapi)", cmake)
         with open(os.path.join(destination, "mod.cpp"), encoding="utf-8") as handle:
             source = handle.read()
         for symbol in EXPORTS:
             self.assertIn(symbol, source)
         self.assertIn("windhawk_nonhook_compat.h", source)
+        self.assertIn("windhawk_hook_compat.h", source)
+        self.assertIn("windhawk_symbol_compat.h", source)
+        self.assertIn("Wh_ApplyHookOperations()", source)
         self.assertIn("Wh_Log(", source)
         self.assertIn("x64 function-hook registration/application", open(os.path.join(destination, "README.md"), encoding="utf-8").read())
 

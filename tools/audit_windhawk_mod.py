@@ -43,7 +43,7 @@ SUPPORTED = {
     "Wh_FindNextSymbol": "Iterates a bounded snapshot returned by Wh_FindFirstSymbol; result pointers are owned by the search handle.",
     "Wh_FindCloseSymbol": "Releases a symbol search snapshot returned by Wh_FindFirstSymbol.",
     "Wh_HookSymbols": "Resolves exact undecorated/decorated names through bounded DbgHelp enumeration and queues matching x64 hooks; persistent symbol cache and full hook-session behavior are not implemented.",
-    "Wh_SetFunctionHook": "Queues an x64 inline detour through bundled MinHook; a named per-process registry atomically rejects duplicate target addresses across separately linked mod DLLs.",
+    "Wh_SetFunctionHook": "Queues an x64 inline detour through bundled MinHook; a named per-process registry atomically rejects duplicate or conservatively overlapping entry-target regions across separately linked mod DLLs.",
     "Wh_RemoveFunctionHook": "Queues removal of a hook registered by this mod DLL and releases the shared target claim only after backend removal succeeds.",
     "Wh_ApplyHookOperations": "Applies this mod DLL's queued hook additions and removals; rollback is best-effort if a Windows patch operation fails.",
     "Wh_Disasm": "Uses a vendored x64 decoder to return Intel-syntax mnemonics and operands; formatting can differ from Windhawk's Zydis-based output.",
