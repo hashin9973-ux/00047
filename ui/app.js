@@ -277,7 +277,7 @@ function renderDock() {
     el.innerHTML = rows.join('') || '<div class="empty">No events yet. Start the automation to see live logs.</div>';
   } else if (S.tab === 'history') {
     el.innerHTML = S.hist.length
-      ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
+      ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms"><button class="ib history-replay" data-run-replay="${r.id}" title="Replay if the captured workflow is classified safe">Replay</button>${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
       : '<div class="empty">No finished runs yet.</div>';
   } else el.innerHTML = HELP;
 }
@@ -312,6 +312,15 @@ $('#dock-tabs').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   S.tab = b.dataset.tab; $('#ed-dock').classList.remove('closed');
   if (S.tab === 'history') refreshHist(); else renderDock();
+});
+$('#dock-body').addEventListener('click', async e => {
+  const b = e.target.closest('[data-run-replay]');
+  if (!b || !S.editId) return;
+  const runId = Number(b.dataset.runReplay);
+  const answer = await modal({ title: 'Replay saved run snapshot?', body: 'Only snapshots retained in this app session can be replayed. Workflows containing command execution, UI input, file changes, or other classified side effects are refused by the engine. Review the workflow before continuing.', buttons: [['cancel','Cancel'],['replay','Replay snapshot','primary']] });
+  if (answer !== 'replay') return;
+  try { await invoke('replay_run', { id: S.editId, runId }); toast('Safe snapshot replay started.'); }
+  catch (err) { toast('Replay refused or failed: ' + String(err?.message || err), 'err'); }
 });
 
 // ---------- controls ----------
