@@ -37,6 +37,20 @@ pub struct Runtime {
     pub nodes: HashMap<String, HashMap<String, NodeState>>,
 }
 
+#[derive(Clone)]
+struct VariableSession {
+    values: Arc<Mutex<HashMap<String, Value>>>,
+    secrets_to_redact: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct VariableSnapshot {
+    pub name: String,
+    pub kind: String,
+    pub preview: String,
+    pub truncated: bool,
+}
+
 pub struct Engine {
     app: AppHandle,
     pub store: Arc<Store>,
@@ -52,6 +66,7 @@ pub struct Engine {
     debug_paused: Mutex<HashSet<String>>,
     debug_steps: Mutex<HashMap<String, u32>>,
     snapshots: Mutex<HashMap<String, VecDeque<(u64, Automation)>>>,
+    variable_sessions: Mutex<HashMap<String, VariableSession>>,
 }
 
 impl Engine {
@@ -83,6 +98,7 @@ impl Engine {
             debug_paused: Default::default(),
             debug_steps: Default::default(),
             snapshots: Default::default(),
+            variable_sessions: Default::default(),
         }
     }
 
@@ -163,6 +179,30 @@ impl Engine {
     }
     pub fn history(&self, id: &str) -> Vec<RunRecord> {
         self.hist.lock().unwrap().get(id).map(|h| h.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// In-memory inspection surface for the most recent run of an automation.
+    /// Values are redacted and bounded before they cross the command boundary.
+    pub fn inspect_variables(&self, id: &str) -> Vec<VariableSnapshot> {
+        let session = self.variable_sessions.lock().ok().and_then(|m| m.get(id).cloned());
+        let Some(session) = session else { return Vec::new(); };
+        let values = match session.values.lock() { Ok(v) => v, Err(_) => return Vec::new() };
+        let mut snapshots = values.iter().map(|(name, value)| {
+            let (kind, text) = match value {
+                Value::Null => ("null", String::new()),
+                Value::Bool(_) => ("boolean", value.to_string()),
+                Value::Number(_) => ("number", value.to_string()),
+                Value::String(s) => ("string", s.clone()),
+                Value::Array(_) => ("array", value.to_string()),
+                Value::Object(_) => ("object", value.to_string()),
+            };
+            let safe = crate::blocks::redact_message(&session.secrets_to_redact, &text);
+            let truncated = safe.chars().count() > 500;
+            let preview = safe.chars().take(500).collect::<String>();
+            VariableSnapshot { name: name.clone(), kind: kind.into(), preview, truncated }
+        }).collect::<Vec<_>>();
+        snapshots.sort_by(|a,b| a.name.cmp(&b.name));
+        snapshots
     }
 
     // ----- control -----
@@ -367,12 +407,17 @@ impl Engine {
         let entries = entry_nodes(&auto);
         let call_stack = vec![auto.id.clone()];
         let secrets_to_redact = Arc::new(Mutex::new(Vec::new()));
+        let variables = Arc::new(Mutex::new(HashMap::new()));
+        self.variable_sessions.lock().unwrap().insert(auto.id.clone(), VariableSession {
+            values: variables.clone(),
+            secrets_to_redact: secrets_to_redact.clone(),
+        });
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
             auto: Arc::new(auto),
             token: parent.child_token(),
             visits: Default::default(),
-            variables: Arc::new(Mutex::new(HashMap::new())),
+            variables,
             secrets_to_redact,
             rate: Default::default(),
             handles: Default::default(),
