@@ -28,6 +28,11 @@ constexpr DWORD kSharedRegistryMagic = 0x57484D31u;
 constexpr DWORD kSharedRegistryVersion = 1;
 constexpr DWORD kSharedRegistryWaitMs = 5000;
 constexpr size_t kMaxSharedHookEntries = 4096;
+// The bundled x64 MinHook backend writes a 5-byte relative jump and may also
+// use the 5-byte hot-patch area immediately preceding a target. Distinct target
+// addresses closer than this can have overlapping entry patches; reject them
+// conservatively across independently linked mod DLLs.
+constexpr std::uintptr_t kHookConflictDistance = 10;
 
 struct SharedHookEntry {
     std::uintptr_t target = 0;
@@ -64,7 +69,11 @@ public:
         const auto ownerValue = reinterpret_cast<std::uintptr_t>(owner);
         bool alreadyClaimed = false;
         for (DWORD i = 0; i < table_->count; ++i) {
-            if (table_->entries[i].target == targetValue) {
+            const auto claimedTarget = table_->entries[i].target;
+            const auto distance = targetValue >= claimedTarget
+                ? targetValue - claimedTarget
+                : claimedTarget - targetValue;
+            if (distance < kHookConflictDistance) {
                 alreadyClaimed = true;
                 break;
             }
@@ -499,74 +508,126 @@ bool HasNoInFlightModuleFrames() noexcept {
 
     const DWORD currentPid = GetCurrentProcessId();
     const DWORD currentTid = GetCurrentThreadId();
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) return false;
 
     struct SuspendedThread {
         HANDLE handle = nullptr;
         DWORD previousSuspendCount = 0;
+        DWORD threadId = 0;
     };
+    // Reserve all tracking memory before suspending any shell thread. Allocating
+    // from the process heap while other threads are suspended can deadlock if a
+    // suspended thread owned a heap lock.
+    constexpr size_t kMaxQuiescenceThreads = 4096;
+    constexpr unsigned kMaxSnapshotPasses = 16;
     std::vector<SuspendedThread> suspended;
+    std::vector<DWORD> suspendedIds; // sorted, so membership checks do not allocate.
     auto resumeAll = [&]() noexcept {
+        bool allResumed = true;
         for (auto it = suspended.rbegin(); it != suspended.rend(); ++it) {
-            if (it->handle) {
-                // Resume exactly the suspension added here; preserve any
-                // suspension count that existed before this probe.
-                ResumeThread(it->handle);
-                CloseHandle(it->handle);
+            if (!it->handle) continue;
+            if (ResumeThread(it->handle) == static_cast<DWORD>(-1)) {
+                const DWORD error = GetLastError();
+                // A thread that has already exited needs no further resumption.
+                if (error != ERROR_INVALID_PARAMETER) {
+                    allResumed = false;
+                    OutputDebugStringW(L"00047: unable to resume a thread after hook-quiescence scan.\n");
+                }
             }
+            CloseHandle(it->handle);
+            it->handle = nullptr;
         }
         suspended.clear();
+        return allResumed;
     };
 
     bool safe = true;
+    bool stableThreadSet = false;
     try {
-        suspended.reserve(256);
-        THREADENTRY32 entry{};
-        entry.dwSize = sizeof(entry);
-        if (!Thread32First(snapshot, &entry)) {
+        suspended.reserve(kMaxQuiescenceThreads);
+        suspendedIds.reserve(kMaxQuiescenceThreads);
+
+        // A single thread snapshot has a race: a worker can be created after
+        // enumeration starts but before its creator is suspended. Keep threads
+        // already inspected suspended, and repeat enumeration until an entire
+        // pass discovers no previously unseen live thread. A bounded failure is
+        // deliberately fail-closed rather than claiming quiescence under churn.
+        for (unsigned pass = 0; pass < kMaxSnapshotPasses; ++pass) {
+            HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if (snapshot == INVALID_HANDLE_VALUE) {
+                safe = false;
+                break;
+            }
+
+            THREADENTRY32 entry{};
+            entry.dwSize = sizeof(entry);
+            if (!Thread32First(snapshot, &entry)) {
+                CloseHandle(snapshot);
+                safe = false;
+                break;
+            }
+
+            bool discoveredThread = false;
+            do {
+                if (entry.th32OwnerProcessID != currentPid ||
+                    entry.th32ThreadID == currentTid) {
+                    continue;
+                }
+
+                const DWORD threadId = entry.th32ThreadID;
+                const auto known = std::lower_bound(
+                    suspendedIds.begin(), suspendedIds.end(), threadId);
+                if (known != suspendedIds.end() && *known == threadId) continue;
+                if (suspended.size() >= kMaxQuiescenceThreads) {
+                    safe = false;
+                    break;
+                }
+
+                HANDLE thread = OpenThread(
+                    THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT |
+                        THREAD_QUERY_INFORMATION,
+                    FALSE, threadId);
+                if (!thread) {
+                    // The thread may have exited between snapshot creation and
+                    // OpenThread. Any other inability to inspect it blocks unload.
+                    if (GetLastError() == ERROR_INVALID_PARAMETER) continue;
+                    safe = false;
+                    break;
+                }
+
+                const DWORD previous = SuspendThread(thread);
+                if (previous == static_cast<DWORD>(-1)) {
+                    const DWORD error = GetLastError();
+                    CloseHandle(thread);
+                    if (error == ERROR_INVALID_PARAMETER) continue;
+                    safe = false;
+                    break;
+                }
+
+                // Both vectors were fully reserved before the first suspension;
+                // these trivial inserts therefore cannot allocate while frozen.
+                const auto insertAt = std::lower_bound(
+                    suspendedIds.begin(), suspendedIds.end(), threadId);
+                suspendedIds.insert(insertAt, threadId);
+                suspended.push_back({thread, previous, threadId});
+                discoveredThread = true;
+            } while (Thread32Next(snapshot, &entry));
+
+            const DWORD enumerationError = GetLastError();
             CloseHandle(snapshot);
-            return false;
+            if (!safe || enumerationError != ERROR_NO_MORE_FILES) {
+                safe = false;
+                break;
+            }
+            if (!discoveredThread) {
+                stableThreadSet = true;
+                break;
+            }
         }
 
-        do {
-            if (entry.th32OwnerProcessID != currentPid ||
-                entry.th32ThreadID == currentTid) {
-                continue;
-            }
-
-            HANDLE thread = OpenThread(
-                THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT |
-                    THREAD_QUERY_INFORMATION,
-                FALSE, entry.th32ThreadID);
-            if (!thread) {
-                // The thread may have exited between the snapshot and OpenThread.
-                if (GetLastError() == ERROR_INVALID_PARAMETER) continue;
-                safe = false;
-                break;
-            }
-
-            const DWORD previous = SuspendThread(thread);
-            if (previous == static_cast<DWORD>(-1)) {
-                CloseHandle(thread);
-                safe = false;
-                break;
-            }
-            try {
-                suspended.push_back({thread, previous});
-            } catch (...) {
-                ResumeThread(thread);
-                CloseHandle(thread);
-                safe = false;
-                break;
-            }
-        } while (Thread32Next(snapshot, &entry));
-        if (safe && GetLastError() != ERROR_NO_MORE_FILES) safe = false;
-
-        CloseHandle(snapshot);
-        snapshot = INVALID_HANDLE_VALUE;
-
+        if (!stableThreadSet) safe = false;
         if (safe) {
+            // All enumerated threads are held at a stable snapshot while their
+            // instruction pointers and ordinary native stacks are inspected.
             for (const auto& item : suspended) {
                 CONTEXT context{};
                 context.ContextFlags = CONTEXT_CONTROL;
@@ -585,9 +646,8 @@ bool HasNoInFlightModuleFrames() noexcept {
         safe = false;
     }
 
-    if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
-    resumeAll();
-    return safe;
+    const bool allResumed = resumeAll();
+    return safe && stableThreadSet && allResumed;
 }
 
 

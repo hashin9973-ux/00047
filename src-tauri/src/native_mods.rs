@@ -381,7 +381,7 @@ impl NativeModManager {
         self.root.join("packages")
     }
 
-    fn package_dir(&self, id: &str) -> Result<PathBuf, String> {
+    pub(crate) fn package_dir(&self, id: &str) -> Result<PathBuf, String> {
         if !valid_id(id) {
             return Err("Invalid native mod ID.".into());
         }
@@ -418,7 +418,7 @@ impl NativeModManager {
         }
     }
 
-    fn enabled_snapshot(&self) -> HashSet<String> {
+    pub(crate) fn enabled_snapshot(&self) -> HashSet<String> {
         self.state.lock().map(|s| s.enabled.clone()).unwrap_or_default()
     }
 

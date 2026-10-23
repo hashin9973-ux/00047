@@ -110,6 +110,11 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(externalBegin() == TRUE);
     CHECK(externalInstall(targetFunction, &externalOriginal) == FALSE);
     CHECK(externalOriginal == nullptr);
+    void* overlappingOriginal = nullptr;
+    CHECK(externalInstall(
+        static_cast<unsigned char*>(targetFunction) + 1,
+        &overlappingOriginal) == FALSE);
+    CHECK(overlappingOriginal == nullptr);
     CHECK(target(5) == 17);
 
     CHECK(remove() == TRUE);
