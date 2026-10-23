@@ -40,7 +40,17 @@ fn decode64(s:&str)->Result<Vec<u8>,String>{
 impl Vault {
  fn flush(&self)->Result<(),String>{let data=serde_json::to_vec_pretty(&self.encrypted).map_err(|e|e.to_string())?;let tmp=self.path.with_extension("json.tmp");fs::write(&tmp,&data).map_err(|e|format!("Write encrypted vault: {e}"))?;let f=fs::OpenOptions::new().read(true).open(&tmp).map_err(|e|e.to_string())?;f.sync_all().map_err(|e|e.to_string())?;drop(f);if self.path.exists(){let backup=self.path.with_extension("json.bak");if backup.exists(){let _=fs::remove_file(&backup)};fs::rename(&self.path,&backup).map_err(|e|e.to_string())?;if let Err(e)=fs::rename(&tmp,&self.path){let _=fs::rename(&backup,&self.path);return Err(format!("Replace vault failed: {e}"))};let _=fs::remove_file(backup);}else{fs::rename(tmp,&self.path).map_err(|e|e.to_string())?}Ok(())}
 }
-pub fn init(path:impl AsRef<Path>)->Result<(),String>{let path=path.as_ref().to_path_buf();let encrypted=match fs::read(&path){Ok(b)=>serde_json::from_slice::<BTreeMap<String,String>>(&b).map_err(|e|format!("Encrypted secrets vault could not be read: {e}"))?,Err(e) if e.kind()==std::io::ErrorKind::NotFound=>BTreeMap::new(),Err(e)=>return Err(format!("Read secrets vault: {e}"))};let _=VAULT.set(Mutex::new(Vault{path,encrypted}));Ok(())}
+pub fn init(path:impl AsRef<Path>)->Result<(),String>{
+ let path=path.as_ref().to_path_buf();
+ let mut warning=None;
+ let encrypted=match fs::read(&path){
+  Ok(b)=>match serde_json::from_slice::<BTreeMap<String,String>>(&b){Ok(v)=>v,Err(e)=>{let bad=path.with_file_name("secrets.corrupt-backup.json");let _=fs::rename(&path,&bad);warning=Some(format!("Encrypted secrets vault could not be parsed ({e}); the unreadable file was moved to {} and a new empty vault was created.",bad.display()));BTreeMap::new()}},
+  Err(e) if e.kind()==std::io::ErrorKind::NotFound=>BTreeMap::new(),
+  Err(e)=>return Err(format!("Read secrets vault: {e}"))
+ };
+ let _=VAULT.set(Mutex::new(Vault{path,encrypted}));
+ if let Some(w)=warning{Err(w)}else{Ok(())}
+}
 pub fn list()->Result<Vec<String>,String>{let v=VAULT.get().ok_or("Secrets vault is not initialized")?;Ok(v.lock().map_err(|e|e.to_string())?.encrypted.keys().cloned().collect())}
 pub fn get(name:&str)->Result<String,String>{if !valid_key(name){return Err("Secret name is invalid".into())};let v=VAULT.get().ok_or("Secrets vault is not initialized")?;let cipher=v.lock().map_err(|e|e.to_string())?.encrypted.get(name).cloned().ok_or_else(||format!("Secret '{name}' is not stored"))?;unprotect(&cipher)}
 pub fn set(name:&str,value:&str)->Result<(),String>{if !valid_key(name){return Err("Secret name must be 1-64 ASCII letters, digits, underscore, dash, or dot".into())};if value.len()>16384{return Err("Secret values are limited to 16 KiB".into())};if value.contains('\0'){return Err("Secret value must not contain NUL".into())};let cipher=protect(value)?;let v=VAULT.get().ok_or("Secrets vault is not initialized")?;let mut v=v.lock().map_err(|e|e.to_string())?;let old=v.encrypted.insert(name.to_string(),cipher);if let Err(e)=v.flush(){if let Some(x)=old{v.encrypted.insert(name.to_string(),x);}else{v.encrypted.remove(name);}return Err(e)}Ok(())}
