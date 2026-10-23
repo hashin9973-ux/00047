@@ -272,10 +272,12 @@ impl Engine {
         let breakpoint = self.debug_breakpoints.lock().ok()
             .and_then(|m|m.get(aid).map(|set|set.contains(&node.id))).unwrap_or(false);
         let step_gate = self.debug_step_next.lock().ok().map(|mut s|s.remove(aid)).unwrap_or(false);
-        if breakpoint || step_gate {
+        let pause_requested = self.debug_paused.lock().ok().map(|p|p.contains(aid)).unwrap_or(false);
+        if breakpoint || step_gate || pause_requested {
             if let Ok(mut p)=self.debug_paused.lock(){p.insert(aid.to_string());}
-            self.set_node(aid,&node.id,"paused",None,if breakpoint{"Paused at breakpoint".into()}else{"Paused after single step".into()});
-            self.log("info",aid,&ctx.auto.name,Some((node.id.clone(),ctx.label(node))),if breakpoint{"Debugger stopped at breakpoint".into()}else{"Debugger paused for single-step".into()});
+            let detail = if breakpoint { "Paused at breakpoint" } else if step_gate { "Paused after single step" } else { "Paused at block boundary" };
+            self.set_node(aid,&node.id,"paused",None,detail.into());
+            self.log("info",aid,&ctx.auto.name,Some((node.id.clone(),ctx.label(node))),detail.into());
         }
         loop {
             if ctx.token.is_cancelled(){return false}
