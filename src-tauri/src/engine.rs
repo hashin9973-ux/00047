@@ -514,10 +514,29 @@ impl Ctx {
         resolve_targets(&self.auto, id)
     }
     /// Runaway guard: too many executions of one block in a short window aborts the automation.
+    fn in_active_for_each_body(&self, target: &str) -> bool {
+        let visited = self.visits.lock().map(|v| v.clone()).unwrap_or_default();
+        for loop_node in self.auto.nodes.iter().filter(|n| n.kind == "act.for_each" && visited.get(&n.id).copied().unwrap_or(0) > 0) {
+            let mut pending = self.auto.edges.iter()
+                .filter(|e| e.from == loop_node.id && e.kind == "if")
+                .map(|e| e.to.clone()).collect::<Vec<_>>();
+            let mut seen = HashSet::new();
+            while let Some(id) = pending.pop() {
+                if id == target { return true; }
+                if id == loop_node.id || !seen.insert(id.clone()) { continue; }
+                for edge in self.auto.edges.iter().filter(|e| e.from == id && matches!(e.kind.as_str(), "if" | "else" | "after")) {
+                    if edge.to != loop_node.id { pending.push(edge.to.clone()); }
+                }
+            }
+        }
+        false
+    }
+
     fn rate_ok(&self, node: &Node) -> bool {
         let risky = registry().get(node.kind.as_str()).map(|b| b.risky()).unwrap_or(false);
-        let (win, limit) = if node.kind == "act.for_each" {
-            // Array iteration revisits one block once per item, but remains bounded against accidental loops.
+        let in_loop_body = self.in_active_for_each_body(&node.id);
+        let (win, limit) = if node.kind == "act.for_each" || (in_loop_body && !risky) {
+            // Data-only loop bodies can run quickly, while risky side effects keep the ordinary rate limit.
             (2, 1000)
         } else if risky || matches!(node.kind.as_str(), "act.trim" | "act.launch" | "act.stop_proc" | "act.notify") {
             (10, 12)
