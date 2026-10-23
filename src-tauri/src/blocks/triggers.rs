@@ -113,13 +113,105 @@ impl Block for Webhook{
   }
  }
 }
+
+fn process_event_spec()->Value{
+ json!({"category":"condition","title":"Process Start / Exit Event","icon":"activity","description":"Waits for the Windows process-event provider to report a matching process start or exit.","fields":[
+  {"key":"event","label":"Event","type":"select","default":"started","options":[["started","Process started"],["exited","Process exited"]]},
+  {"key":"processName","label":"Process executable name","type":"text","required":true,"maxLen":260,"placeholder":"notepad.exe"},
+  {"preset":"timeout"},{"preset":"onFail"}],
+  "summary":"Wait for {processName} {event}",
+  "help":"Uses the Windows WMI/CIM process event provider (Win32_ProcessStartTrace / Win32_ProcessStopTrace). Matching events are detected without polling. System WMI availability and permissions apply."})
+}
+struct ProcessEvent;
+#[async_trait]
+impl Block for ProcessEvent{
+ fn title(&self)-> &'static str{"Process Start / Exit Event"}fn category(&self)->Cat{Cat::Condition}fn supports_timeout(&self)->bool{true}
+ fn spec(&self)->Option<Value>{Some(process_event_spec())}
+ fn validate(&self,c:&Value)->Result<(),String>{
+  spec::validate(&process_event_spec(),c)?;
+  if text(c,"processName").is_empty(){return Err("Process executable name is required".into())}
+  let p=text(c,"processName");if p.contains('/')||p.contains('\\')||p.contains('\0'){return Err("Use an executable name, not a path".into())}
+  if !matches!(text(c,"event").as_str(),"started"|"exited"){return Err("Unknown process event".into())}
+  let t=c.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);if !t.is_finite()||!(0.0..=86400.0).contains(&t){return Err("Timeout must be between 0 and 86400 seconds".into())}
+  Ok(())
+ }
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+  self.validate(&cx.cfg)?;
+  let name=text(&cx.cfg,"processName");let event=text(&cx.cfg,"event");
+  let class=if event=="started"{"Win32_ProcessStartTrace"}else{"Win32_ProcessStopTrace"};
+  let query=format!("SELECT * FROM {class}");
+  let script=format!(r#"$ErrorActionPreference='Stop';$query={};$needle={};$src='00047-'+[guid]::NewGuid().ToString('N');
+Register-CimIndicationEvent -Namespace root/cimv2 -Query $query -SourceIdentifier $src | Out-Null;
+try{{while($true){{$ev=Wait-Event -SourceIdentifier $src;if($null -eq $ev){{continue}};$rec=$ev.SourceEventArgs.NewEvent;$match=([string]$rec.ProcessName -ieq $needle);$pidValue=[uint32]$rec.ProcessID;Remove-Event -EventIdentifier $ev.EventIdentifier -ErrorAction SilentlyContinue;if($match){{[pscustomobject]@{{processName=[string]$rec.ProcessName;processId=$pidValue}}|ConvertTo-Json -Compress;break}}}}}}
+finally{{Unregister-Event -SourceIdentifier $src -ErrorAction SilentlyContinue;Get-Event -SourceIdentifier $src -ErrorAction SilentlyContinue|Remove-Event -ErrorAction SilentlyContinue}}"#,extra::ps_quote(&query),extra::ps_quote(&name));
+  (cx.report)("waiting",None,format!("Waiting for process {name} to {event} via Windows process events"));
+  let out=extra::powershell(cx,&script).await?;
+  if out.is_empty(){return Err("Process event listener ended without a matching event".into())}
+  let data:Value=serde_json::from_str(&out).map_err(|e|format!("Could not parse process event: {e}"))?;
+  (cx.log)("info",format!("Observed process {}: {} (PID {})",event,data.get("processName").and_then(Value::as_str).unwrap_or(&name),data.get("processId").and_then(Value::as_u64).unwrap_or(0)));
+  Ok(Outcome::Satisfied)
+ }
+}
+
+fn windows_event_spec()->Value{
+ let mut fields=vec![
+  json!({"key":"logName","label":"Event log","type":"select","default":"System","options":[["System","System"],["Application","Application"],["Security","Security"],["Setup","Setup"]]}),
+  json!({"key":"eventIds","label":"Event IDs (comma-separated, optional)","type":"text","maxLen":128,"placeholder":"4801,1074"}),
+  json!({"key":"provider","label":"Provider/source contains (optional)","type":"text","maxLen":256}),
+  json!({"key":"messageContains","label":"Event message contains (optional)","type":"text","maxLen":512}),
+ ];
+ fields.extend(extra::behavior_fields());
+ json!({"category":"condition","title":"Windows Event Log Condition","icon":"calendar-clock","description":"Matches recent Windows Event Log records by log, event IDs, provider, and message content.","fields":fields,"summary":"Windows event: {logName} {eventIds}","help":"Only records created after this block begins are considered. At most 100 recent records are inspected per poll. Reading Security events can require additional permissions. Use the System log for common power, sleep/resume and device events; use Security for logon/unlock auditing when enabled."})
+}
+struct WindowsEvent;
+#[async_trait]
+impl Block for WindowsEvent{
+ fn title(&self)-> &'static str{"Windows Event Log Condition"}fn category(&self)->Cat{Cat::Condition}fn supports_timeout(&self)->bool{true}
+ fn spec(&self)->Option<Value>{Some(windows_event_spec())}
+ fn validate(&self,c:&Value)->Result<(),String>{
+  spec::validate(&windows_event_spec(),c)?;
+  if !matches!(text(c,"logName").as_str(),"System"|"Application"|"Security"|"Setup"){return Err("Unknown Windows event log".into())}
+  for k in ["eventIds","provider","messageContains"]{if raw(c,k).contains('\0'){return Err(format!("{k} must not contain NUL"))}}
+  let ids=text(c,"eventIds");
+  if !ids.is_empty(){let parts:Vec<_>=ids.split(',').collect();if parts.len()>20{return Err("Enter at most 20 event IDs".into())}for p in parts{if p.trim().parse::<u32>().is_err(){return Err("Event IDs must be comma-separated whole numbers".into())}}}
+  extra::wait_settings(c).map(|_|())
+ }
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+  self.validate(&cx.cfg)?;
+  let log=extra::ps_quote(&text(&cx.cfg,"logName"));
+  let ids:Vec<String>=text(&cx.cfg,"eventIds").split(',').map(str::trim).filter(|s|!s.is_empty()).map(|s|s.parse::<u32>().map(|x|x.to_string()).map_err(|_|"Invalid event ID".to_string())).collect::<Result<_,_>>()?;
+  let idlist=ids.join(",");
+  let provider=extra::ps_quote(&text(&cx.cfg,"provider"));
+  let message=extra::ps_quote(&text(&cx.cfg,"messageContains"));
+  use std::time::{SystemTime,UNIX_EPOCH};
+  let start=SystemTime::now().duration_since(UNIX_EPOCH).map(|d|d.as_secs()).unwrap_or(0).to_string();
+  let script=format!(r#"$ErrorActionPreference='Stop';$log={log};$ids={ids};$provider={provider};$needle={message};$start=[DateTimeOffset]::FromUnixTimeSeconds([long]({start})).LocalDateTime;
+$items=@(Get-WinEvent -FilterHashtable @{{LogName=$log;StartTime=$start}} -MaxEvents 100 -ErrorAction SilentlyContinue);
+$match=@($items|Where-Object{{($ids -eq '' -or $ids.Split(',') -contains [string]$_.Id) -and ($provider -eq '' -or $_.ProviderName -like ('*'+$provider+'*')) -and ($needle -eq '' -or $_.Message -like ('*'+$needle+'*'))}}|Select-Object -First 1);
+if($match.Count -gt 0){{[pscustomobject]@{{matched=$true;id=$match[0].Id;provider=$match[0].ProviderName;time=$match[0].TimeCreated.ToString('o')}}|ConvertTo-Json -Compress}}else{{[pscustomobject]@{{matched=$false;id=0;provider='';time=''}}|ConvertTo-Json -Compress}}"#,
+ log=log,ids=extra::ps_quote(&idlist),provider=provider,message=message,start=start);
+  let(behavior,poll,stable,timeout)=extra::wait_settings(&cx.cfg)?;
+  extra::poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{
+   let out=extra::powershell(cx,&script).await?;let v:Value=serde_json::from_str(&out).map_err(|e|format!("Could not parse Windows Event Log result: {e}"))?;
+   let matched=v.get("matched").and_then(Value::as_bool).unwrap_or(false);
+   (cx.report)("waiting",None,format!("Windows Event Log {}: {}",text(&cx.cfg,"logName"),if matched{"matching event found"}else{"no matching event yet"}));
+   if matched {(cx.log)("info",format!("Windows Event Log match: ID {} · {}",v.get("id").and_then(Value::as_u64).unwrap_or(0),v.get("provider").and_then(Value::as_str).unwrap_or("")));}
+   Ok(matched)
+  }) as extra::Probe<'_>).await
+ }
+}
+
 pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dyn Block>>){
  m.insert("cond.hotkey",Box::new(Hotkey));
  m.insert("act.webhook_trigger",Box::new(Webhook));
+ m.insert("cond.process_event",Box::new(ProcessEvent));
+ m.insert("cond.windows_event",Box::new(WindowsEvent));
 }
 #[cfg(test)]
 mod tests{
  use super::*;
  #[test]fn hotkey_map_has_safe_known_keys(){assert_eq!(vk("F8"),Some(0x77));assert_eq!(vk("F12"),Some(0x7B));assert_eq!(vk("Unknown"),None);}
  #[test]fn webhook_requires_separate_valid_variables(){assert!(Webhook.validate(&json!({"port":48747,"tokenVar":"hookToken","saveBodyAs":"body","saveHeadersAs":"headers","timeoutSec":0,"onFail":"stop"})).is_ok());assert!(Webhook.validate(&json!({"port":48747,"tokenVar":"x","saveBodyAs":"x","saveHeadersAs":"headers","timeoutSec":0,"onFail":"stop"})).is_err());}
+ #[test]fn windows_event_ids_are_validated(){assert!(WindowsEvent.validate(&json!({"logName":"System","eventIds":"4801,1074","provider":"","messageContains":"","behavior":"check","pollSec":2,"stableForSec":0,"timeoutSec":0,"onFail":"stop"})).is_ok());assert!(WindowsEvent.validate(&json!({"logName":"System","eventIds":"bad","behavior":"check","onFail":"stop"})).is_err());}
+ #[test]fn process_event_requires_executable_name(){assert!(ProcessEvent.validate(&json!({"event":"started","processName":"notepad.exe","timeoutSec":30,"onFail":"stop"})).is_ok());assert!(ProcessEvent.validate(&json!({"event":"started","processName":"C:\\\\Windows\\\\notepad.exe","timeoutSec":30,"onFail":"stop"})).is_err());}
 }
