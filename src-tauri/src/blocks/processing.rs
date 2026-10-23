@@ -451,7 +451,7 @@ fn convert_unit(value:f64,from:&str,to:&str)->Result<f64,String>{
 impl Block for TransformValue{
     fn title(&self)-> &'static str{"Transform Value"} fn category(&self)->Cat{Cat::Action}
     fn spec(&self)->Option<Value>{Some(transform_spec())}
-    fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&transform_spec(),c)?;no_nul(c,&["sourceVar","saveAs"])?;check_output(c,"saveAs").map(|_|())?;if !matches!(txt(c,"operation").as_str(),"trim"|"upper"|"lower"|"length"|"to_number"|"add"|"subtract"|"multiply"|"divide"|"round"|"convert_units"|"expression"|"date_add_seconds"|"date_add_minutes"|"date_add_days"|"date_diff_seconds"|"json_compact"|"parse_json"|"to_boolean"){return Err("Unknown transform operation".into())}if txt(c,"operation")=="expression"&&txt(c,"expression").is_empty(){return Err("Expression is required".into())}if txt(c,"operation")=="convert_units"&&unit_family(&txt(c,"fromUnit"))!=unit_family(&txt(c,"toUnit")){return Err("Source and destination units must belong to the same unit family".into())}if txt(c,"operation")=="date_diff_seconds"&&txt(c,"dateOperand").is_empty(){return Err("Second ISO timestamp is required".into())}Ok(())}
+    fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&transform_spec(),c)?;no_nul(c,&["sourceVar","saveAs","expression","dateOperand"])?;check_output(c,"saveAs").map(|_|())?;if !matches!(txt(c,"operation").as_str(),"trim"|"upper"|"lower"|"length"|"to_number"|"add"|"subtract"|"multiply"|"divide"|"round"|"convert_units"|"expression"|"date_add_seconds"|"date_add_minutes"|"date_add_days"|"date_diff_seconds"|"json_compact"|"parse_json"|"to_boolean"){return Err("Unknown transform operation".into())}if txt(c,"operation")=="expression"&&txt(c,"expression").is_empty(){return Err("Expression is required".into())}if txt(c,"operation")=="convert_units"&&unit_family(&txt(c,"fromUnit"))!=unit_family(&txt(c,"toUnit")){return Err("Source and destination units must belong to the same unit family".into())}if txt(c,"operation")=="date_diff_seconds"&&txt(c,"dateOperand").is_empty(){return Err("Second ISO timestamp is required".into())}Ok(())}
     async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
         self.validate(&cx.cfg)?;
         let op=txt(&cx.cfg,"operation");
@@ -481,13 +481,15 @@ impl Block for TransformValue{
                 let second=raw(&cx.cfg,"dateOperand");
                 let second_q=extra::ps_quote(&second);
                 let operand=cx.cfg.get("operand").and_then(Value::as_f64).unwrap_or(1.0);
+                let operand_text=operand.to_string();
                 let command=match op.as_str(){
-                    "date_add_seconds"=>format!("$d=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$d.AddSeconds({operand.ToString(System.Globalization.CultureInfo.InvariantCulture)}).ToString('o')"),
-                    "date_add_minutes"=>format!("$d=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$d.AddMinutes({operand.ToString(System.Globalization.CultureInfo.InvariantCulture)}).ToString('o')"),
-                    "date_add_days"=>format!("$d=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$d.AddDays({operand.ToString(System.Globalization.CultureInfo.InvariantCulture)}).ToString('o')"),
+                    "date_add_seconds"=>format!("$d=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$d.AddSeconds({operand_text}).ToString('o')"),
+                    "date_add_minutes"=>format!("$d=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$d.AddMinutes({operand_text}).ToString('o')"),
+                    "date_add_days"=>format!("$d=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$d.AddDays({operand_text}).ToString('o')"),
                     _=>format!("$a=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$b=[DateTimeOffset]::Parse({second_q},[Globalization.CultureInfo]::InvariantCulture);[string](($a-$b).TotalSeconds.ToString('R',[Globalization.CultureInfo]::InvariantCulture))"),
                 };
-                Value::String(extra::powershell(cx,&format!("$ErrorActionPreference='Stop';{}",command)).await?)
+                let result=extra::powershell(cx,&format!("$ErrorActionPreference='Stop';{}",command)).await?;
+                if op=="date_diff_seconds" { Value::from(result.parse::<f64>().map_err(|e|format!("Invalid date difference: {e}"))?) } else { Value::String(result) }
             },
             "json_compact"=>Value::String(source.to_string()),
             "parse_json"=>serde_json::from_str(source.as_str().ok_or("Parse JSON requires a string")?).map_err(|e|format!("Invalid JSON: {e}"))?,
