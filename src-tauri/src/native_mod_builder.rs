@@ -12,7 +12,7 @@ use std::{
     io::Write,
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -27,6 +27,24 @@ const MAX_BUILT_DLL_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_CAPTURE_BYTES: usize = 256 * 1024;
 const BUILD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 static WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static BUILD_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+struct BuildPermit;
+
+impl BuildPermit {
+    fn acquire() -> Result<Self, String> {
+        BUILD_IN_PROGRESS
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| "Another native-mod source build is already running.".to_string())
+    }
+}
+
+impl Drop for BuildPermit {
+    fn drop(&mut self) {
+        BUILD_IN_PROGRESS.store(false, Ordering::Release);
+    }
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +104,7 @@ pub async fn build_and_install(
     sdk_dir: PathBuf,
     manager: Arc<NativeModManager>,
 ) -> Result<BuildInstallReport, String> {
+    let _permit = BuildPermit::acquire()?;
     let (project_root, manifest_bytes, module_relative) = inspect_project(&project_dir)?;
     let sdk_root = checked_sdk_directory(&sdk_dir)?;
     let module_name = module_relative
@@ -407,6 +426,14 @@ fn create_package(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_source_build_can_run_at_a_time() {
+        let first = BuildPermit::acquire().unwrap();
+        assert!(BuildPermit::acquire().is_err());
+        drop(first);
+        assert!(BuildPermit::acquire().is_ok());
+    }
 
     #[test]
     fn module_path_is_limited_to_the_expected_bin_dll_shape() {
