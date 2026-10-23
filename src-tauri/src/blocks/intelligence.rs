@@ -680,6 +680,106 @@ try {{
     }
 }
 
+
+fn expand_typed(cx:&NodeCx,value:&Value)->Result<Value,String>{
+    if let Some(s)=value.as_str(){
+        let trimmed=s.trim();
+        if trimmed.starts_with("{{")&&trimmed.ends_with("}}")&&trimmed.matches("{{").count()==1&&trimmed.matches("}}").count()==1{
+            let name=&trimmed[2..trimmed.len()-2];
+            if !name.is_empty(){if let Some(value)=cx.get_variable(name){return Ok(value)}}
+        }
+        return Ok(Value::String(templ(cx,s)?))
+    }
+    Ok(value.clone())
+}
+fn subflow_spec()->Value{
+    action_spec("Call Subflow","workflow","Runs another saved automation as a nested subflow with isolated variables, inputs, outputs, and an optional return value.",vec![
+        json!({"key":"automation","label":"Target automation name or ID","type":"text","required":true,"maxLen":256}),
+        json!({"key":"inputsJson","label":"Input mapping JSON (child variable → value/template)","type":"textarea","rows":4,"maxLen":16384,"default":"{}"}),
+        json!({"key":"outputsJson","label":"Output mapping JSON (parent variable → child variable)","type":"textarea","rows":4,"maxLen":16384,"default":"{}"}),
+        json!({"key":"returnAs","label":"Save Return Value into parent variable (optional)","type":"text","maxLen":64,"default":""}),
+        json!({"preset":"timeout","default":0}),
+        json!({"preset":"onFail"})
+    ],"Call subflow: {automation}","Input example: {\"username\":\"{{user_name}}\",\"limit\":\"{{max_items}}\"}. Output example: {\"result\":\"response\",\"count\":\"total\"}. Return Value stores the child result under the reserved return.value key; map it with Return As. Nested calls have a depth limit and recursive calls are rejected. Child variables are isolated unless explicitly mapped.");
+}
+fn parse_mapping_json(c:&Value,key:&str)->Result<Map<String,Value>,String>{
+    let src=txt(c,key);
+    let value:Value=serde_json::from_str(if src.trim().is_empty(){"{}"}else{&src}).map_err(|e|format!("{key} must be a JSON object: {e}"))?;
+    value.as_object().cloned().ok_or_else(||format!("{key} must be a JSON object"))
+}
+struct CallSubflow;
+#[async_trait]
+impl Block for CallSubflow{
+    fn title(&self)-> &'static str {"Call Subflow"}fn category(&self)->Cat{Cat::Action}
+    fn supports_timeout(&self)->bool{true}
+    fn spec(&self)->Option<Value>{Some(subflow_spec())}
+    fn validate(&self,c:&Value)->Result<(),String>{
+        spec::validate(&subflow_spec(),c)?;
+        if txt(c,"automation").trim().is_empty(){return Err("Target automation name or ID is required".into())}
+        validate_variable(c,"returnAs",false)?;
+        for key in ["inputsJson","outputsJson"]{
+            let mapping=parse_mapping_json(c,key)?;
+            for (name,value) in &mapping{
+                if !loop_name_valid(name)||name.starts_with("__00047."){return Err(format!("Invalid or reserved variable name '{name}' in {key}"))}
+                if key=="outputsJson"{
+                    let child=value.as_str().ok_or("Output mapping values must be child variable names")?;
+                    if !loop_name_valid(child)||child.starts_with("__00047."){return Err(format!("Invalid or reserved child variable name '{child}'"))}
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+        self.validate(&cx.cfg)?;
+        let input_map=parse_mapping_json(&cx.cfg,"inputsJson")?;
+        let mut inputs=Map::new();
+        for (name,value) in input_map{
+            inputs.insert(name,expand_typed(cx,&value)?);
+        }
+        let target=templ(cx,&txt(&cx.cfg,"automation"))?;
+        (cx.log)("info",format!("Calling subflow '{target}' with {} input(s)",inputs.len()));
+        let result=(cx.call_subflow)(target,Value::Object(inputs)).await?;
+        let output_map=parse_mapping_json(&cx.cfg,"outputsJson")?;
+        for (parent_name,child_name) in output_map{
+            let child_name=child_name.as_str().ok_or("Output mapping values must be child variable names")?;
+            let value=result.get(child_name).cloned().ok_or_else(||format!("Subflow did not return child variable '{child_name}'"))?;
+            cx.set_variable(parent_name,value)?;
+        }
+        let return_as=txt(&cx.cfg,"returnAs");
+        if !return_as.is_empty(){
+            let value=result.get("__00047.return.value").cloned().ok_or("Subflow completed without a Return Value block")?;
+            cx.set_variable(return_as,value)?;
+        }
+        (cx.log)("info",format!("Subflow '{}' completed",txt(&cx.cfg,"automation")));
+        Ok(Outcome::Satisfied)
+    }
+}
+fn return_value_spec()->Value{
+    action_spec("Return Value","corner-up-left","Sets the value a called subflow returns to its caller. Execution continues along IF; the final value set wins.",vec![
+        json!({"key":"value","label":"Value or variable template","type":"textarea","rows":3,"required":true,"maxLen":32768}),
+        json!({"key":"format","label":"Interpret as","type":"select","default":"string","options":[["string","Text string"],["json","Parse as typed JSON"]]}),
+        json!({"preset":"onFail"})
+    ],"Return value","Text mode returns a string. JSON mode returns a typed JSON value. A caller can store the value through its Return As setting.");
+}
+struct ReturnValue;
+#[async_trait]
+impl Block for ReturnValue{
+    fn title(&self)-> &'static str {"Return Value"}fn category(&self)->Cat{Cat::Action}
+    fn spec(&self)->Option<Value>{Some(return_value_spec())}
+    fn validate(&self,c:&Value)->Result<(),String>{
+        spec::validate(&return_value_spec(),c)?;
+        if txt(c,"value").contains('\0'){return Err("Return value contains a NUL character".into())}
+        Ok(())
+    }
+    async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+        self.validate(&cx.cfg)?;
+        let raw=templ(cx,&txt(&cx.cfg,"value"))?;
+        let value=if txt(&cx.cfg,"format")=="json"{serde_json::from_str::<Value>(&raw).map_err(|e|format!("Return value is not valid JSON: {e}"))?}else{Value::String(raw)};
+        cx.set_variable("__00047.return.value".into(),value)?;
+        Ok(Outcome::Satisfied)
+    }
+}
+
 pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dyn Block>>){
     m.insert("cond.ui_element",Box::new(UiElementCondition));
     m.insert("act.ui_find",Box::new(UiFind));m.insert("act.ui_click",Box::new(UiClick));
@@ -690,6 +790,8 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
     m.insert("act.for_each_item",Box::new(ForEachItem));
     m.insert("act.break_loop",Box::new(BreakLoop));
     m.insert("act.continue_loop",Box::new(ContinueLoop));
+    m.insert("act.call_subflow",Box::new(CallSubflow));
+    m.insert("act.return_value",Box::new(ReturnValue));
     m.insert("cond.file_event",Box::new(FileEvent));
     m.insert("cond.global_hotkey",Box::new(GlobalHotkey));
 }
@@ -737,6 +839,8 @@ mod tests{
             ("act.for_each_item", Cat::Action),
             ("act.break_loop", Cat::Action),
             ("act.continue_loop", Cat::Action),
+            ("act.call_subflow", Cat::Action),
+            ("act.return_value", Cat::Action),
             ("cond.file_event", Cat::Condition),
             ("cond.global_hotkey", Cat::Condition),
         ];
