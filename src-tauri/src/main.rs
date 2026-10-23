@@ -10,6 +10,7 @@ mod native_mod_config;
 mod logstore;
 mod model;
 mod store;
+mod vault;
 mod sys;
 
 use engine::{Engine, Runtime};
@@ -171,6 +172,21 @@ fn update_windhawk_blur(app: AppHandle, surfaces: Vec<GlassSurface>) -> Result<(
         let _ = (app, surfaces);
         Err("Native Windhawk Composition blur is available only on Windows.".into())
     }
+}
+
+#[tauri::command]
+fn secret_list(eng: State<'_, Arc<Engine>>) -> Vec<String> {
+    eng.secret_names()
+}
+
+#[tauri::command]
+fn secret_set(eng: State<'_, Arc<Engine>>, name: String, value: String) -> Result<(), String> {
+    eng.store_secret(&name, &value)
+}
+
+#[tauri::command]
+fn secret_delete(eng: State<'_, Arc<Engine>>, name: String) -> Result<bool, String> {
+    eng.delete_secret(&name)
 }
 
 #[tauri::command]
@@ -624,6 +640,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             update_windhawk_blur,
+            secret_list,
+            secret_set,
+            secret_delete,
             list_automations,
             save_automation,
             delete_automation,

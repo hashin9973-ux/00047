@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) mod extra;
 mod extra_more;
 mod advanced;
+mod nextgen;
 
 #[cfg(windows)]
 const MAX_COMMAND_OUTPUT_BYTES: usize = 16 * 1024;
@@ -80,6 +81,10 @@ pub struct NodeCx {
     pub visible: Flag,
     /// Variables are shared by every block in this automation run and are discarded when it ends.
     pub variables: Arc<Mutex<HashMap<String, Value>>>,
+    /// Secret reader backed by the Windows current-user protected vault.
+    pub secret_reader: Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>,
+    /// Secret values acquired during this run, used exclusively for log redaction.
+    pub sensitive_values: Arc<Mutex<Vec<String>>>,
 }
 
 impl NodeCx {
@@ -103,7 +108,22 @@ impl NodeCx {
         Ok(())
     }
 
-    /// Replaces {{variable_name}} placeholders. Unknown variables fail explicitly instead of becoming empty strings.
+    pub fn read_secret(&self, name: &str) -> Result<String, String> {
+        let value = (self.secret_reader)(name)?;
+        if !value.is_empty() {
+            let mut values = self.sensitive_values.lock().map_err(|_| "secret redaction store is unavailable".to_string())?;
+            if !values.iter().any(|existing| existing == &value) { values.push(value.clone()); }
+        }
+        Ok(value)
+    }
+
+    pub fn redact(&self, input: &str) -> String {
+        let mut values = self.sensitive_values.lock().map(|v| v.clone()).unwrap_or_default();
+        values.sort_by_key(|v| std::cmp::Reverse(v.len()));
+        values.into_iter().filter(|v| !v.is_empty()).fold(input.to_string(), |text, secret| text.replace(&secret, "[REDACTED]"))
+    }
+
+    /// Replaces {{variable_name}} and {{secret:name}} placeholders. Missing references fail explicitly.
     pub fn expand_template(&self, input: &str) -> Result<String, String> {
         let mut output = String::with_capacity(input.len());
         let mut rest = input;
@@ -115,6 +135,14 @@ impl NodeCx {
                 return Ok(output);
             };
             let name = &after[..end];
+            if let Some(secret_name) = name.strip_prefix("secret:") {
+                if secret_name.is_empty() || !secret_name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.') {
+                    return Err("Secret reference name is invalid".into());
+                }
+                output.push_str(&self.read_secret(secret_name)?);
+                rest = &after[end + 2..];
+                continue;
+            }
             if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.') {
                 output.push_str("{{");
                 rest = after;
@@ -903,6 +931,7 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         extra::register_into(&mut m);
         extra_more::register_into(&mut m);
         advanced::register_into(&mut m);
+        nextgen::register_into(&mut m);
         crate::custom::load_into(&mut m);
         m
     })

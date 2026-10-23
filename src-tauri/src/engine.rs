@@ -4,6 +4,7 @@ use crate::{
     store::Store,
 };
 use crate::logstore::LogStore;
+use crate::vault::SecretVault;
 use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -40,6 +41,7 @@ pub struct Runtime {
 pub struct Engine {
     app: AppHandle,
     pub store: Arc<Store>,
+    vault: Arc<SecretVault>,
     runs: Mutex<HashMap<String, RunHandle>>,
     autos: Mutex<HashMap<String, AutoRuntime>>,
     nodes: Mutex<HashMap<String, HashMap<String, NodeState>>>,
@@ -68,6 +70,7 @@ impl Engine {
         Engine {
             app,
             store,
+            vault: Arc::new(SecretVault::new(dir.join("secrets.json"))),
             runs: Default::default(),
             autos: Default::default(),
             nodes: Default::default(),
@@ -121,6 +124,10 @@ impl Engine {
     pub fn app_log(&self, level: &str, msg: String) {
         self.log(level, "", "Application", None, msg);
     }
+
+    pub fn secret_names(&self) -> Vec<String> { self.vault.names() }
+    pub fn store_secret(&self, name: &str, value: &str) -> Result<(), String> { self.vault.set(name, value) }
+    pub fn delete_secret(&self, name: &str) -> Result<bool, String> { self.vault.delete(name) }
     pub fn logs(&self, since: u64, auto: Option<String>) -> Vec<LogEntry> {
         self.logs
             .lock()
@@ -226,6 +233,7 @@ impl Engine {
         let auto = Arc::new(auto);
         let short_id = node.id.chars().take(4).collect::<String>();
         let label = format!("{} #{short_id} (test)", blk.title());
+        let test_secrets = Arc::new(Mutex::new(Vec::new()));
         let cx = NodeCx {
             cfg: node.cfg.clone(),
             token: CancellationToken::new(),
@@ -243,6 +251,11 @@ impl Engine {
             },
             visible: Box::new(|| false),
             variables: Arc::new(Mutex::new(HashMap::new())),
+            secret_reader: {
+                let vault = self.vault.clone();
+                Arc::new(move |name: &str| vault.get(name))
+            },
+            sensitive_values: test_secrets.clone(),
         };
         let out = tokio::time::timeout(Duration::from_secs(60), blk.run(&cx))
             .await
@@ -308,6 +321,7 @@ impl Engine {
             token: parent.child_token(),
             visits: Default::default(),
             variables: Arc::new(Mutex::new(HashMap::new())),
+            secret_values: Arc::new(Mutex::new(Vec::new())),
             rate: Default::default(),
             handles: Default::default(),
             errors: AtomicU32::new(0),
@@ -362,11 +376,18 @@ struct Ctx {
     token: CancellationToken,
     visits: Mutex<HashMap<String, u64>>,
     variables: Arc<Mutex<HashMap<String, Value>>>,
+    secret_values: Arc<Mutex<Vec<String>>>,
     rate: Mutex<HashMap<String, VecDeque<Instant>>>,
     handles: Mutex<Vec<JoinHandle<()>>>,
     errors: AtomicU32,
     aborted: AtomicBool,
     single: bool,
+}
+
+fn redact_secrets(message: &str, values: &Arc<Mutex<Vec<String>>>) -> String {
+    let mut secrets = values.lock().map(|v| v.clone()).unwrap_or_default();
+    secrets.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    secrets.into_iter().filter(|v| !v.is_empty()).fold(message.to_string(), |text, secret| text.replace(&secret, "[REDACTED]"))
 }
 
 impl Ctx {
@@ -378,6 +399,7 @@ impl Ctx {
         format!("{t} #{}", n.id.chars().take(4).collect::<String>())
     }
     fn log(&self, level: &str, n: Option<&Node>, msg: String) {
+        let msg = redact_secrets(&msg, &self.secret_values);
         self.eng.log(level, &self.auto.id, &self.auto.name, n.map(|n| (n.id.clone(), self.label(n))), msg);
     }
     fn abort(&self) {
@@ -722,6 +744,11 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             Box::new(move || c.eng.visible())
         },
         variables: ctx.variables.clone(),
+        secret_reader: {
+            let vault = ctx.eng.vault.clone();
+            Arc::new(move |name: &str| vault.get(name))
+        },
+        sensitive_values: ctx.secret_values.clone(),
     };
 
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
