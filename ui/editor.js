@@ -71,6 +71,7 @@ export class Editor {
       const saved = JSON.parse(localStorage.getItem('00047:block-favorites:v1') || '[]');
       this.blockFavorites = new Set(Array.isArray(saved) ? saved.filter(k => typeof k === 'string') : []);
     } catch { this.blockFavorites = new Set(); }
+    this.breakpoints = new Set();
     this.auto = null;
     this.vp = { x: 80, y: 80, k: 1 };
     this.els = new Map();
@@ -141,6 +142,14 @@ export class Editor {
   setActive(v) {
     this.active = v;
     if (v) this.scheduleWires();
+  }
+  setBreakpoints(ids) {
+    this.breakpoints = new Set(Array.isArray(ids) ? ids.filter(id => typeof id === 'string') : []);
+    for (const [id, el] of this.els) el.classList.toggle('breakpoint', this.breakpoints.has(id));
+  }
+  setBreakpoint(id, enabled) {
+    if (enabled) this.breakpoints.add(id); else this.breakpoints.delete(id);
+    this.els.get(id)?.classList.toggle('breakpoint', !!enabled);
   }
 
   load(auto) {
@@ -775,7 +784,7 @@ if (A.kind === 'act.loop') {
       return;
     }
     n.cfg = { ...structuredClone(def.defaults), ...(n.cfg || {}) };
-    el.className = `node cat-${def.cat}${n.collapsed ? ' collapsed' : ''}`;
+    el.className = `node cat-${def.cat}${n.collapsed ? ' collapsed' : ''}${this.breakpoints.has(n.id) ? ' breakpoint' : ''}`;
     el.style.setProperty('--c', CATS[def.cat].color);
     const isT = def.cat === 'tgt';
     const isStart = n.kind === 'act.start';
@@ -791,7 +800,7 @@ if (A.kind === 'act.loop') {
         ? `<i class="port in" title="Flow input. Loop returns automatically to Start."></i>`
         : `<i class="port in" title="Flow input. Multiple incoming wires may converge here."></i>${flowOut}`;
     el.innerHTML = `
-      <div class="n-head"><button class="n-chev" title="Collapse / expand settings">▾</button><span class="n-icon">${def.icon}</span><span class="n-title">${def.title}</span><span class="n-dot"></span></div>
+      <div class="n-head"><button class="n-chev" title="Collapse / expand settings">▾</button><span class="n-icon">${def.icon}</span><span class="n-title">${def.title}</span><span class="n-breakpoint" title="Execution breakpoint"></span><span class="n-dot"></span></div>
       <div class="n-sum"></div><div class="n-detail"></div><div class="n-prog" hidden><i></i></div>
       <div class="n-body"></div><div class="n-warn"></div>${ports}`;
     el.querySelector('.n-chev').addEventListener('click', () => this.toggleCollapse(n));
@@ -1030,6 +1039,7 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
     m.className = 'ctx glass'; m.style.width = '300px'; m.style.maxHeight = '390px';
     m.innerHTML = `<div class="ml">
       <div class="mi" data-a="test"><span><b>Test this block</b><small>Runs it once with its current settings and wired inputs</small></span></div>
+      <div class="mi" data-a="breakpoint"><span><b>${this.breakpoints.has(id) ? 'Remove breakpoint' : 'Add breakpoint'}</b><small>Pause before this block executes while the automation runs</small></span></div>
       ${isT ? '' : `<div class="mi" data-a="off"><span><b>${n.disabled ? 'Enable' : 'Disable'} block</b><small>B · a disabled block is skipped; only its AFTER wires continue</small></span></div>`}
       <div class="mi" data-a="dup"><span><b>Duplicate</b><small>Ctrl+D</small></span></div>
       <div class="mi" data-a="col"><span><b>${n.collapsed ? 'Expand' : 'Collapse'} settings</b></span></div>
@@ -1040,6 +1050,7 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
       this.hideMenu();
       const a = it.dataset.a;
       if (a === 'test') this.hooks.testBlock(id);
+      else if (a === 'breakpoint') this.hooks.toggleBreakpoint(id, !this.breakpoints.has(id));
       else if (a === 'off') this.toggleDisabled();
       else if (a === 'dup') this.duplicate();
       else if (a === 'del') this.deleteSel();
