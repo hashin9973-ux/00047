@@ -42,7 +42,7 @@ SUPPORTED = {
     "Wh_FindFirstSymbol": "Bounded DbgHelp enumeration of symbols for a loaded module; PDB/network behavior is limited and must be reviewed.",
     "Wh_FindNextSymbol": "Iterates a bounded snapshot returned by Wh_FindFirstSymbol; result pointers are owned by the search handle.",
     "Wh_FindCloseSymbol": "Releases a symbol search snapshot returned by Wh_FindFirstSymbol.",
-    "Wh_HookSymbols": "Resolves exact undecorated/decorated names through bounded DbgHelp enumeration and queues matching x64 hooks; persistent symbol cache and full hook-session behavior are not implemented.",
+    "Wh_HookSymbols": "Checks a bounded local offset cache, then the HTTPS online symbol cache when configured/defaulted, before bounded DbgHelp enumeration; validates image identity and executable offsets, then queues matching x64 hooks. Windhawk cache registry/error throttling, hybrid-module support, and full hook-session behavior are not implemented.",
     "Wh_SetFunctionHook": "Queues an x64 inline detour through bundled MinHook; a named per-process registry atomically rejects duplicate or conservatively overlapping entry-target regions across separately linked mod DLLs.",
     "Wh_RemoveFunctionHook": "Queues removal of a hook registered by this mod DLL and releases the shared target claim only after backend removal succeeds.",
     "Wh_ApplyHookOperations": "Applies this mod DLL's queued hook additions and removals; rollback is best-effort if a Windows patch operation fails.",

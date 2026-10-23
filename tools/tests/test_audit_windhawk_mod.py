@@ -127,6 +127,8 @@ class WindhawkAuditTests(unittest.TestCase):
         self.assertEqual(findings["Wh_MadeUpThing"]["category"], "unknown-api")
         self.assertEqual(findings["Wh_FindFirstSymbol"]["category"], "supported-with-limitations")
         self.assertEqual(findings["Wh_HookSymbols"]["category"], "supported-with-limitations")
+        self.assertIn("HTTPS online symbol cache", findings["Wh_HookSymbols"]["reason"])
+        self.assertIn("executable offsets", findings["Wh_HookSymbols"]["reason"])
         self.assertNotIn("Wh_Disasm", findings)
 
     def test_preserves_line_numbers_while_masking_comments_and_literals(self):

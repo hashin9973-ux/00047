@@ -357,8 +357,10 @@ inline void Wh_FindCloseSymbol(HANDLE symSearch) {
 
 
 // Source-level compatibility for Windhawk's symbol-selected hook API.
-// Resolution is based on the bounded local DbgHelp snapshot; online cache,
-// hybrid-module support, and cross-mod hook coordination are not implemented.
+// Resolution checks a validated local cache, then an optional/default HTTPS
+// online cache, then a bounded DbgHelp snapshot. Windhawk's cache registry,
+// error throttling, hybrid-module behavior, and full cross-mod hook sessions
+// are not implemented.
 #ifndef WMOD_WINDHAWK_HOOK_SYMBOL_TYPES
 #define WMOD_WINDHAWK_HOOK_SYMBOL_TYPES
 typedef struct tagWH_SYMBOL_HOOK {
