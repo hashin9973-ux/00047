@@ -444,6 +444,52 @@ impl Block for ForEachEnd{
     async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Ok(Outcome::Satisfied)}
 }
 
+struct TryCatch;
+fn try_catch_spec()->Value {
+    spec_action("Try / Catch Subflows","git-branch","Runs one saved automation and invokes a recovery subflow if it fails.",vec![
+        json!({"key":"tryAutomationId","label":"Try subflow automation ID","type":"text","required":true,"maxLen":128}),
+        json!({"key":"catchAutomationId","label":"Catch subflow automation ID","type":"text","required":true,"maxLen":128}),
+        json!({"key":"errorVar","label":"Save error message as variable","type":"text","default":"errorMessage","required":true,"maxLen":64}),
+        json!({"preset":"timeout"}),
+        json!({"preset":"onFail"}),
+    ],"Try {tryAutomationId} / catch {catchAutomationId}","If the try subflow fails, the error message is stored in the named variable and the catch subflow runs. IF means try succeeded; ELSE means the catch handled the failure. If catch also fails, normal On failure handling applies.")
+}
+#[async_trait]
+impl Block for TryCatch {
+    fn title(&self)-> &'static str{"Try / Catch Subflows"} fn category(&self)->Cat{Cat::Action}
+    fn supports_timeout(&self)->bool{true}
+    fn spec(&self)->Option<Value>{Some(try_catch_spec())}
+    fn validate(&self,c:&Value)->Result<(),String>{
+        spec::validate(&try_catch_spec(),c)?;no_nul(c,&["tryAutomationId","catchAutomationId","errorVar"])?;
+        let a=txt(c,"tryAutomationId");let b=txt(c,"catchAutomationId");
+        if a.is_empty()||b.is_empty(){return Err("Try and catch subflow IDs are required".into())}
+        if a==b{return Err("Try and catch must reference different automations".into())}
+        if !valid_name(&txt(c,"errorVar")){return Err("Error variable name is invalid".into())}
+        Ok(())
+    }
+    async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Err("Try / Catch is executed by the workflow engine.".into())}
+}
+
+struct ForEachContinue;
+struct ForEachBreak;
+fn loop_marker_spec(title:&str,icon:&str,desc:&str)->Value{
+    spec_action(title,icon,desc,vec![],title,"Only valid inside a For Each Item body. The marker is intercepted by the workflow engine.")
+}
+#[async_trait]
+impl Block for ForEachContinue {
+    fn title(&self)-> &'static str{"For Each Continue"} fn category(&self)->Cat{Cat::Action}
+    fn spec(&self)->Option<Value>{Some(loop_marker_spec("For Each Continue","skip-forward","Skips the rest of this loop-body path and continues with the next array item."))}
+    fn validate(&self,_:&Value)->Result<(),String>{Ok(())}
+    async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Ok(Outcome::Satisfied)}
+}
+#[async_trait]
+impl Block for ForEachBreak {
+    fn title(&self)-> &'static str{"For Each Break"} fn category(&self)->Cat{Cat::Action}
+    fn spec(&self)->Option<Value>{Some(loop_marker_spec("For Each Break","circle-stop","Stops the current For Each loop and continues after the loop."))}
+    fn validate(&self,_:&Value)->Result<(),String>{Ok(())}
+    async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Ok(Outcome::Satisfied)}
+}
+
 struct CallSubflow;
 fn subflow_spec()->Value{
     spec_action("Call Subflow","workflow","Runs another saved automation as a nested workflow; its variables are shared within the parent run.",vec![
@@ -479,7 +525,10 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
     m.insert("cond.variable_compare",Box::new(VariableCompare));
     m.insert("act.for_each",Box::new(ForEach));
     m.insert("act.for_each_end",Box::new(ForEachEnd));
+    m.insert("act.for_each_continue",Box::new(ForEachContinue));
+    m.insert("act.for_each_break",Box::new(ForEachBreak));
     m.insert("act.call_subflow",Box::new(CallSubflow));
+    m.insert("act.try_catch",Box::new(TryCatch));
 }
 
 #[cfg(test)]
@@ -499,6 +548,12 @@ mod tests {
         let v=json!({"data":{"items":[{"id":12}] }});
         assert_eq!(value_path(&v,"data.items.0.id"),Some(json!(12)));
         assert_eq!(value_path(&v,"data.items.4.id"),None);
+    }
+    #[test]
+    fn reusable_flow_blocks_validate_safe_references(){
+        assert!(CallSubflow.validate(&json!({"automationId":"abc","inputMapJson":"{\"param\":\"source\"}","outputMapJson":"{\"result\":\"target\"}","timeoutSec":30,"onFail":"stop"})).is_ok());
+        assert!(TryCatch.validate(&json!({"tryAutomationId":"try-id","catchAutomationId":"catch-id","errorVar":"err","timeoutSec":60,"onFail":"stop"})).is_ok());
+        assert!(TryCatch.validate(&json!({"tryAutomationId":"same","catchAutomationId":"same","errorVar":"err","timeoutSec":60,"onFail":"stop"})).is_err());
     }
     #[test]
     fn output_variable_names_are_validated(){
