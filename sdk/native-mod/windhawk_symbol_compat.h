@@ -880,7 +880,7 @@ inline bool FetchOnlineHookCache(
         std::wstring base;
         if (!ResolveOnlineCacheBase(options, base)) return false;
         const std::wstring url = base + identity.cacheKey + L".txt";
-        if (url.size() > kMaxUrlChars) return false;
+        if (url.size() > ::wmod::windhawk_compat::kMaxUrlChars) return false;
 
         // Symbol lookup runs inside the target shell process. Keep network
         // fallback bounded well below the host's 10-second remote-operation wait.
