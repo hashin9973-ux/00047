@@ -206,6 +206,16 @@ async fn stop_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), 
 }
 
 #[tauri::command]
+fn resume_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.resume_step(&id)
+}
+
+#[tauri::command]
+fn get_run_variables(eng: State<'_, Arc<Engine>>, id: String) -> Vec<serde_json::Value> {
+    eng.run_variables(&id)
+}
+
+#[tauri::command]
 async fn restart_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
     let e = eng.inner().clone();
     e.restart(&id).await
@@ -621,6 +631,8 @@ fn main() {
             delete_automation,
             start_automation,
             stop_automation,
+            resume_automation,
+            get_run_variables,
             restart_automation,
             get_runtime,
             get_logs,
