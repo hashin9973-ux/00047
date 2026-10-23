@@ -116,6 +116,12 @@ impl NodeCx {
                 return Ok(output);
             };
             let name = &after[..end];
+            if let Some(secret_name) = name.strip_prefix("secret:") {
+                let secret = crate::secrets::get(secret_name)?;
+                output.push_str(&secret);
+                rest = &after[end + 2..];
+                continue;
+            }
             if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.') {
                 output.push_str("{{");
                 rest = after;
