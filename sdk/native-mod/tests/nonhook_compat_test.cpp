@@ -1,5 +1,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include "00047_mod_api.h"
 #include "windhawk_nonhook_compat.h"
 
 #include <algorithm>
@@ -121,7 +122,7 @@ bool TestWindhawkLifecycleAdapter(const std::filesystem::path& directory) {
         FreeLibrary(module);
         return false;
     }
-    if (getApiVersion() != 1u || getLifecycleStep() != 0) {
+    if (getApiVersion() != WMOD_00047_ABI_VERSION || getLifecycleStep() != 0) {
         std::wcerr << L"Lifecycle adapter test: bad initial state; version="
                    << getApiVersion() << L", step=" << getLifecycleStep() << L"\n";
         FreeLibrary(module);
