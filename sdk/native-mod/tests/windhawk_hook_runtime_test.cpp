@@ -2,11 +2,13 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <thread>
 
 struct TestDisasmResult { size_t length; char text[96]; };
 using TargetFn = int (WINAPI*)(int);
 using DisasmFn = BOOL (WINAPI*)(TestDisasmResult*);
+using DisasmAddressFn = BOOL (WINAPI*)(void*, TestDisasmResult*);
 using SimpleBoolFn = BOOL (WINAPI*)();
 using VoidFn = void (WINAPI*)();
 using HoldFn = void (WINAPI*)(BOOL);
@@ -32,6 +34,8 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(module != nullptr);
     auto target = reinterpret_cast<TargetFn>(GetProcAddress(module, "HookRuntimeTarget"));
     auto disasm = reinterpret_cast<DisasmFn>(GetProcAddress(module, "HookRuntimeDisasm"));
+    auto disasmAddress = reinterpret_cast<DisasmAddressFn>(
+        GetProcAddress(module, "HookRuntimeDisasmAddress"));
     auto begin = reinterpret_cast<SimpleBoolFn>(GetProcAddress(module, "HookRuntimeBegin"));
     auto install = reinterpret_cast<SimpleBoolFn>(GetProcAddress(module, "HookRuntimeInstall"));
     auto apply = reinterpret_cast<SimpleBoolFn>(GetProcAddress(module, "HookRuntimeApply"));
@@ -41,7 +45,7 @@ int wmain(int argc, wchar_t** argv) {
     auto holdDetour = reinterpret_cast<HoldFn>(GetProcAddress(module, "HookRuntimeHoldDetour"));
     auto insideDetour = reinterpret_cast<InsideFn>(GetProcAddress(module, "HookRuntimeInsideDetour"));
     auto targetAddress = reinterpret_cast<AddressFn>(GetProcAddress(module, "HookRuntimeTargetAddress"));
-    CHECK(target && disasm && begin && install && apply && remove &&
+    CHECK(target && disasm && disasmAddress && begin && install && apply && remove &&
           shutdown && canUnload && holdDetour && insideDetour && targetAddress);
 
     // Load a second copy of the same test DLL under a different path to model
@@ -70,6 +74,24 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(disasm(&disasmResult) == TRUE);
     CHECK(disasmResult.length > 0 && disasmResult.length <= 15);
     CHECK(disasmResult.text[0] != '\0');
+
+    const unsigned char movRaxRbx[] = {0x48, 0x89, 0xD8};
+    void* codePage = VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    CHECK(codePage != nullptr);
+    std::memcpy(codePage, movRaxRbx, sizeof(movRaxRbx));
+    DWORD oldProtection = 0;
+    CHECK(VirtualProtect(codePage, 4096, PAGE_EXECUTE_READ, &oldProtection) != FALSE);
+    TestDisasmResult formattedInstruction{};
+    const BOOL decodedKnownInstruction = disasmAddress(codePage, &formattedInstruction);
+    VirtualFree(codePage, 0, MEM_RELEASE);
+    CHECK(decodedKnownInstruction == TRUE);
+    CHECK(formattedInstruction.length == sizeof(movRaxRbx));
+    CHECK(std::strstr(formattedInstruction.text, "mov") != nullptr ||
+          std::strstr(formattedInstruction.text, "MOV") != nullptr);
+    CHECK(std::strstr(formattedInstruction.text, "rax") != nullptr ||
+          std::strstr(formattedInstruction.text, "RAX") != nullptr);
+    CHECK(std::strstr(formattedInstruction.text, "rbx") != nullptr ||
+          std::strstr(formattedInstruction.text, "RBX") != nullptr);
     CHECK(begin() == TRUE);
     CHECK(install() == TRUE);
     CHECK(target(5) == 7); // registering a hook is deferred until apply

@@ -65,6 +65,11 @@ extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeDisasm(WH_DISASM_RESULT*
     return Wh_Disasm(reinterpret_cast<void*>(&HookTestTarget), result);
 }
 
+extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeDisasmAddress(
+    void* address, WH_DISASM_RESULT* result) {
+    return Wh_Disasm(address, result);
+}
+
 extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeBegin(void) {
     return wmod::windhawk_hook_compat::BeginHookOperations();
 }

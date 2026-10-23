@@ -46,7 +46,7 @@ SUPPORTED = {
     "Wh_SetFunctionHook": "Queues an x64 inline detour through bundled MinHook; a named per-process registry atomically rejects duplicate target addresses across separately linked mod DLLs.",
     "Wh_RemoveFunctionHook": "Queues removal of a hook registered by this mod DLL and releases the shared target claim only after backend removal succeeds.",
     "Wh_ApplyHookOperations": "Applies this mod DLL's queued hook additions and removals; rollback is best-effort if a Windows patch operation fails.",
-    "Wh_Disasm": "Uses HDE64 for validated x64 instruction length and a limited mnemonic/byte display; operand formatting is not Windhawk-identical.",
+    "Wh_Disasm": "Uses a vendored x64 decoder to return Intel-syntax mnemonics and operands; formatting can differ from Windhawk's Zydis-based output.",
 }
 UNSUPPORTED = {}
 CALLBACK_PREFIX = "Wh_Mod"

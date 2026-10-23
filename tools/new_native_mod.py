@@ -97,6 +97,14 @@ set(WMOD_HOOK_ENGINE_SOURCES
   "${{WMOD_SDK_DIR}}/third_party/minhook/src/hook.c"
   "${{WMOD_SDK_DIR}}/third_party/minhook/src/trampoline.c"
   "${{WMOD_SDK_DIR}}/third_party/minhook/src/hde/hde64.c"
+  "${{WMOD_SDK_DIR}}/third_party/distorm/src/decoder.c"
+  "${{WMOD_SDK_DIR}}/third_party/distorm/src/distorm.c"
+  "${{WMOD_SDK_DIR}}/third_party/distorm/src/instructions.c"
+  "${{WMOD_SDK_DIR}}/third_party/distorm/src/insts.c"
+  "${{WMOD_SDK_DIR}}/third_party/distorm/src/mnemonics.c"
+  "${{WMOD_SDK_DIR}}/third_party/distorm/src/operands.c"
+  "${{WMOD_SDK_DIR}}/third_party/distorm/src/prefix.c"
+  "${{WMOD_SDK_DIR}}/third_party/distorm/src/textdefs.c"
 )
 add_library({module_name} SHARED mod.cpp ${{WMOD_HOOK_ENGINE_SOURCES}})
 target_compile_features({module_name} PRIVATE cxx_std_17)
@@ -106,6 +114,8 @@ target_include_directories({module_name} PRIVATE
   "${{WMOD_SDK_DIR}}/third_party/minhook/include"
   "${{WMOD_SDK_DIR}}/third_party/minhook/src"
   "${{WMOD_SDK_DIR}}/third_party/minhook/src/hde"
+  "${{WMOD_SDK_DIR}}/third_party/distorm/include"
+  "${{WMOD_SDK_DIR}}/third_party/distorm/src"
 )
 set_target_properties({module_name} PROPERTIES
   PREFIX ""
@@ -135,7 +145,7 @@ The first command builds a deterministic ZIP and validates it before publishing 
 
 ## Native code warning
 
-Native mods execute inside their target process without a sandbox. This template includes the limited non-hook API subset plus x64 function-hook registration/application, bounded instruction decoding, and limited symbol-based hook registration through DbgHelp. It is not a drop-in replacement for every Windhawk runtime detail: hook state is per DLL, cross-mod hook ordering and persistent symbol caches are not coordinated, and disassembly text is approximate. The optional settings-change adapter supports both callback forms, but callbacks run on a worker thread rather than a Windhawk/UI thread. Keep WmodShutdownV1 responsible for releasing resources owned by your mod, test in a disposable Windows environment, and enable only code you trust.
+Native mods execute inside their target process without a sandbox. This template includes the limited non-hook API subset plus x64 function-hook registration/application, x64 Intel-syntax instruction decoding, and limited symbol-based hook registration through DbgHelp. It is not a drop-in replacement for every Windhawk runtime detail: hook state is per DLL, cross-mod hook ordering and persistent symbol caches are not coordinated, and disassembly formatting may differ from Windhawk's Zydis-based output. The optional settings-change adapter supports both callback forms, but callbacks run on a worker thread rather than a Windhawk/UI thread. Keep WmodShutdownV1 responsible for releasing resources owned by your mod, test in a disposable Windows environment, and enable only code you trust.
 ''',
     }
 
