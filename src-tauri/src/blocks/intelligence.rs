@@ -259,7 +259,7 @@ fn json_extract_spec()->Value{
         json!({"key":"jsonText","label":"JSON text or variable template","type":"textarea","rows":5,"required":true,"maxLen":32768}),
         json!({"key":"jsonPath","label":"Property path (dot-separated; numeric parts index arrays; blank selects whole JSON)","type":"text","maxLen":1024,"default":""}),
         json!({"key":"saveAs","label":"Save result to variable","type":"text","required":true,"maxLen":64}),json!({"preset":"onFail"})
-    ],"Extract JSON value","Typed values are preserved. Example path: items.0.name.");
+    ],"Extract JSON value","Typed values are preserved. Example path: items.0.name.")
 }
 #[async_trait]
 impl Block for JsonExtract{
@@ -292,7 +292,7 @@ fn regex_spec()->Value{
         json!({"key":"ignoreCase","label":"Ignore case","type":"bool","default":false}),
         json!({"key":"saveAs","label":"Save capture to variable","type":"text","required":true,"maxLen":64}),
         json!({"preset":"timeout","default":5}),json!({"preset":"onFail"})
-    ],"Extract regex capture","Regular expressions are limited to a 2-second match timeout to avoid runaway patterns. A missing match returns Not Satisfied; invalid patterns return an explicit error.");
+    ],"Extract regex capture","Regular expressions are limited to a 2-second match timeout to avoid runaway patterns. A missing match returns Not Satisfied; invalid patterns return an explicit error.")
 }
 #[async_trait]
 impl Block for RegexExtract{
@@ -353,7 +353,7 @@ fn csv_to_json_spec()->Value{
     action_spec("CSV to JSON","file-spreadsheet","Parses CSV with the first row as headers and saves an array of objects.",vec![
         json!({"key":"csvText","label":"CSV text or variable template","type":"textarea","rows":6,"required":true,"maxLen":32768}),
         json!({"key":"saveAs","label":"Save array to variable","type":"text","required":true,"maxLen":64}),json!({"preset":"onFail"})
-    ],"CSV to JSON","Supports quoted commas, escaped quotes and embedded newlines. Duplicate/empty headers and inconsistent row widths are rejected.");
+    ],"CSV to JSON","Supports quoted commas, escaped quotes and embedded newlines. Duplicate/empty headers and inconsistent row widths are rejected.")
 }
 #[async_trait]
 impl Block for CsvToJson{
@@ -378,7 +378,7 @@ fn json_to_csv_spec()->Value{
     action_spec("JSON to CSV","file-spreadsheet","Converts JSON objects into CSV text stored in a workflow variable.",vec![
         json!({"key":"jsonText","label":"JSON array or variable template","type":"textarea","rows":6,"required":true,"maxLen":32768}),
         json!({"key":"saveAs","label":"Save CSV text to variable","type":"text","required":true,"maxLen":64}),json!({"preset":"onFail"})
-    ],"JSON to CSV","The header is the sorted union of object keys. Missing properties are empty cells; nested values are JSON-encoded.");
+    ],"JSON to CSV","The header is the sorted union of object keys. Missing properties are empty cells; nested values are JSON-encoded.")
 }
 #[async_trait]
 impl Block for JsonToCsv{
@@ -405,7 +405,7 @@ fn transform_spec()->Value{
         json!({"key":"operand","label":"Number","type":"number","min":-1000000000000.0,"max":1000000000000.0,"step":0.1,"default":1,"show":{"key":"operation","in":["number_add","number_subtract","number_multiply","number_divide"]}}),
         json!({"key":"digits","label":"Decimal places","type":"number","min":0,"max":12,"step":1,"default":2,"show":{"key":"operation","eq":"round"}}),
         json!({"key":"saveAs","label":"Save result to variable","type":"text","required":true,"maxLen":64}),json!({"preset":"onFail"})
-    ],"Transform value","Split produces an array, numeric operations produce a JSON number, JSON parsing preserves typed values, and unix_now returns epoch seconds.");
+    ],"Transform value","Split produces an array, numeric operations produce a JSON number, JSON parsing preserves typed values, and unix_now returns epoch seconds.")
 }
 #[async_trait]
 impl Block for TransformValue{
