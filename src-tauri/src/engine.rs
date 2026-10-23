@@ -378,6 +378,7 @@ impl Engine {
             },
             visible: Box::new(|| false),
             variables: Arc::new(Mutex::new(HashMap::new())),
+            call_subflow: Arc::new(|_, _| Box::pin(async { Err::<Value, String>("Nested automation is unavailable in an isolated block test".into()) })),
         };
         let out = tokio::time::timeout(Duration::from_secs(60), blk.run(&cx))
             .await
@@ -923,6 +924,13 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             Box::new(move || c.eng.visible())
         },
         variables: ctx.variables.clone(),
+        call_subflow: {
+            let parent = ctx.clone();
+            Arc::new(move |target_id, inputs| {
+                let parent = parent.clone();
+                Box::pin(async move { parent.eng.clone().run_subflow(parent, target_id, inputs).await })
+            })
+        },
     };
 
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
