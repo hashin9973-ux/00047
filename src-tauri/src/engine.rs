@@ -622,6 +622,22 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
             errs.push(format!("duplicate connection {} -> {} ({})", e.from, e.to, e.kind));
         }
     }
+    let mut foreach_targets: HashMap<String, String> = HashMap::new();
+    for node in a.nodes.iter().filter(|node| node.kind == "act.for_each_item" && !node.disabled) {
+        let name = node.cfg.get("loopName").and_then(Value::as_str).unwrap_or("").trim();
+        if !name.is_empty() {
+            if foreach_targets.insert(name.to_string(), node.id.clone()).is_some() {
+                errs.push(format!("For Each loop name '{name}' must be unique"));
+            }
+        }
+    }
+    for node in a.nodes.iter().filter(|node| matches!(node.kind.as_str(), "act.break_loop" | "act.continue_loop") && !node.disabled) {
+        let name = node.cfg.get("loopName").and_then(Value::as_str).unwrap_or("").trim();
+        if name.is_empty() || !foreach_targets.contains_key(name) {
+            errs.push(format!("{} {} references an unknown For Each loop name '{}'", node.kind, short(node), name));
+        }
+    }
+
     for n in &a.nodes {
         if n.disabled {
             continue;
@@ -799,6 +815,20 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     let dt = t0.elapsed().as_secs_f64();
     match res {
         Ok(o) => {
+            if o == Outcome::Satisfied && matches!(node.kind.as_str(), "act.break_loop" | "act.continue_loop") {
+                let name = node.cfg.get("loopName").and_then(Value::as_str).unwrap_or("");
+                if let Some(target) = ctx.auto.nodes.iter().find(|candidate| {
+                    candidate.kind == "act.for_each_item"
+                        && !candidate.disabled
+                        && candidate.cfg.get("loopName").and_then(Value::as_str) == Some(name)
+                }) {
+                    let target_id = target.id.clone();
+                    let detail = if node.kind == "act.break_loop" { "breaking loop" } else { "continuing loop" };
+                    eng.set_node(&aid, &node.id, "done", None, format!("{detail} · {dt:.1}s"));
+                    ctx.log("info", Some(node), format!("Jumped to For Each loop '{name}'"));
+                    return vec![target_id];
+                }
+            }
             let (txt, kinds): (&str, &[&str]) = if blk.category() == Cat::Target {
                 ("passed through", &["target"])
             } else if o == Outcome::Satisfied {
@@ -947,6 +977,39 @@ mod loop_semantics_tests {
         assert!(validate_automation(&a).is_ok());
         assert_eq!(entry_nodes(&a), vec!["start".to_string()]);
         assert_eq!(loop_start_id(&a).unwrap(), "start");
+    }
+
+    #[test]
+    fn for_each_break_and_continue_require_a_unique_existing_loop() {
+        let a = automation(
+            vec![
+                node("start", "act.start", json!({})),
+                node("each", "act.for_each_item", json!({"loopName":"items","arrayVariable":"records","itemVariable":"item","indexVariable":"index"})),
+                node("continue", "act.continue_loop", json!({"loopName":"items"})),
+                node("break", "act.break_loop", json!({"loopName":"missing"})),
+            ],
+            vec![
+                edge("e1", "start", "each", "after"),
+                edge("e2", "each", "continue", "if"),
+            ],
+        );
+        let errors = validate_automation(&a).unwrap_err().join(" ");
+        assert!(errors.contains("unknown For Each loop name 'missing'"));
+
+        let valid = automation(
+            vec![
+                node("start", "act.start", json!({})),
+                node("each", "act.for_each_item", json!({"loopName":"items","arrayVariable":"records","itemVariable":"item","indexVariable":"index"})),
+                node("continue", "act.continue_loop", json!({"loopName":"items"})),
+                node("break", "act.break_loop", json!({"loopName":"items"})),
+            ],
+            vec![
+                edge("e1", "start", "each", "after"),
+                edge("e2", "each", "continue", "if"),
+                edge("e3", "each", "break", "else"),
+            ],
+        );
+        assert!(validate_automation(&valid).is_ok());
     }
 
     #[test]
