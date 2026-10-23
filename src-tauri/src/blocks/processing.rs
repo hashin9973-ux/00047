@@ -362,42 +362,139 @@ impl Block for CsvWrite{
 
 struct TransformValue;
 fn transform_spec()->Value{
+    let units=[
+        ["mm","Millimeters"],["cm","Centimeters"],["m","Meters"],["km","Kilometers"],["in","Inches"],["ft","Feet"],["mi","Miles"],
+        ["mg","Milligrams"],["g","Grams"],["kg","Kilograms"],["oz","Ounces"],["lb","Pounds"],
+        ["ms","Milliseconds"],["s","Seconds"],["min","Minutes"],["h","Hours"],["day","Days"],
+        ["B","Bytes"],["KB","Kilobytes"],["MB","Megabytes"],["GB","Gigabytes"],["TB","Terabytes"],
+        ["KiB","Kibibytes"],["MiB","Mebibytes"],["GiB","Gibibytes"],
+        ["C","Celsius"],["F","Fahrenheit"],["K","Kelvin"]
+    ];
+    let choices:Vec<Value>=units.iter().map(|u|json!([u[0],u[1]])).collect();
     let f=vec![
-        json!({"key":"sourceVar","label":"Source variable","type":"text","required":true,"maxLen":64}),
-        json!({"key":"operation","label":"Transform","type":"select","default":"trim","options":[["trim","Trim string"],["upper","Uppercase"],["lower","Lowercase"],["length","String / array / object length"],["to_number","Parse number"],["add","Add operand"],["subtract","Subtract operand"],["multiply","Multiply operand"],["divide","Divide by operand"],["round","Round number"],["json_compact","Serialize as compact JSON"],["parse_json","Parse string as JSON"],["to_boolean","Parse boolean"]]}),
-        json!({"key":"operand","label":"Numeric operand","type":"number","min":-1000000000000,"max":1000000000000,"default":1,"show":{"key":"operation","in":["add","subtract","multiply","divide"]}}),
+        json!({"key":"sourceVar","label":"Source variable","type":"text","required":true,"maxLen":64,"show":{"key":"operation","ne":"expression"}}),
+        json!({"key":"operation","label":"Transform","type":"select","default":"trim","options":[["trim","Trim string"],["upper","Uppercase"],["lower","Lowercase"],["length","String / array / object length"],["to_number","Parse number"],["add","Add operand"],["subtract","Subtract operand"],["multiply","Multiply operand"],["divide","Divide by operand"],["round","Round number"],["convert_units","Convert physical/storage units"],["expression","Evaluate safe arithmetic expression"],["date_add_seconds","Add seconds to ISO timestamp"],["date_add_minutes","Add minutes to ISO timestamp"],["date_add_days","Add days to ISO timestamp"],["date_diff_seconds","Difference between ISO timestamps (seconds)"],["json_compact","Serialize as compact JSON"],["parse_json","Parse string as JSON"],["to_boolean","Parse boolean"]]}),
+        json!({"key":"expression","label":"Expression","type":"textarea","rows":3,"required":true,"maxLen":2048,"show":{"key":"operation","eq":"expression"}}),
+        json!({"key":"operand","label":"Numeric operand","type":"number","min":-1000000000000,"max":1000000000000,"default":1,"show":{"key":"operation","in":["add","subtract","multiply","divide","date_add_seconds","date_add_minutes","date_add_days"]}}),
         json!({"key":"decimals","label":"Decimal places","type":"number","min":0,"max":10,"default":0,"show":{"key":"operation","eq":"round"}}),
+        json!({"key":"fromUnit","label":"From unit","type":"select","default":"m","options":choices,"show":{"key":"operation","eq":"convert_units"}}),
+        json!({"key":"toUnit","label":"To unit","type":"select","default":"ft","options":choices,"show":{"key":"operation","eq":"convert_units"}}),
+        json!({"key":"dateOperand","label":"Second ISO timestamp","type":"text","maxLen":128,"required":true,"show":{"key":"operation","eq":"date_diff_seconds"}}),
         json!({"key":"saveAs","label":"Save result as","type":"text","required":true,"maxLen":64}),
         json!({"preset":"onFail"}),
     ];
-    spec_action("Transform Value","calculator","Performs bounded string, JSON, length, and numeric transformations.",f,"{operation} {sourceVar} → {saveAs}","Division by zero, invalid input types, non-finite numbers, and results outside representable JSON numbers are errors.")
+    spec_action("Transform Value","calculator","Performs bounded string, JSON, numeric, unit-conversion, timestamp, and safe arithmetic-expression transformations.",f,"{operation} {sourceVar} → {saveAs}","Expression evaluation supports numeric literals, parentheses, unary signs, +, -, *, and /. It does not evaluate code, function calls, or property access. Unit conversions are limited to known units in the same family.")
+}
+struct ExprParser<'a>{chars:Vec<char>,pos:usize,input:&'a str}
+impl<'a> ExprParser<'a>{
+ fn new(input:&'a str)->Self{Self{chars:input.chars().collect(),pos:0,input}}
+ fn ws(&mut self){while self.pos<self.chars.len()&&self.chars[self.pos].is_whitespace(){self.pos+=1}}
+ fn parse(mut self)->Result<f64,String>{
+  if self.input.len()>2048{return Err("Expression exceeds 2048 bytes".into())}
+  let n=self.expr()?;self.ws();if self.pos!=self.chars.len(){return Err(format!("Unexpected character '{}' in expression",self.chars[self.pos]))}
+  if !n.is_finite(){return Err("Expression result must be finite".into())}Ok(n)
+ }
+ fn expr(&mut self)->Result<f64,String>{
+  let mut n=self.term()?;loop{self.ws();match self.chars.get(self.pos){Some('+')=>{self.pos+=1;n+=self.term()?},Some('-')=>{self.pos+=1;n-=self.term()?},_=>break}}
+  Ok(n)
+ }
+ fn term(&mut self)->Result<f64,String>{
+  let mut n=self.factor()?;loop{self.ws();match self.chars.get(self.pos){Some('*')=>{self.pos+=1;n*=self.factor()?},Some('/')=>{self.pos+=1;let d=self.factor()?;if d==0.0{return Err("Division by zero".into())}n/=d},_=>break}}
+  Ok(n)
+ }
+ fn factor(&mut self)->Result<f64,String>{
+  self.ws();
+  match self.chars.get(self.pos).copied(){
+   Some('+')=>{self.pos+=1;self.factor()},
+   Some('-')=>{self.pos+=1;Ok(-self.factor()?)},
+   Some('(')=>{self.pos+=1;let n=self.expr()?;self.ws();if self.chars.get(self.pos)!=Some(&')'){return Err("Missing closing parenthesis".into())}self.pos+=1;Ok(n)},
+   Some(ch) if ch.is_ascii_digit()||ch=='.'=>{
+    let start=self.pos;
+    while self.pos<self.chars.len() && (self.chars[self.pos].is_ascii_digit()||matches!(self.chars[self.pos],'.'|'e'|'E')||((self.chars[self.pos]=='+'||self.chars[self.pos]=='-')&&self.pos>start&&matches!(self.chars[self.pos-1],'e'|'E'))){self.pos+=1}
+    self.input_char_slice(start,self.pos).parse::<f64>().map_err(|_|"Invalid numeric literal in expression".into())
+   }
+   Some(ch)=>Err(format!("Unexpected character '{ch}' in expression")),
+   None=>Err("Expression ended unexpectedly".into())
+  }
+ }
+ fn input_char_slice(&self,start:usize,end:usize)->String{self.chars[start..end].iter().collect()}
+}
+fn unit_family(unit:&str)->Option<&'static str>{
+ match unit{"mm"|"cm"|"m"|"km"|"in"|"ft"|"mi"=>Some("length"),"mg"|"g"|"kg"|"oz"|"lb"=>Some("mass"),"ms"|"s"|"min"|"h"|"day"=>Some("time"),"B"|"KB"|"MB"|"GB"|"TB"|"KiB"|"MiB"|"GiB"=>Some("data"),"C"|"F"|"K"=>Some("temperature"),_=>None}
+}
+fn convert_unit(value:f64,from:&str,to:&str)->Result<f64,String>{
+ let a=unit_family(from).ok_or("Unknown source unit")?;let b=unit_family(to).ok_or("Unknown destination unit")?;
+ if a!=b{return Err("Source and destination units must belong to the same unit family".into())}
+ let converted=match a{
+  "temperature"=>{let c=match from{"C"=>value,"F"=>(value-32.0)*5.0/9.0,"K"=>value-273.15,_=>return Err("Unknown temperature unit".into())};match to{"C"=>c,"F"=>c*9.0/5.0+32.0,"K"=>c+273.15,_=>return Err("Unknown temperature unit".into())}},
+  _=>{
+   let factor=match from{
+    "mm"=>0.001,"cm"=>0.01,"m"=>1.0,"km"=>1000.0,"in"=>0.0254,"ft"=>0.3048,"mi"=>1609.344,
+    "mg"=>0.000001,"g"=>0.001,"kg"=>1.0,"oz"=>0.028349523125,"lb"=>0.45359237,
+    "ms"=>0.001,"s"=>1.0,"min"=>60.0,"h"=>3600.0,"day"=>86400.0,
+    "B"=>1.0,"KB"=>1000.0,"MB"=>1_000_000.0,"GB"=>1_000_000_000.0,"TB"=>1_000_000_000_000.0,"KiB"=>1024.0,"MiB"=>1_048_576.0,"GiB"=>1_073_741_824.0,
+    _=>return Err("Unknown unit".into())
+   };
+   let to_factor=match to{
+    "mm"=>0.001,"cm"=>0.01,"m"=>1.0,"km"=>1000.0,"in"=>0.0254,"ft"=>0.3048,"mi"=>1609.344,
+    "mg"=>0.000001,"g"=>0.001,"kg"=>1.0,"oz"=>0.028349523125,"lb"=>0.45359237,
+    "ms"=>0.001,"s"=>1.0,"min"=>60.0,"h"=>3600.0,"day"=>86400.0,
+    "B"=>1.0,"KB"=>1000.0,"MB"=>1_000_000.0,"GB"=>1_000_000_000.0,"TB"=>1_000_000_000_000.0,"KiB"=>1024.0,"MiB"=>1_048_576.0,"GiB"=>1_073_741_824.0,
+    _=>return Err("Unknown unit".into())
+   };
+   value*factor/to_factor
+  }
+ };
+ if !converted.is_finite(){return Err("Converted value is not finite".into())}Ok(converted)
 }
 #[async_trait]
 impl Block for TransformValue{
     fn title(&self)-> &'static str{"Transform Value"} fn category(&self)->Cat{Cat::Action}
     fn spec(&self)->Option<Value>{Some(transform_spec())}
-    fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&transform_spec(),c)?;no_nul(c,&["sourceVar","saveAs"])?;check_output(c,"saveAs").map(|_|())?;if !matches!(txt(c,"operation").as_str(),"trim"|"upper"|"lower"|"length"|"to_number"|"add"|"subtract"|"multiply"|"divide"|"round"|"json_compact"|"parse_json"|"to_boolean"){return Err("Unknown transform operation".into())}Ok(())}
+    fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&transform_spec(),c)?;no_nul(c,&["sourceVar","saveAs"])?;check_output(c,"saveAs").map(|_|())?;if !matches!(txt(c,"operation").as_str(),"trim"|"upper"|"lower"|"length"|"to_number"|"add"|"subtract"|"multiply"|"divide"|"round"|"convert_units"|"expression"|"date_add_seconds"|"date_add_minutes"|"date_add_days"|"date_diff_seconds"|"json_compact"|"parse_json"|"to_boolean"){return Err("Unknown transform operation".into())}if txt(c,"operation")=="expression"&&txt(c,"expression").is_empty(){return Err("Expression is required".into())}if txt(c,"operation")=="convert_units"&&unit_family(&txt(c,"fromUnit"))!=unit_family(&txt(c,"toUnit")){return Err("Source and destination units must belong to the same unit family".into())}if txt(c,"operation")=="date_diff_seconds"&&txt(c,"dateOperand").is_empty(){return Err("Second ISO timestamp is required".into())}Ok(())}
     async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
         self.validate(&cx.cfg)?;
-        let source=var_value(cx,&txt(&cx.cfg,"sourceVar"))?;let op=txt(&cx.cfg,"operation");
+        let op=txt(&cx.cfg,"operation");
+        let save=check_output(&cx.cfg,"saveAs")?;
+        if op=="expression" {
+            let expression=cx.expand_template(&raw(&cx.cfg,"expression"))?;
+            let value=ExprParser::new(&expression).parse()?;
+            cx.set_variable(save,Value::from(value))?;
+            return Ok(Outcome::Satisfied)
+        }
+        let source=var_value(cx,&txt(&cx.cfg,"sourceVar"))?;
         let out=match op.as_str(){
             "trim"=>Value::String(source.as_str().ok_or("Trim requires a string")?.trim().to_string()),
             "upper"=>Value::String(source.as_str().ok_or("Uppercase requires a string")?.to_uppercase()),
             "lower"=>Value::String(source.as_str().ok_or("Lowercase requires a string")?.to_lowercase()),
             "length"=>{let n=match &source{Value::String(s)=>s.chars().count(),Value::Array(a)=>a.len(),Value::Object(o)=>o.len(),_=>return Err("Length requires a string, array, or object".into())};json!(n)},
             "to_number"=>{let n=match &source{Value::Number(n)=>n.as_f64().ok_or("Invalid number")?,Value::String(s)=>s.trim().parse::<f64>().map_err(|_|"Value is not numeric")?,_=>return Err("Parse number requires a number or string".into())};if !n.is_finite(){return Err("Number must be finite".into())}json!(n)},
-            "add"|"subtract"|"multiply"|"divide"|"round"=>{
+            "add"|"subtract"|"multiply"|"divide"|"round"|"convert_units"=>{
                 let n=source.as_f64().or_else(||source.as_str().and_then(|s|s.parse().ok())).ok_or("Numeric transform requires a number or numeric string")?;
                 let operand=cx.cfg.get("operand").and_then(Value::as_f64).unwrap_or(1.0);
-                let result=match op.as_str(){"add"=>n+operand,"subtract"=>n-operand,"multiply"=>n*operand,"divide"=>{if operand==0.0{return Err("Cannot divide by zero".into())}n/operand},_=>{let places=int(&cx.cfg,"decimals",0,0,10)? as i32;let p=10f64.powi(places);(n*p).round()/p}};
+                let result=match op.as_str(){"add"=>n+operand,"subtract"=>n-operand,"multiply"=>n*operand,"divide"=>{if operand==0.0{return Err("Cannot divide by zero".into())}n/operand},"convert_units"=>convert_unit(n,&txt(&cx.cfg,"fromUnit"),&txt(&cx.cfg,"toUnit"))?,_=>{let places=int(&cx.cfg,"decimals",0,0,10)? as i32;let p=10f64.powi(places);(n*p).round()/p}};
                 if !result.is_finite(){return Err("Numeric result is not finite".into())}json!(result)
+            },
+            "date_add_seconds"|"date_add_minutes"|"date_add_days"|"date_diff_seconds"=>{
+                let date=source.as_str().ok_or("Date operations require an ISO timestamp string variable")?;
+                let date_q=extra::ps_quote(date);
+                let second=raw(&cx.cfg,"dateOperand");
+                let second_q=extra::ps_quote(&second);
+                let operand=cx.cfg.get("operand").and_then(Value::as_f64).unwrap_or(1.0);
+                let command=match op.as_str(){
+                    "date_add_seconds"=>format!("$d=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$d.AddSeconds({operand.ToString(System.Globalization.CultureInfo.InvariantCulture)}).ToString('o')"),
+                    "date_add_minutes"=>format!("$d=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$d.AddMinutes({operand.ToString(System.Globalization.CultureInfo.InvariantCulture)}).ToString('o')"),
+                    "date_add_days"=>format!("$d=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$d.AddDays({operand.ToString(System.Globalization.CultureInfo.InvariantCulture)}).ToString('o')"),
+                    _=>format!("$a=[DateTimeOffset]::Parse({date_q},[Globalization.CultureInfo]::InvariantCulture);$b=[DateTimeOffset]::Parse({second_q},[Globalization.CultureInfo]::InvariantCulture);[string](($a-$b).TotalSeconds.ToString('R',[Globalization.CultureInfo]::InvariantCulture))"),
+                };
+                Value::String(extra::powershell(cx,&format!("$ErrorActionPreference='Stop';{}",command)).await?)
             },
             "json_compact"=>Value::String(source.to_string()),
             "parse_json"=>serde_json::from_str(source.as_str().ok_or("Parse JSON requires a string")?).map_err(|e|format!("Invalid JSON: {e}"))?,
             "to_boolean"=>match source{Value::Bool(b)=>Value::Bool(b),Value::String(s) if s.eq_ignore_ascii_case("true")=>Value::Bool(true),Value::String(s) if s.eq_ignore_ascii_case("false")=>Value::Bool(false),_=>return Err("Value must be true or false".into())},
             _=>return Err("Unsupported transform operation".into()),
         };
-        cx.set_variable(check_output(&cx.cfg,"saveAs")?,out)?;Ok(Outcome::Satisfied)
+        cx.set_variable(save,out)?;Ok(Outcome::Satisfied)
     }
 }
 
@@ -595,6 +692,19 @@ mod tests {
         assert!(CallSubflow.validate(&json!({"automationId":"abc","inputMapJson":"{\"param\":\"source\"}","outputMapJson":"{\"result\":\"target\"}","timeoutSec":30,"onFail":"stop"})).is_ok());
         assert!(TryCatch.validate(&json!({"tryAutomationId":"try-id","catchAutomationId":"catch-id","errorVar":"err","timeoutSec":60,"onFail":"stop"})).is_ok());
         assert!(TryCatch.validate(&json!({"tryAutomationId":"same","catchAutomationId":"same","errorVar":"err","timeoutSec":60,"onFail":"stop"})).is_err());
+    }
+    #[test]
+    fn arithmetic_expressions_are_safe_and_follow_precedence(){
+        assert_eq!(ExprParser::new("2 + 3 * (4 - 1)").parse().unwrap(),11.0);
+        assert_eq!(ExprParser::new("-2.5e1 / 5").parse().unwrap(),-5.0);
+        assert!(ExprParser::new("1 / 0").parse().is_err());
+        assert!(ExprParser::new("std::process::exit(1)").parse().is_err());
+    }
+    #[test]
+    fn unit_conversion_uses_known_families(){
+        assert!((convert_unit(1.0,"m","cm").unwrap()-100.0).abs()<1e-9);
+        assert!((convert_unit(32.0,"F","C").unwrap()).abs()<1e-9);
+        assert!(convert_unit(1.0,"m","kg").is_err());
     }
     #[test]
     fn output_variable_names_are_validated(){
