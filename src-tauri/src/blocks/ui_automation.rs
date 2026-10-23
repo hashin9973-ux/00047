@@ -16,6 +16,7 @@ fn ui_fields()->Vec<Value>{
       json!({"key":"controlType","label":"Control type","type":"select","default":"Any","options":[["Any","Any control"],["Button","Button"],["Edit","Text input"],["Text","Text label"],["CheckBox","Checkbox"],["ComboBox","Combo box"],["ListItem","List item"],["MenuItem","Menu item"],["RadioButton","Radio button"],["Window","Window"],["TabItem","Tab item"]]}),
       json!({"key":"processName","label":"Owning process name (optional)","type":"text","maxLen":260,"placeholder":"notepad.exe"}),
       json!({"key":"windowTitle","label":"Containing window title contains","type":"text","maxLen":1024}),
+      json!({"key":"enabledState","label":"Enabled state","type":"select","default":"enabled","options":[["enabled","Must be enabled"],["disabled","Must be disabled"],["any","Either state"]]}),
     ]
 }
 fn condition_spec()->Value{
@@ -30,25 +31,26 @@ fn action_spec()->Value{
  f.push(json!({"preset":"onFail"}));
  json!({"category":"action","title":"UI Automation Action","icon":"mouse-pointer-click","description":"Invokes or manipulates a control selected by UI Automation properties.","fields":f,"summary":"UI {operation}: {elementName}","help":"Control selection must match exactly one element to avoid interacting with the wrong window. This is more resilient than raw coordinates but depends on application accessibility support."})
 }
-fn selectors(c:&Value)->Result<(String,String,String,String,String),String>{
- let id=text(c,"automationId");let name=text(c,"elementName");let ctl=text(c,"controlType");let proc=text(c,"processName");let title=text(c,"windowTitle");
+fn selectors(c:&Value)->Result<(String,String,String,String,String,String),String>{
+ let id=text(c,"automationId");let name=text(c,"elementName");let ctl=text(c,"controlType");let proc=text(c,"processName");let title=text(c,"windowTitle");let enabled=text(c,"enabledState");
  if id.is_empty()&&name.is_empty()&&ctl=="Any"&&proc.is_empty()&&title.is_empty(){return Err("Specify at least one UI selector".into())}
  if !proc.is_empty() && (proc.contains('/')||proc.contains('\\')) {return Err("Process name must be a name such as notepad.exe, not a path".into())}
- Ok((id,name,ctl,proc,title))
+ if !matches!(enabled.as_str(),"enabled"|"disabled"|"any"){return Err("Unknown enabled state filter".into())}
+ Ok((id,name,ctl,proc,title,enabled))
 }
 fn make_query_script(c:&Value, operation:&str)->Result<String,String>{
- let (id,name,ctl,proc,title)=selectors(c)?;
+ let (id,name,ctl,proc,title,enabled)=selectors(c)?;
  let value=raw(c,"value");
- let id=ps_quote(&id);let name=ps_quote(&name);let ctl=ps_quote(&ctl);let proc=ps_quote(&proc);let title=ps_quote(&title);let value=ps_quote(&value);let operation=ps_quote(operation);
+ let id=ps_quote(&id);let name=ps_quote(&name);let ctl=ps_quote(&ctl);let proc=ps_quote(&proc);let title=ps_quote(&title);let enabled=ps_quote(&enabled);let value=ps_quote(&value);let operation=ps_quote(operation);
  Ok(format!(r#"$ErrorActionPreference='Stop'; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes;
-$aid={id};$ename={name};$ct={ctl};$pn={proc};$wt={title};$op={operation};$val={value};
+$aid={id};$ename={name};$ct={ctl};$pn={proc};$wt={title};$enabled={enabled};$op={operation};$val={value};
 $conditions=New-Object 'System.Collections.Generic.List[System.Windows.Automation.Condition]';
 if($aid -ne ''){{$conditions.Add((New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,$aid)))}}
 if($ename -ne ''){{$conditions.Add((New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty,$ename)))}}
 if($ct -ne 'Any'){{$map=@{{Button=[System.Windows.Automation.ControlType]::Button;Edit=[System.Windows.Automation.ControlType]::Edit;Text=[System.Windows.Automation.ControlType]::Text;CheckBox=[System.Windows.Automation.ControlType]::CheckBox;ComboBox=[System.Windows.Automation.ControlType]::ComboBox;ListItem=[System.Windows.Automation.ControlType]::ListItem;MenuItem=[System.Windows.Automation.ControlType]::MenuItem;RadioButton=[System.Windows.Automation.ControlType]::RadioButton;Window=[System.Windows.Automation.ControlType]::Window;TabItem=[System.Windows.Automation.ControlType]::TabItem}};$conditions.Add((New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,$map[$ct]))) }}
 if($conditions.Count -eq 0){{$base=[System.Windows.Automation.Condition]::TrueCondition}}elseif($conditions.Count -eq 1){{$base=$conditions[0]}}else{{$base=New-Object System.Windows.Automation.AndCondition($conditions.ToArray())}}
 $root=[System.Windows.Automation.AutomationElement]::RootElement;$all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$base);$hits=New-Object System.Collections.Generic.List[System.Windows.Automation.AutomationElement];
-foreach($el in $all){{try{{$cur=$el.Current;if(-not $cur.IsEnabled){{continue}};if($pn -ne ''){{$p=Get-Process -Id $cur.ProcessId -ErrorAction SilentlyContinue;if($null -eq $p -or $p.ProcessName -ine [IO.Path]::GetFileNameWithoutExtension($pn)){{continue}}}};
+foreach($el in $all){{try{{$cur=$el.Current;if($enabled -eq 'enabled' -and -not $cur.IsEnabled){{continue}};if($enabled -eq 'disabled' -and $cur.IsEnabled){{continue}};if($pn -ne ''){{$p=Get-Process -Id $cur.ProcessId -ErrorAction SilentlyContinue;if($null -eq $p -or $p.ProcessName -ine [IO.Path]::GetFileNameWithoutExtension($pn)){{continue}}}};
 if($wt -ne ''){{$walker=[System.Windows.Automation.TreeWalker]::ControlViewWalker;$w=$el;$windowName='';for($i=0;$i -lt 32 -and $null -ne $w;$i++){{$iftype=$w.Current.ControlType;if($iftype -eq [System.Windows.Automation.ControlType]::Window){{$windowName=$w.Current.Name;break}};$w=$walker.GetParent($w)}};if($windowName -notlike ('*'+$wt+'*')){{continue}}}};
 $hits.Add($el)}}catch{{}}}}
 if($hits.Count -ne 1){{[pscustomobject]@{{ok=$false;count=$hits.Count;name='';value='';enabled=$false;processId=0}}|ConvertTo-Json -Compress;exit 0}}
@@ -108,5 +110,6 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
 mod tests{
  use super::*;
  #[test]fn selector_requires_a_target(){assert!(selectors(&json!({"automationId":"saveBtn"})).is_ok());assert!(selectors(&json!({"processName":"notepad.exe"})).is_ok());assert!(selectors(&json!({})).is_err());}
+ #[test]fn enabled_filter_is_validated(){assert!(selectors(&json!({"automationId":"saveBtn","enabledState":"disabled"})).is_ok());assert!(selectors(&json!({"automationId":"saveBtn","enabledState":"unknown"})).is_err());}
  #[test]fn process_selector_rejects_paths(){assert!(selectors(&json!({"processName":"notepad.exe"})).is_ok());assert!(selectors(&json!({"processName":"C:\\\\Windows\\\\notepad.exe"})).is_err());}
 }
