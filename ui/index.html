@@ -49,6 +49,10 @@
           <button class="btn" data-ed="start">▶ Start</button>
           <button class="btn" data-ed="stop">■ Stop</button>
           <button class="btn" data-ed="restart">↻ Restart</button>
+          <button class="btn" id="ed-debug-pause" title="Pause at the next block boundary">⏸ Pause</button>
+          <button class="btn" id="ed-debug-step" title="Execute one block, then pause">Step →</button>
+          <button class="btn" id="ed-debug-resume" title="Resume workflow execution">▶ Resume</button>
+          <button class="btn" id="ed-breakpoints" title="Toggle breakpoints for selected blocks">◇ Breakpoint</button>
         </div>
         <label class="chk"><input type="checkbox" id="ed-auto"> Run at app launch</label>
         <span id="ed-note" class="note"></span>
@@ -64,6 +68,7 @@
           <div id="dock-tabs">
             <button data-tab="log" class="on">Live log</button>
             <button data-tab="history">History</button>
+            <button data-tab="variables">Variables</button>
             <button data-tab="help">Help</button>
           </div>
           <button id="dock-toggle" class="ib" title="Collapse / expand">▾</button>
@@ -81,8 +86,10 @@
       <small id="glass-refresh-status" class="mu">Applying native Windows Acrylic…</small>
     </div>
     <button class="btn" id="btn-blocks">Custom blocks…</button>
+    <button class="btn" id="btn-secrets">Secrets vault…</button>
   </div>
   <div id="modal" class="modal" hidden></div>
+  <div id="secret-manager" class="modal" hidden></div>
   <div id="toasts"></div>
 
   <script type="module" src="app.js"></script>

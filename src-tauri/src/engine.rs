@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
-use tokio::task::JoinHandle;
+use tokio::{sync::Notify, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 pub fn now_ms() -> u64 {
@@ -25,6 +25,7 @@ pub fn now_ms() -> u64 {
 
 const LOG_CAP: usize = 5000;
 const HIST_CAP: usize = 50;
+const TRACE_CAP: usize = 500;
 
 struct RunHandle {
     token: CancellationToken,
@@ -48,6 +49,13 @@ pub struct Engine {
     seq: AtomicU64,
     run_seq: AtomicU64,
     ui: AtomicBool,
+    debug_paused: Mutex<HashSet<String>>,
+    debug_breakpoints: Mutex<HashMap<String, HashSet<String>>>,
+    debug_step_requests: Mutex<HashSet<String>>,
+    debug_step_next: Mutex<HashSet<String>>,
+    debug_notify: Notify,
+    run_variables: Mutex<HashMap<String, Arc<Mutex<HashMap<String, Value>>>>>,
+    last_variables: Mutex<HashMap<String, Vec<Value>>>,
     disk: LogStore,
 }
 
@@ -76,6 +84,13 @@ impl Engine {
             seq: AtomicU64::new(seq),
             run_seq: AtomicU64::new(max_run),
             ui: AtomicBool::new(false),
+            debug_paused: Default::default(),
+            debug_breakpoints: Default::default(),
+            debug_step_requests: Default::default(),
+            debug_step_next: Default::default(),
+            debug_notify: Notify::new(),
+            run_variables: Default::default(),
+            last_variables: Default::default(),
             disk,
         }
     }
@@ -137,8 +152,27 @@ impl Engine {
 
     // ----- state -----
     fn set_node(&self, auto_id: &str, node_id: &str, state: &str, progress: Option<f64>, detail: String) {
-        let st = NodeState { state: state.into(), progress, detail };
-        self.nodes.lock().unwrap().entry(auto_id.into()).or_default().insert(node_id.into(), st.clone());
+        let at = now_ms();
+        let st = {
+            let mut nodes = self.nodes.lock().unwrap();
+            let map = nodes.entry(auto_id.into()).or_default();
+            let previous = map.get(node_id).cloned();
+            let attempts = if state == "running" {
+                previous.as_ref().map(|p|p.attempts.saturating_add(1)).unwrap_or(1)
+            } else { previous.as_ref().map(|p|p.attempts).unwrap_or(0) };
+            let started_at = if state == "running" {
+                Some(at)
+            } else if matches!(state,"waiting"|"paused") {
+                previous.as_ref().and_then(|p|p.started_at).or(Some(at))
+            } else { None };
+            let duration_ms = if matches!(state,"done"|"failed"|"idle") {
+                previous.as_ref().and_then(|p|p.started_at).map(|start|at.saturating_sub(start))
+                    .or_else(||previous.as_ref().and_then(|p|p.duration_ms))
+            } else { previous.as_ref().and_then(|p|p.duration_ms) };
+            let st = NodeState { state: state.into(), progress, detail, started_at, duration_ms, attempts };
+            map.insert(node_id.into(),st.clone());
+            st
+        };
         if self.visible() {
             let _ = self.app.emit("node-state", json!({"autoId": auto_id, "nodeId": node_id, "state": st}));
         }
@@ -157,6 +191,112 @@ impl Engine {
     }
     pub fn history(&self, id: &str) -> Vec<RunRecord> {
         self.hist.lock().unwrap().get(id).map(|h| h.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Recreates a read-only run snapshot as a separate automation. This never starts the workflow.
+    pub fn recreate_run_snapshot(&self, id: &str, run_id: u64) -> Result<Automation, String> {
+        let record = self.hist.lock().map_err(|e|e.to_string())?.get(id)
+            .and_then(|h|h.iter().find(|r|r.id==run_id)).cloned()
+            .ok_or_else(||format!("Run history entry {run_id} was not found"))?;
+        let mut snapshot = record.snapshot.ok_or_else(||"This history entry predates run snapshots or was too large to retain".to_string())?;
+        let original_id = snapshot.id.clone();
+        let base = format!("snapshot-{run_id}-{}", now_ms());
+        let mut new_id = base.clone();
+        let mut suffix = 1u32;
+        while self.store.get(&new_id).is_some() {
+            new_id = format!("{base}-{suffix}");
+            suffix = suffix.saturating_add(1);
+        }
+        snapshot.id = new_id;
+        let suffix = format!("(snapshot run {run_id})");
+        let base_name: String = snapshot.name.chars().take(80usize.saturating_sub(suffix.chars().count()+1)).collect();
+        snapshot.name = format!("{base_name} {suffix}");
+        snapshot.auto_start = false;
+        self.store.upsert(snapshot.clone()).map_err(|e|format!("Could not save recreated snapshot: {e}"))?;
+        self.app_log("info",format!("Recreated run {run_id} of '{original_id}' as '{}' for inspection. It was not started.",snapshot.id));
+        Ok(snapshot)
+    }
+
+    /// Returns current or last-run variable diagnostics without cloning full arrays/objects into the WebView.
+    pub fn workflow_variables(&self, id: &str) -> Value {
+        let current = self.run_variables.lock().ok().and_then(|m|m.get(id).cloned());
+        let variables = if let Some(store)=current.as_ref() {
+            store.lock().map(|values|values.iter().map(|(name,value)|variable_view(name,value)).collect::<Vec<_>>()).unwrap_or_default()
+        } else {
+            self.last_variables.lock().ok().and_then(|m|m.get(id).cloned()).unwrap_or_default()
+        };
+        json!({"running":current.is_some(),"variables":variables})
+    }
+
+    pub fn set_breakpoints(&self, id: &str, node_ids: Vec<String>) -> Result<(), String> {
+        let auto = self.store.get(id).ok_or_else(|| "automation not found".to_string())?;
+        let available: HashSet<&str> = auto.nodes.iter().map(|n| n.id.as_str()).collect();
+        if let Some(missing) = node_ids.iter().find(|n| !available.contains(n.as_str())) {
+            return Err(format!("breakpoint block {missing} does not exist in this automation"));
+        }
+        self.debug_breakpoints.lock().map_err(|e|e.to_string())?
+            .insert(id.to_string(), node_ids.into_iter().collect());
+        Ok(())
+    }
+
+    pub fn debug_pause(&self, id: &str) -> Result<(), String> {
+        if !self.runs.lock().map_err(|e|e.to_string())?.contains_key(id) {
+            return Err("automation is not running".into());
+        }
+        self.debug_paused.lock().map_err(|e|e.to_string())?.insert(id.to_string());
+        self.debug_notify.notify_waiters();
+        Ok(())
+    }
+
+    pub fn debug_resume(&self, id: &str) {
+        if let Ok(mut p) = self.debug_paused.lock() { p.remove(id); }
+        if let Ok(mut s) = self.debug_step_requests.lock() { s.remove(id); }
+        if let Ok(mut s) = self.debug_step_next.lock() { s.remove(id); }
+        self.debug_notify.notify_waiters();
+    }
+
+    pub fn debug_step(&self, id: &str) -> Result<(), String> {
+        if !self.debug_paused.lock().map_err(|e|e.to_string())?.contains(id) {
+            return Err("pause the automation before stepping".into());
+        }
+        self.debug_step_requests.lock().map_err(|e|e.to_string())?.insert(id.to_string());
+        self.debug_notify.notify_waiters();
+        Ok(())
+    }
+
+    async fn debug_gate(self: &Arc<Self>, ctx: &Arc<Ctx>, node: &Node) -> bool {
+        // Nested subflows share the caller's execution session; avoid breakpoints that
+        // the parent UI cannot resume by child automation ID.
+        if ctx.depth > 0 { return !ctx.token.is_cancelled(); }
+        let aid = ctx.auto.id.as_str();
+        if ctx.token.is_cancelled() { return false; }
+        let breakpoint = self.debug_breakpoints.lock().ok()
+            .and_then(|m|m.get(aid).map(|set|set.contains(&node.id))).unwrap_or(false);
+        let step_gate = self.debug_step_next.lock().ok().map(|mut s|s.remove(aid)).unwrap_or(false);
+        let pause_requested = self.debug_paused.lock().ok().map(|p|p.contains(aid)).unwrap_or(false);
+        if breakpoint || step_gate || pause_requested {
+            if let Ok(mut p)=self.debug_paused.lock(){p.insert(aid.to_string());}
+            let detail = if breakpoint { "Paused at breakpoint" } else if step_gate { "Paused after single step" } else { "Paused at block boundary" };
+            self.set_node(aid,&node.id,"paused",None,detail.into());
+            self.log("info",aid,&ctx.auto.name,Some((node.id.clone(),ctx.label(node))),detail.into());
+        }
+        loop {
+            if ctx.token.is_cancelled(){return false}
+            let paused=self.debug_paused.lock().ok().map(|p|p.contains(aid)).unwrap_or(false);
+            if !paused {return true}
+            tokio::select!{
+                _=self.debug_notify.notified()=>{},
+                _=tokio::time::sleep(Duration::from_millis(150))=>{},
+                _=ctx.token.cancelled()=>return false,
+            }
+            let step=self.debug_step_requests.lock().ok().map(|mut s|s.remove(aid)).unwrap_or(false);
+            if step {
+                if let Ok(mut p)=self.debug_paused.lock(){p.remove(aid);}
+                if let Ok(mut s)=self.debug_step_next.lock(){s.insert(aid.to_string());}
+                self.debug_notify.notify_waiters();
+                return true;
+            }
+        }
     }
 
     // ----- control -----
@@ -273,6 +413,10 @@ impl Engine {
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
+        self.debug_resume(id);
+        self.debug_breakpoints.lock().map_err(|e|e.to_string())?.remove(id);
+        self.run_variables.lock().map_err(|e|e.to_string())?.remove(id);
+        self.last_variables.lock().map_err(|e|e.to_string())?.remove(id);
         self.store.remove(id)?;
         self.autos.lock().unwrap().remove(id);
         self.nodes.lock().unwrap().remove(id);
@@ -293,7 +437,13 @@ impl Engine {
 
     // ----- run -----
     async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64) {
+        // A new run starts from a clean debug state even when the previous run was stopped while paused.
+        self.debug_resume(&auto.id);
         let started = now_ms();
+        // Avoid unbounded history growth: exceptionally large graphs keep normal run history without a graph snapshot.
+        let run_snapshot = if auto.nodes.len() <= 250 && auto.edges.len() <= 600
+            && serde_json::to_vec(&auto).map(|bytes|bytes.len() <= 512 * 1024).unwrap_or(false)
+        { Some(auto.clone()) } else { None };
         self.nodes.lock().unwrap().remove(&auto.id);
         self.set_auto(&auto.id, |r| {
             r.status = "running".into();
@@ -302,28 +452,39 @@ impl Engine {
         });
         self.log("info", &auto.id, &auto.name, None, "Automation started".into());
         let entries = entry_nodes(&auto);
+        let variables = Arc::new(Mutex::new(HashMap::new()));
+        let trace = Arc::new(Mutex::new(Vec::<NodeTrace>::new()));
+        let trace_truncated = Arc::new(AtomicBool::new(false));
+        self.run_variables.lock().unwrap().insert(auto.id.clone(), variables.clone());
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
             auto: Arc::new(auto),
             token: parent.child_token(),
             visits: Default::default(),
-            variables: Arc::new(Mutex::new(HashMap::new())),
+            variables,
             rate: Default::default(),
             handles: Default::default(),
             errors: AtomicU32::new(0),
             aborted: AtomicBool::new(false),
             single: entries.len() == 1,
+            depth: 0,
+            trace: trace.clone(),
+            trace_truncated: trace_truncated.clone(),
         });
         let hs: Vec<_> = entries.into_iter().map(|e| tokio::spawn(run_entry(ctx.clone(), e))).collect();
         for h in hs {
             let _ = h.await;
         }
+        self.debug_resume(&ctx.auto.id);
         let stopped = parent.is_cancelled();
         let aborted = ctx.aborted.load(Ordering::SeqCst);
         let errors = ctx.errors.load(Ordering::SeqCst);
         let outcome = if stopped { "stopped" } else if aborted { "failed" } else { "completed" };
         let ended = now_ms();
         let aid = ctx.auto.id.clone();
+        let variable_snapshot: Vec<Value> = ctx.variables.lock().map(|v|v.iter().map(|(name,value)|variable_view(name,value)).collect()).unwrap_or_default();
+        self.last_variables.lock().unwrap().insert(aid.clone(), variable_snapshot);
+        self.run_variables.lock().unwrap().remove(&aid);
         if let Some(m) = self.nodes.lock().unwrap().get_mut(&aid) {
             for s in m.values_mut() {
                 if s.state == "running" || s.state == "waiting" {
@@ -335,7 +496,17 @@ impl Engine {
         {
             let mut h = self.hist.lock().unwrap();
             let q = h.entry(aid.clone()).or_default();
-            q.push_front(RunRecord { id: run_id, started_at: started, ended_at: ended, outcome: outcome.into(), errors });
+            let trace_records = ctx.trace.lock().map(|items| items.clone()).unwrap_or_default();
+            q.push_front(RunRecord {
+                id: run_id,
+                started_at: started,
+                ended_at: ended,
+                outcome: outcome.into(),
+                errors,
+                snapshot: run_snapshot,
+                trace: trace_records,
+                trace_truncated: ctx.trace_truncated.load(Ordering::SeqCst),
+            });
             q.truncate(HIST_CAP);
             self.disk.save_history(&h);
         }
@@ -356,6 +527,22 @@ impl Engine {
     }
 }
 
+fn variable_view(name:&str,value:&Value)->Value {
+    let low=name.to_ascii_lowercase();
+    let suspicious=["password","passwd","secret","token","credential","api_key","apikey","private_key"].iter().any(|needle|low.contains(needle));
+    let kind=match value {Value::Null=>"null",Value::Bool(_)=>"boolean",Value::Number(_)=>"number",Value::String(_)=>"text",Value::Array(_)=>"array",Value::Object(_)=>"object"};
+    let rendered=if suspicious {"[redacted]".to_string()} else {
+        match value {
+            Value::String(s) if s.chars().count()>2048=>format!("{}…",s.chars().take(2048).collect::<String>()),
+            Value::String(s)=>s.clone(),
+            Value::Array(a)=>format!("[array: {} items]",a.len()),
+            Value::Object(o)=>format!("[object: {} keys]",o.len()),
+            other=>other.to_string(),
+        }
+    };
+    json!({"name":name,"type":kind,"value":rendered,"redacted":suspicious})
+}
+
 struct Ctx {
     eng: Arc<Engine>,
     auto: Arc<Automation>,
@@ -367,6 +554,9 @@ struct Ctx {
     errors: AtomicU32,
     aborted: AtomicBool,
     single: bool,
+    depth: u8,
+    trace: Arc<Mutex<Vec<NodeTrace>>>,
+    trace_truncated: Arc<AtomicBool>,
 }
 
 impl Ctx {
@@ -383,6 +573,36 @@ impl Ctx {
     fn abort(&self) {
         self.aborted.store(true, Ordering::SeqCst);
         self.token.cancel();
+    }
+
+    fn next_visit(&self, node_id: &str) -> u64 {
+        let mut visits = self.visits.lock().unwrap();
+        let count = visits.entry(node_id.to_string()).or_insert(0);
+        *count += 1;
+        *count
+    }
+
+    fn visit_count(&self, node_id: &str) -> u64 {
+        self.visits.lock().ok().and_then(|visits| visits.get(node_id).copied()).unwrap_or(0)
+    }
+
+    fn trace_node(&self, node: &Node, visit: u64, state: &str, detail: &str, duration_ms: u64) {
+        let title = registry().get(node.kind.as_str()).map(|block| block.title()).unwrap_or("Unknown block");
+        if let Ok(mut trace) = self.trace.lock() {
+            if trace.len() >= TRACE_CAP {
+                trace.remove(0);
+                self.trace_truncated.store(true, Ordering::SeqCst);
+            }
+            trace.push(NodeTrace {
+                automation_id: self.auto.id.clone(),
+                node_id: node.id.clone(),
+                block_title: title.to_string(),
+                state: state.to_string(),
+                detail: detail.chars().take(240).collect(),
+                visit,
+                duration_ms,
+            });
+        }
     }
     fn out(&self, from: &str, kinds: &[&str]) -> Vec<String> {
         let mut v: Vec<String> = vec![];
@@ -672,8 +892,14 @@ fn branch(ctx: Arc<Ctx>, start: String) -> BoxFuture<'static, ()> {
 async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     let eng = &ctx.eng;
     let aid = ctx.auto.id.clone();
+    if !eng.debug_gate(ctx, node).await {
+        eng.set_node(&aid, &node.id, "idle", None, "cancelled while paused".into());
+        ctx.trace_node(node, ctx.visit_count(&node.id), "cancelled", "cancelled while paused", 0);
+        return vec![];
+    }
     let Some(blk) = registry().get(node.kind.as_str()) else {
         ctx.errors.fetch_add(1, Ordering::SeqCst);
+        ctx.trace_node(node, ctx.visit_count(&node.id), "failed", "unknown block type", 0);
         ctx.log("error", Some(node), format!("unknown block type '{}'", node.kind));
         ctx.abort();
         return vec![];
@@ -681,21 +907,18 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     if !ctx.rate_ok(node) {
         ctx.errors.fetch_add(1, Ordering::SeqCst);
         eng.set_node(&aid, &node.id, "failed", None, "runaway guard".into());
+        ctx.trace_node(node, ctx.visit_count(&node.id), "failed", "runaway guard", 0);
         ctx.log("error", Some(node), "Runaway guard tripped: this block ran too often in a short time. Automation aborted. Add a Wait or raise the loop delay / interval.".into());
         ctx.abort();
         return vec![];
     }
     if node.disabled {
         eng.set_node(&aid, &node.id, "done", None, "disabled: skipped".into());
+        ctx.trace_node(node, ctx.visit_count(&node.id), "done", "disabled: skipped", 0);
         ctx.log("info", Some(node), "skipped (block is disabled); following AFTER wires only".into());
         return ctx.out(&node.id, &["after"]);
     }
-    let visit = {
-        let mut v = ctx.visits.lock().unwrap();
-        let c = v.entry(node.id.clone()).or_insert(0);
-        *c += 1;
-        *c
-    };
+    let visit = ctx.next_visit(&node.id);
     eng.set_node(&aid, &node.id, "running", None, String::new());
 
     let cx = NodeCx {
@@ -724,6 +947,81 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         variables: ctx.variables.clone(),
     };
 
+    // Loop and subflow blocks are interpreted by the engine so they can execute graph regions,
+    // not merely perform one action like ordinary blocks.
+    if matches!(node.kind.as_str(), "act.for_each_end" | "act.for_each_continue" | "act.for_each_break") {
+        eng.set_node(&aid, &node.id, "done", None, "loop control marker".into());
+        ctx.trace_node(node, visit, "done", "loop control marker", 0);
+        ctx.log("info", Some(node), format!("{} reached", blk.title()));
+        return vec![];
+    }
+    if node.kind == "act.for_each" {
+        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e, 0); }
+        let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
+        let started = Instant::now();
+        let result = if timeout > 0.0 {
+            match tokio::time::timeout(Duration::from_secs_f64(timeout), Box::pin(execute_for_each(ctx.clone(), node))).await {
+                Ok(r) => r, Err(_) => Err(format!("For Each timed out after {timeout}s")),
+            }
+        } else { execute_for_each(ctx.clone(), node).await };
+        return match result {
+            Ok(()) => {
+                let dt = started.elapsed().as_secs_f64();
+                ctx.trace_node(node, visit, "done", "all items processed", (dt * 1000.0) as u64);
+                eng.set_node(&aid, &node.id, "done", None, format!("all items processed · {dt:.1}s"));
+                ctx.log("info", Some(node), format!("For Each processed all items ({dt:.2}s)"));
+                ctx.out(&node.id, &["after"])
+            }
+            Err(e) => route_node_error(ctx, node, e, started.elapsed().as_millis() as u64),
+        };
+    }
+    if node.kind == "act.try_catch" {
+        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e, 0); }
+        let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
+        let started = Instant::now();
+        let result = if timeout > 0.0 {
+            match tokio::time::timeout(Duration::from_secs_f64(timeout), Box::pin(execute_try_catch(ctx.clone(), node))).await {
+                Ok(r) => r, Err(_) => Err(format!("Try / Catch timed out after {timeout}s")),
+            }
+        } else { execute_try_catch(ctx.clone(), node).await };
+        if ctx.token.is_cancelled() {
+            eng.set_node(&aid, &node.id, "idle", None, "cancelled".into());
+            ctx.trace_node(node, visit, "cancelled", "cancelled", started.elapsed().as_millis() as u64);
+            return vec![];
+        }
+        return match result {
+            Ok(caught) => {
+                let dt = started.elapsed().as_secs_f64();
+                ctx.trace_node(node, visit, "done", if caught { "caught and recovered" } else { "try succeeded" }, (dt * 1000.0) as u64);
+                let routes: &[&str] = if caught { &["else", "after"] } else { &["if", "after"] };
+                eng.set_node(&aid, &node.id, "done", None, format!("{} · {dt:.1}s", if caught { "caught and recovered" } else { "try succeeded" }));
+                ctx.log(if caught { "warn" } else { "info" }, Some(node), format!("Try / Catch {} ({dt:.2}s)", if caught { "recovered" } else { "succeeded" }));
+                ctx.out(&node.id, routes)
+            }
+            Err(e) => route_node_error(ctx, node, e, started.elapsed().as_millis() as u64),
+        };
+    }
+    if node.kind == "act.call_subflow" {
+        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e, 0); }
+        let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
+        let started = Instant::now();
+        let result = if timeout > 0.0 {
+            match tokio::time::timeout(Duration::from_secs_f64(timeout), Box::pin(execute_subflow(ctx.clone(), node))).await {
+                Ok(r) => r, Err(_) => Err(format!("Subflow timed out after {timeout}s")),
+            }
+        } else { execute_subflow(ctx.clone(), node).await };
+        return match result {
+            Ok(()) => {
+                let dt = started.elapsed().as_secs_f64();
+                ctx.trace_node(node, visit, "done", "subflow completed", (dt * 1000.0) as u64);
+                eng.set_node(&aid, &node.id, "done", None, format!("subflow completed · {dt:.1}s"));
+                ctx.log("info", Some(node), format!("Subflow completed ({dt:.2}s)"));
+                ctx.out(&node.id, &["if", "after"])
+            }
+            Err(e) => route_node_error(ctx, node, e, started.elapsed().as_millis() as u64),
+        };
+    }
+
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
     let t0 = Instant::now();
     let res = if timeout > 0.0 {
@@ -736,6 +1034,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     };
     if ctx.token.is_cancelled() {
         eng.set_node(&aid, &node.id, "idle", None, String::new());
+        ctx.trace_node(node, visit, "cancelled", "cancelled", t0.elapsed().as_millis() as u64);
         return vec![];
     }
     let dt = t0.elapsed().as_secs_f64();
@@ -751,6 +1050,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             if node.kind == "act.loop" {
                 match loop_start_id(&ctx.auto) {
                     Ok(start_id) => {
+                        ctx.trace_node(node, visit, "done", "jumping to Start", (dt * 1000.0) as u64);
                         eng.set_node(&aid, &node.id, "done", None, format!("jumping to Start · {dt:.1}s"));
                         ctx.log("info", Some(node), "Loop redirected execution to Start (implicit connection)".into());
                         return vec![start_id];
@@ -758,6 +1058,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
                     Err(message) => {
                         ctx.errors.fetch_add(1, Ordering::SeqCst);
                         eng.set_node(&aid, &node.id, "failed", None, message.clone());
+                        ctx.trace_node(node, visit, "failed", &message, (dt * 1000.0) as u64);
                         ctx.log("error", Some(node), message);
                         ctx.abort();
                         return vec![];
@@ -765,25 +1066,187 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
                 }
             }
             eng.set_node(&aid, &node.id, "done", None, format!("{txt} · {dt:.1}s"));
+            ctx.trace_node(node, visit, "done", txt, (dt * 1000.0) as u64);
             ctx.log("info", Some(node), format!("{txt} ({dt:.2}s)"));
             ctx.out(&node.id, kinds)
         }
-        Err(e) => {
-            ctx.errors.fetch_add(1, Ordering::SeqCst);
-            eng.set_node(&aid, &node.id, "failed", None, e.clone());
-            ctx.log("error", Some(node), format!("failed: {e}"));
-            match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
-                "else" => ctx.out(&node.id, &["else"]),
-                "after" => ctx.out(&node.id, &["after"]),
-                "abort" => {
-                    ctx.log("warn", Some(node), "Aborting automation (On failure = Abort)".into());
-                    ctx.abort();
-                    vec![]
-                }
-                _ => vec![],
+        Err(e) => route_node_error(ctx, node, e, (dt * 1000.0) as u64)
+    }
+}
+
+
+fn route_node_error(ctx: &Arc<Ctx>, node: &Node, e: String, duration_ms: u64) -> Vec<String> {
+    ctx.errors.fetch_add(1, Ordering::SeqCst);
+    ctx.eng.set_node(&ctx.auto.id, &node.id, "failed", None, e.clone());
+    ctx.trace_node(node, ctx.visit_count(&node.id), "failed", &e, duration_ms);
+    ctx.log("error", Some(node), format!("failed: {e}"));
+    match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
+        "else" => ctx.out(&node.id, &["else"]),
+        "after" => ctx.out(&node.id, &["after"]),
+        "abort" => {
+            ctx.log("warn", Some(node), "Aborting automation (On failure = Abort)".into());
+            ctx.abort();
+            vec![]
+        }
+        _ => vec![],
+    }
+}
+
+/// Runs the IF-connected loop body sequentially for each array item. The marker block terminates each
+/// path; body branches are drained per item so later iterations never race earlier ones.
+async fn execute_for_each(ctx: Arc<Ctx>, node: &Node) -> Result<(), String> {
+    let cfg = &node.cfg;
+    let items_name = cfg.get("itemsVar").and_then(Value::as_str).unwrap_or("");
+    let item_name = cfg.get("itemVar").and_then(Value::as_str).unwrap_or("item");
+    let index_name = cfg.get("indexVar").and_then(Value::as_str).unwrap_or("index");
+    let items = ctx.variables.lock().map_err(|e|e.to_string())?.get(items_name).cloned()
+        .ok_or_else(||format!("array variable '{items_name}' is not set"))?;
+    let items = items.as_array().ok_or_else(||format!("variable '{items_name}' must contain a JSON array"))?.clone();
+    if items.len() > 100_000 { return Err("For Each input is limited to 100,000 items".into()); }
+    if items.is_empty() {
+        ctx.log("info",Some(node),"For Each received an empty array; body skipped".into());
+        return Ok(());
+    }
+    let starts = ctx.out(&node.id,&["if"]);
+    if starts.is_empty() { return Err("For Each needs an IF wire to the first block in its loop body".into()); }
+    if !ctx.auto.nodes.iter().any(|n|matches!(n.kind.as_str(),"act.for_each_end"|"act.for_each_continue"|"act.for_each_break")) {
+        return Err("Add a For Each End, For Each Continue, or For Each Break marker to the loop body".into());
+    }
+    let total=items.len();
+    for (i,item) in items.into_iter().enumerate() {
+        if ctx.token.is_cancelled(){return Err("cancelled".into())}
+        {
+            let mut vars=ctx.variables.lock().map_err(|e|e.to_string())?;
+            vars.insert(item_name.to_string(),item);
+            vars.insert(index_name.to_string(),Value::from(i as u64));
+        }
+        let _ = ctx.eng.app.emit("for-each-progress",json!({"autoId":ctx.auto.id,"nodeId":node.id,"index":i+1,"total":total}));
+        ctx.log("debug",Some(node),format!("For Each item {} starting",i+1));
+        let mut ended=false; let mut should_break=false;
+        for start in &starts {
+            match run_loop_path(ctx.clone(),start.clone()).await? {
+                LoopMarker::End | LoopMarker::Continue => ended=true,
+                LoopMarker::Break => { ended=true; should_break=true; break; }
+                LoopMarker::None => {}
             }
         }
+        if !ended { return Err("Loop body path did not reach a For Each End, Continue, or Break marker".into()); }
+        if should_break { break; }
     }
+    // Leave the last item value available for diagnostics, matching typical iterator semantics.
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum LoopMarker { None, End, Continue, Break }
+
+async fn run_loop_path(ctx: Arc<Ctx>, start: String) -> Result<LoopMarker,String> {
+    let mut pending=vec![start];
+    while let Some(id)=pending.pop() {
+        if ctx.token.is_cancelled(){return Err("cancelled".into())}
+        let Some(node)=ctx.node(&id) else {continue};
+        match node.kind.as_str() {
+            "act.for_each_end" => {
+                let visit=ctx.next_visit(&node.id);
+                ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"loop body boundary".into());
+                ctx.trace_node(&node,visit,"done","loop body boundary",0);
+                ctx.log("info",Some(&node),"For Each End reached".into());
+                return Ok(LoopMarker::End)
+            }
+            "act.for_each_continue" => {
+                let visit=ctx.next_visit(&node.id);
+                ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"skip to next loop item".into());
+                ctx.trace_node(&node,visit,"done","skip to next loop item",0);
+                ctx.log("info",Some(&node),"For Each Continue reached".into());
+                return Ok(LoopMarker::Continue)
+            }
+            "act.for_each_break" => {
+                let visit=ctx.next_visit(&node.id);
+                ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"stop current loop".into());
+                ctx.trace_node(&node,visit,"done","stop current loop",0);
+                ctx.log("info",Some(&node),"For Each Break reached".into());
+                return Ok(LoopMarker::Break)
+            }
+            _ => {}
+        }
+        let next=Box::pin(exec_node(&ctx,&node)).await;
+        for id in next.into_iter().rev(){pending.push(id)}
+    }
+    Ok(LoopMarker::None)
+}
+
+async fn execute_try_catch(ctx: Arc<Ctx>, node: &Node) -> Result<bool,String> {
+    let try_id=node.cfg.get("tryAutomationId").and_then(Value::as_str).unwrap_or("");
+    let catch_id=node.cfg.get("catchAutomationId").and_then(Value::as_str).unwrap_or("");
+    let error_var=node.cfg.get("errorVar").and_then(Value::as_str).unwrap_or("errorMessage");
+    let mut proxy=node.clone();
+    let try_inputs=node.cfg.get("tryInputMapJson").and_then(Value::as_str).unwrap_or("{}");
+    let try_outputs=node.cfg.get("tryOutputMapJson").and_then(Value::as_str).unwrap_or("{}");
+    let catch_inputs_raw=node.cfg.get("catchInputMapJson").and_then(Value::as_str).unwrap_or("{}");
+    let catch_inputs = if catch_inputs_raw.trim().is_empty() || catch_inputs_raw.trim()=="{}" {
+        json!({"errorMessage":error_var}).to_string()
+    } else { catch_inputs_raw.to_string() };
+    let catch_outputs=node.cfg.get("catchOutputMapJson").and_then(Value::as_str).unwrap_or("{}");
+    proxy.cfg=json!({"automationId":try_id,"inputMapJson":try_inputs,"outputMapJson":try_outputs,"onFail":"stop"});
+    match Box::pin(execute_subflow(ctx.clone(),&proxy)).await {
+        Ok(()) => Ok(false),
+        Err(try_error) => {
+            if ctx.token.is_cancelled(){return Err("cancelled".into())}
+            let detail:String=try_error.chars().take(2048).collect();
+            ctx.variables.lock().map_err(|e|e.to_string())?.insert(error_var.to_string(),Value::String(detail));
+            proxy.cfg=json!({"automationId":catch_id,"inputMapJson":catch_inputs,"outputMapJson":catch_outputs,"onFail":"stop"});
+            Box::pin(execute_subflow(ctx.clone(),&proxy)).await.map_err(|catch_error|format!("Try subflow failed ({try_error}); catch subflow also failed ({catch_error})"))?;
+            Ok(true)
+        }
+    }
+}
+
+struct CancelOnDrop(Option<CancellationToken>);
+impl Drop for CancelOnDrop { fn drop(&mut self) { if let Some(token)=self.0.take(){token.cancel();} } }
+
+async fn execute_subflow(ctx: Arc<Ctx>, node: &Node) -> Result<(),String> {
+    if ctx.depth >= 8 { return Err("Subflow nesting is limited to 8 levels".into()); }
+    let id=node.cfg.get("automationId").and_then(Value::as_str).unwrap_or("").trim();
+    if id.is_empty(){return Err("Subflow automation ID is required".into())}
+    if id==ctx.auto.id{return Err("An automation cannot directly call itself as a subflow".into())}
+    let child=ctx.eng.store.get(id).ok_or_else(||format!("Subflow automation '{id}' was not found"))?;
+    if let Err(errors)=validate_automation(&child){return Err(format!("Subflow is invalid: {}",errors.join("; ")))}
+    let mut values=HashMap::<String,Value>::new();
+    let input_map:Value=serde_json::from_str(node.cfg.get("inputMapJson").and_then(Value::as_str).unwrap_or("{}"))
+        .map_err(|e|format!("Input mapping JSON invalid: {e}"))?;
+    for (child_var,parent_var) in input_map.as_object().ok_or("Input map must be a JSON object")? {
+        let source=ctx.variables.lock().map_err(|e|e.to_string())?.get(parent_var.as_str().ok_or("Parent mapping must be a variable name")?).cloned()
+            .ok_or_else(||format!("Parent input variable '{parent_var}' is not set"))?;
+        values.insert(child_var.clone(),source);
+    }
+    let entries=entry_nodes(&child);
+    if entries.is_empty(){return Err("Subflow has no entry point".into())}
+    ctx.log("info",Some(node),format!("Calling subflow '{}' with {} entry path(s)",child.name,entries.len()));
+    let child_token=ctx.token.child_token();
+    let mut cancel_on_drop=CancelOnDrop(Some(child_token.clone()));
+    let child_ctx=Arc::new(Ctx{
+        eng:ctx.eng.clone(),auto:Arc::new(child),token:child_token.clone(),
+        visits:Default::default(),variables:Arc::new(Mutex::new(values)),rate:Default::default(),
+        handles:Default::default(),errors:AtomicU32::new(0),aborted:AtomicBool::new(false),
+        single:entries.len()==1,depth:ctx.depth+1,
+        trace:ctx.trace.clone(),trace_truncated:ctx.trace_truncated.clone(),
+    });
+    let tasks:Vec<_>=entries.into_iter().map(|entry|tokio::spawn(run_entry(child_ctx.clone(),entry))).collect();
+    for task in tasks { task.await.map_err(|e|format!("Subflow task failed: {e}"))?; }
+    if ctx.token.is_cancelled(){return Err("cancelled".into())}
+    let errors=child_ctx.errors.load(Ordering::SeqCst);
+    if child_ctx.aborted.load(Ordering::SeqCst)||errors>0{return Err(format!("Subflow '{}' failed with {errors} block error(s)",child_ctx.auto.name))}
+    let output_map:Value=serde_json::from_str(node.cfg.get("outputMapJson").and_then(Value::as_str).unwrap_or("{}"))
+        .map_err(|e|format!("Output mapping JSON invalid: {e}"))?;
+    for (child_var,parent_var) in output_map.as_object().ok_or("Output map must be a JSON object")? {
+        let parent_var=parent_var.as_str().ok_or("Output mapping must use variable names")?;
+        let value=child_ctx.variables.lock().map_err(|e|e.to_string())?.get(child_var).cloned()
+            .ok_or_else(||format!("Subflow output variable '{child_var}' was not set"))?;
+        ctx.variables.lock().map_err(|e|e.to_string())?.insert(parent_var.to_string(),value);
+    }
+    child_token.cancel();
+    cancel_on_drop.0 = None;
+    Ok(())
 }
 
 

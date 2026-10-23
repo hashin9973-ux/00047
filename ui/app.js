@@ -22,8 +22,12 @@ const fmtAgo = ts => {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`; return new Date(ts).toLocaleDateString();
 };
 
-const LABEL = { running: 'Running', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
-const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
+const LABEL = { running: 'Running', paused: 'Paused', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
+const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '', breakpoints: {} };
+try {
+  const saved = JSON.parse(localStorage.getItem('00047:breakpoints:v1') || '{}');
+  if (saved && typeof saved === 'object' && !Array.isArray(saved)) S.breakpoints = saved;
+} catch { /* breakpoints are optional editor metadata */ }
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
 const isRun = id => ['running', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
@@ -149,6 +153,30 @@ if (BLOCKS[n.kind]?.cat === 'act') {
 }
 $('#ed-undo').addEventListener('click', () => editor.doUndo());
 $('#ed-redo').addEventListener('click', () => editor.doRedo());
+
+async function runDebugCommand(command) {
+  const id = S.editId;
+  if (!id) { toast('Open an automation first', 'err'); return; }
+  try { await flushSaves(); await invoke(command, { id }); toast(command === 'debug_step' ? 'Stepped one block' : command === 'debug_pause' ? 'Pause requested' : 'Automation resumed'); }
+  catch (e) { toast('Debugger: ' + String(e?.message || e), 'err'); }
+}
+$('#ed-debug-pause').addEventListener('click', () => runDebugCommand('debug_pause'));
+$('#ed-debug-step').addEventListener('click', () => runDebugCommand('debug_step'));
+$('#ed-debug-resume').addEventListener('click', () => runDebugCommand('debug_resume'));
+$('#ed-breakpoints').addEventListener('click', async () => {
+  const id = S.editId, selected = [...(editor.sel || [])];
+  if (!id) { toast('Open an automation first', 'err'); return; }
+  if (!selected.length) { toast('Select one or more blocks to toggle breakpoints', 'err'); return; }
+  const set = new Set(S.breakpoints[id] || []);
+  for (const nodeId of selected) { if (set.has(nodeId)) set.delete(nodeId); else set.add(nodeId); }
+  S.breakpoints[id] = [...set];
+  editor.setBreakpoints(S.breakpoints[id]);
+  try {
+    localStorage.setItem('00047:breakpoints:v1', JSON.stringify(S.breakpoints));
+    await invoke('set_breakpoints', { automationId: id, nodeIds: S.breakpoints[id] });
+    toast('Breakpoints updated: ' + set.size);
+  } catch (e) { toast('Could not update breakpoints: ' + String(e?.message || e), 'err'); }
+});
 
 
 // ---------- log filter + CSV export ----------
@@ -277,8 +305,38 @@ function renderDock() {
     el.innerHTML = rows.join('') || '<div class="empty">No events yet. Start the automation to see live logs.</div>';
   } else if (S.tab === 'history') {
     el.innerHTML = S.hist.length
-      ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
+      ? S.hist.map(r => {
+        const outcomeClass = r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info';
+        const trace = Array.isArray(r.trace) ? r.trace : [];
+        const traceRows = trace.map(t => `<div class="trace-row"><span class="trace-state ${t.state === 'failed' ? 'error' : t.state === 'done' ? 'info' : 'warn'}">${esc(t.state || 'unknown')}</span><b>${esc(t.blockTitle || 'Block')}</b><span>${esc(t.nodeId || '')}</span><span>${fmtDur(Number(t.durationMs) || 0)} · visit ${Number(t.visit) || 0}</span><small>${esc(t.detail || '')}</small></div>`).join('');
+        const snapshotButton = r.snapshot ? `<button class="btn snapshot-run" data-snapshot-run="${r.id}">Copy snapshot</button>` : '';
+        const traceNotice = r.traceTruncated ? '<div class="mu">Trace reached its limit; older step records were discarded.</div>' : '';
+        return `<details class="history-entry ${outcomeClass}"><summary><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''} · ${trace.length} steps</span></summary><div class="history-trace">${traceNotice}${traceRows || '<div class="empty">No step trace was saved for this run.</div>'}${snapshotButton}</div></details>`;
+      }).join('')
       : '<div class="empty">No finished runs yet.</div>';
+    el.querySelectorAll('[data-snapshot-run]').forEach(btn => btn.addEventListener('click', async () => {
+      const runId = Number(btn.dataset.snapshotRun), autoId = S.editId;
+      const confirmCopy = await modal({ title: 'Recreate run snapshot?', body: 'This creates a separate editable automation with the saved graph configuration. It does not start the workflow. Review destructive actions before running it.', buttons: [['cancel','Cancel'],['copy','Create copy','primary']] });
+      if (confirmCopy !== 'copy' || !autoId) return;
+      try {
+        const copy = await invoke('recreate_run_snapshot', { id: autoId, runId });
+        S.autos = await invoke('list_automations');
+        toast('Snapshot copied. The workflow was not started.');
+        openEditor(copy.id);
+      } catch (e) { toast('Could not recreate snapshot: ' + String(e?.message || e), 'err'); }
+    }));
+  } else if (S.tab === 'variables') {
+    const id = S.editId;
+    el.innerHTML = '<div class="variable-inspector"><div class="mu">Loading workflow variables…</div></div>';
+    if (id) invoke('get_workflow_variables', { id }).then(snapshot => {
+      if (S.view !== 'editor' || S.tab !== 'variables' || S.editId !== id || !$('#dock-body')) return;
+      const root = $('#dock-body');
+      const vars = snapshot.variables || [];
+      root.innerHTML = `<div class="variable-inspector"><div class="variable-inspector-head"><span class="mu">${snapshot.running ? 'Live run variables' : 'Last-run variables'} · values with sensitive-looking names are redacted</span><button class="btn" id="variables-refresh">Refresh</button></div>${vars.length ? `<div class="variable-grid">${vars.map(v => `<div class="variable-row"><code>${esc(v.name)}</code><span class="variable-type">${esc(v.type)}</span><span class="variable-value">${esc(v.value)}</span></div>`).join('')}</div>` : '<div class="empty">No variables have been set for this automation yet.</div>'}</div>`;
+      $('#variables-refresh')?.addEventListener('click', renderDock);
+    }).catch(err => {
+      if (S.view === 'editor' && S.tab === 'variables' && S.editId === id) $('#dock-body').textContent = 'Could not load workflow variables: ' + String(err?.message || err);
+    });
   } else el.innerHTML = HELP;
 }
 
@@ -293,6 +351,7 @@ function openEditor(id) {
   S.editId = id; S.edSt = '';
   show('editor');
   editor.load(a);
+  editor.setBreakpoints(S.breakpoints[id] || []);
   $('#ed-name').value = a.name;
   $('#ed-auto').checked = !!a.autoStart;
   for (const [nid, st] of Object.entries(S.rt.nodes[id] || {})) editor.setNodeState(nid, st);
@@ -674,6 +733,55 @@ async function reloadBlocks() {
   try { await invoke('restart_app'); } catch (e) { toast('Restart failed: ' + e, 'err'); }
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
+$('#btn-secrets').addEventListener('click', () => { $('#pop-settings').hidden = true; openSecretsManager(); });
+
+async function openSecretsManager() {
+  const host = $('#secret-manager');
+  host.innerHTML = `<div class="mbox glass wide secret-box">
+    <h3>Secrets vault</h3>
+    <p class="mu">Named secrets are encrypted for the current Windows user with DPAPI. Store credentials here, then reference them as {{secret:name}} in supported text fields. Values are never listed or written to workflow files.</p>
+    <div class="secret-form">
+      <label>Secret name<input id="secret-name" maxlength="64" placeholder="service-token" autocomplete="off" spellcheck="false"></label>
+      <label>Secret value<input id="secret-value" type="password" maxlength="32768" placeholder="Paste secret value" autocomplete="new-password"></label>
+      <button class="btn primary" id="secret-save">Save encrypted secret</button>
+    </div>
+    <div class="secret-list-head"><strong>Saved names</strong><span class="mu">Values are write-only in this panel</span></div>
+    <div id="secret-list" class="secret-list"></div>
+    <div class="mbtn"><button class="btn" id="secret-close">Close</button></div>
+  </div>`;
+  host.hidden = false;
+  host.addEventListener('click', e => e.stopPropagation(), { once: true });
+  const close = () => { host.hidden = true; host.innerHTML = ''; };
+  $('#secret-close').addEventListener('click', close);
+  const refresh = async () => {
+    const list = $('#secret-list', host);
+    try {
+      const names = await invoke('vault_list_secrets');
+      list.innerHTML = names.length ? names.map(n => `<div class="secret-item"><code>${esc(n)}</code><button class="btn" data-secret-delete="${esc(n)}">Delete</button></div>`).join('') : '<div class="empty">No saved secrets.</div>';
+      list.querySelectorAll('[data-secret-delete]').forEach(btn => btn.addEventListener('click', async () => {
+        const name = btn.dataset.secretDelete;
+        if (!confirm('Delete the saved secret "' + name + '"?')) return;
+        try { await invoke('vault_delete_secret', { name }); toast('Secret deleted'); await refresh(); }
+        catch (e) { toast('Delete failed: ' + String(e?.message || e), 'err'); }
+      }));
+    } catch (e) { list.textContent = 'Could not list secrets: ' + String(e?.message || e); }
+  };
+  $('#secret-save').addEventListener('click', async () => {
+    const name = $('#secret-name', host).value.trim();
+    const value = $('#secret-value', host).value;
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) { toast('Use a safe secret name (letters, digits, _ or -)', 'err'); return; }
+    if (!value) { toast('Enter a secret value', 'err'); return; }
+    try {
+      await invoke('vault_set_secret', { name, value });
+      $('#secret-value', host).value = '';
+      toast('Secret stored encrypted for this Windows user');
+      await refresh();
+    } catch (e) { toast('Could not save secret: ' + String(e?.message || e), 'err'); }
+  });
+  host.addEventListener('click', e => { if (e.target === host) close(); });
+  await refresh();
+}
+
 
 function startWindhawkGlassBridge() {
   const status = $('#glass-refresh-status');

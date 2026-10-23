@@ -11,6 +11,7 @@ mod logstore;
 mod model;
 mod store;
 mod sys;
+mod vault;
 
 use engine::{Engine, Runtime};
 use model::{Automation, LogEntry, RunRecord};
@@ -174,6 +175,22 @@ fn update_windhawk_blur(app: AppHandle, surfaces: Vec<GlassSurface>) -> Result<(
 }
 
 #[tauri::command]
+fn vault_list_secrets() -> Result<Vec<String>, String> {
+    vault::list_secrets()
+}
+
+#[tauri::command]
+async fn vault_set_secret(name: String, value: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || vault::set_secret(&name, &value))
+        .await.map_err(|e| format!("Secret vault worker failed: {e}"))?
+}
+
+#[tauri::command]
+fn vault_delete_secret(name: String) -> Result<(), String> {
+    vault::delete_secret(&name)
+}
+
+#[tauri::command]
 fn list_automations(eng: State<'_, Arc<Engine>>) -> Vec<Automation> {
     eng.store.all()
 }
@@ -191,6 +208,26 @@ async fn delete_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<()
     let e = eng.inner().clone();
     e.stop_and_wait(&id).await?;
     e.remove(&id)
+}
+
+#[tauri::command]
+fn set_breakpoints(eng: State<'_, Arc<Engine>>, automation_id: String, node_ids: Vec<String>) -> Result<(), String> {
+    eng.set_breakpoints(&automation_id, node_ids)
+}
+
+#[tauri::command]
+fn debug_pause(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.debug_pause(&id)
+}
+
+#[tauri::command]
+fn debug_resume(eng: State<'_, Arc<Engine>>, id: String) {
+    eng.debug_resume(&id);
+}
+
+#[tauri::command]
+fn debug_step(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.debug_step(&id)
 }
 
 #[tauri::command]
@@ -224,6 +261,16 @@ fn get_logs(eng: State<'_, Arc<Engine>>, since: Option<u64>, auto_id: Option<Str
 #[tauri::command]
 fn get_history(eng: State<'_, Arc<Engine>>, id: String) -> Vec<RunRecord> {
     eng.history(&id)
+}
+
+#[tauri::command]
+fn get_workflow_variables(eng: State<'_, Arc<Engine>>, id: String) -> serde_json::Value {
+    eng.workflow_variables(&id)
+}
+
+#[tauri::command]
+fn recreate_run_snapshot(eng: State<'_, Arc<Engine>>, id: String, run_id: u64) -> Result<Automation, String> {
+    eng.recreate_run_snapshot(&id, run_id)
 }
 
 #[tauri::command]
@@ -616,15 +663,24 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             update_windhawk_blur,
+            vault_list_secrets,
+            vault_set_secret,
+            vault_delete_secret,
             list_automations,
             save_automation,
             delete_automation,
             start_automation,
+            set_breakpoints,
+            debug_pause,
+            debug_resume,
+            debug_step,
             stop_automation,
             restart_automation,
             get_runtime,
             get_logs,
             get_history,
+            get_workflow_variables,
+            recreate_run_snapshot,
             clear_logs,
             app_stats,
             get_autostart,
@@ -665,6 +721,7 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            vault::init(dir.join("secrets")).map_err(std::io::Error::other)?;
             custom::init(dir.join("blocks"));
             let _ = std::fs::create_dir_all(dir.join("blocks"));
             app.manage(extensions::ExtensionManager::new(dir.join("extensions")));

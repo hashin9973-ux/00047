@@ -67,6 +67,12 @@ pub struct NodeState {
     pub state: String,
     pub progress: Option<f64>,
     pub detail: String,
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -84,6 +90,18 @@ impl Default for AutoRuntime {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeTrace {
+    pub automation_id: String,
+    pub node_id: String,
+    pub block_title: String,
+    pub state: String,
+    pub detail: String,
+    pub visit: u64,
+    pub duration_ms: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRecord {
@@ -92,4 +110,63 @@ pub struct RunRecord {
     pub ended_at: u64,
     pub outcome: String,
     pub errors: u32,
+    /// Bounded graph snapshot for inspection/recreation only. Older history records omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Automation>,
+    /// Bounded per-block records; defaults empty for older history files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trace: Vec<NodeTrace>,
+    /// True when the trace cap was reached and older step records were discarded.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub trace_truncated: bool,
+}
+
+
+#[cfg(test)]
+mod run_trace_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn old_history_records_load_without_trace_or_snapshot() {
+        let record: RunRecord = serde_json::from_value(json!({
+            "id": 12,
+            "startedAt": 100,
+            "endedAt": 150,
+            "outcome": "completed",
+            "errors": 0
+        })).expect("legacy run history should remain readable");
+        assert!(record.snapshot.is_none());
+        assert!(record.trace.is_empty());
+        assert!(!record.trace_truncated);
+    }
+
+    #[test]
+    fn trace_fields_round_trip_in_camel_case() {
+        let record = RunRecord {
+            id: 2,
+            started_at: 10,
+            ended_at: 21,
+            outcome: "failed".into(),
+            errors: 1,
+            snapshot: None,
+            trace: vec![NodeTrace {
+                automation_id: "auto-1".into(),
+                node_id: "node-2".into(),
+                block_title: "Run Command".into(),
+                state: "failed".into(),
+                detail: "exit code 1".into(),
+                visit: 3,
+                duration_ms: 11,
+            }],
+            trace_truncated: true,
+        };
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["trace"][0]["nodeId"], "node-2");
+        assert_eq!(value["trace"][0]["durationMs"], 11);
+        assert_eq!(value["traceTruncated"], true);
+        let decoded: RunRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.trace[0].visit, 3);
+        assert!(decoded.trace_truncated);
+    }
 }

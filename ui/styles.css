@@ -373,3 +373,58 @@ textarea.glass.liquidglass-variant {
 .native-settings-actions{display:flex;gap:8px;flex-wrap:wrap}
 .native-log-panel pre{box-sizing:border-box;max-height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:10px;border-radius:8px;background:var(--bg);font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
 @media(max-width:760px){.native-setting-field{grid-template-columns:1fr;gap:6px}}
+
+
+/* Workflow debugger and protected secret manager */
+.secret-box{width:min(700px,92vw);max-height:84vh;overflow:auto;box-sizing:border-box}
+.secret-form{display:grid;grid-template-columns:minmax(120px,.8fr) minmax(180px,1.4fr) auto;align-items:end;gap:10px;margin:16px 0}
+.secret-form label{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--mu)}
+.secret-form input{min-width:0;box-sizing:border-box;width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--tx);font:inherit}
+.secret-form input:focus{outline:1px solid var(--ac)}
+.secret-list-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:18px 0 8px}
+.secret-list{display:flex;flex-direction:column;gap:6px;max-height:32vh;overflow:auto}
+.secret-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:9px}
+.secret-item code{overflow-wrap:anywhere}
+.secret-box>.mbtn{margin-top:18px}
+#ed-debug-pause,#ed-debug-step,#ed-debug-resume,#ed-breakpoints{white-space:nowrap}
+@media(max-width:1050px){.secret-form{grid-template-columns:1fr}.secret-form .btn{justify-self:start}}
+@media(max-width:760px){#ed-debug-pause,#ed-debug-step,#ed-debug-resume,#ed-breakpoints{display:none}}
+
+.node.breakpoint{box-shadow:0 0 0 2px #ff647c,0 0 16px rgba(255,100,124,.26)}
+.node.breakpoint:before{content:"";position:absolute;right:7px;top:7px;width:8px;height:8px;border-radius:50%;background:#ff647c;box-shadow:0 0 0 2px rgba(255,100,124,.2)}
+.variable-inspector{display:flex;flex-direction:column;gap:7px}
+.variable-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px}
+.variable-grid{display:grid;grid-template-columns:minmax(80px,1fr) 90px minmax(160px,2fr);gap:4px}
+.variable-row{display:contents}
+.variable-row>code,.variable-row>.variable-type,.variable-row>.variable-value{min-width:0;padding:5px 7px;border-radius:5px;background:rgba(255,255,255,.035);font-size:11px;overflow-wrap:anywhere}
+.variable-type{color:var(--mu)}
+.variable-value{white-space:pre-wrap;max-height:70px;overflow:auto}
+.snapshot-run{font-size:10px;padding:3px 7px;flex:none}
+
+
+/* Run trace and replayable execution history */
+.history-entry{display:block;border-bottom:1px solid var(--bd);font:12px/1.5 Consolas,"Cascadia Mono",monospace}
+.history-entry>summary{display:grid;grid-template-columns:90px 72px 92px minmax(110px,1fr);gap:9px;align-items:center;padding:8px;cursor:pointer;list-style:none}
+.history-entry>summary::-webkit-details-marker{display:none}
+.history-entry>summary::before{content:"▸";color:var(--mu);grid-column:1;grid-row:1;width:10px}
+.history-entry[open]>summary::before{content:"▾"}
+.history-entry>summary .t,.history-entry>summary .bl{color:var(--mu)}
+.history-entry>summary .lv{text-transform:uppercase;font-size:10px}
+.history-entry.error>summary .lv{color:var(--er)}
+.history-entry.warn>summary .lv{color:var(--wa)}
+.history-entry.info>summary .lv{color:var(--bl)}
+.history-trace{padding:6px 8px 10px 28px;border-top:1px solid var(--bd);background:rgba(0,0,0,.07)}
+.history-trace>.mu{padding:4px 0;color:var(--mu)}
+.trace-row{display:grid;grid-template-columns:76px minmax(130px,1fr) 110px 120px;gap:8px;align-items:baseline;padding:6px 0;border-bottom:1px solid var(--bd)}
+.trace-row small{grid-column:2/-1;color:var(--mu);white-space:pre-wrap;overflow-wrap:anywhere}
+.trace-state{text-transform:uppercase;font-size:10px;letter-spacing:.04em}
+.trace-state.error{color:var(--er)}
+.trace-state.info{color:var(--bl)}
+.trace-state.warn{color:var(--wa)}
+.history-trace>.snapshot-run{margin-top:10px}
+@media(max-width:760px){
+  .history-entry>summary{grid-template-columns:1fr 60px;gap:4px}
+  .history-entry>summary .t,.history-entry>summary .bl,.history-entry>summary .ms{grid-column:1}
+  .trace-row{grid-template-columns:68px minmax(100px,1fr) 90px}
+  .trace-row small{grid-column:2/-1}
+}

@@ -14,6 +14,9 @@ use tokio_util::sync::CancellationToken;
 pub(super) mod extra;
 mod extra_more;
 mod advanced;
+mod processing;
+mod ui_automation;
+mod triggers;
 
 #[cfg(windows)]
 const MAX_COMMAND_OUTPUT_BYTES: usize = 16 * 1024;
@@ -115,6 +118,16 @@ impl NodeCx {
                 return Ok(output);
             };
             let name = &after[..end];
+            if let Some(secret_name) = name.strip_prefix("secret:") {
+                if secret_name.is_empty() || !secret_name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+                    return Err("Secret references must use {{secret:name}} with a safe secret name".into());
+                }
+                let secret = crate::vault::get_secret(secret_name)
+                    .map_err(|e| format!("Could not resolve secret '{secret_name}': {e}"))?;
+                output.push_str(&secret);
+                rest = &after[end + 2..];
+                continue;
+            }
             if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.') {
                 output.push_str("{{");
                 rest = after;
@@ -903,6 +916,9 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         extra::register_into(&mut m);
         extra_more::register_into(&mut m);
         advanced::register_into(&mut m);
+        processing::register_into(&mut m);
+        ui_automation::register_into(&mut m);
+        triggers::register_into(&mut m);
         crate::custom::load_into(&mut m);
         m
     })
