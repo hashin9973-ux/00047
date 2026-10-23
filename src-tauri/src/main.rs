@@ -13,7 +13,7 @@ mod store;
 mod sys;
 mod secrets;
 
-use engine::{Engine, Runtime};
+use engine::{Engine, Runtime, VariableSnapshot};
 use model::{Automation, LogEntry, RunRecord};
 use std::{sync::{Arc, Mutex}, time::Duration};
 use store::Store;
@@ -245,6 +245,11 @@ fn get_logs(eng: State<'_, Arc<Engine>>, since: Option<u64>, auto_id: Option<Str
 #[tauri::command]
 fn get_history(eng: State<'_, Arc<Engine>>, id: String) -> Vec<RunRecord> {
     eng.history(&id)
+}
+
+#[tauri::command]
+fn inspect_workflow_variables(eng: State<'_, Arc<Engine>>, id: String) -> Vec<VariableSnapshot> {
+    eng.inspect_variables(&id)
 }
 
 #[tauri::command]
@@ -658,6 +663,7 @@ fn main() {
             get_runtime,
             get_logs,
             get_history,
+            inspect_workflow_variables,
             replay_run,
             clear_logs,
             app_stats,
