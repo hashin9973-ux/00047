@@ -566,6 +566,10 @@ fn try_catch_spec()->Value {
     spec_action("Try / Catch Subflows","git-branch","Runs one saved automation and invokes a recovery subflow if it fails.",vec![
         json!({"key":"tryAutomationId","label":"Try subflow automation ID","type":"text","required":true,"maxLen":128}),
         json!({"key":"catchAutomationId","label":"Catch subflow automation ID","type":"text","required":true,"maxLen":128}),
+        json!({"key":"tryInputMapJson","label":"Try inputs JSON (child variable → parent variable)","type":"textarea","rows":2,"default":"{}","maxLen":8000}),
+        json!({"key":"tryOutputMapJson","label":"Try outputs JSON (child variable → parent variable)","type":"textarea","rows":2,"default":"{}","maxLen":8000}),
+        json!({"key":"catchInputMapJson","label":"Catch inputs JSON (child variable → parent variable)","type":"textarea","rows":2,"default":"{\"errorMessage\":\"errorMessage\"}","maxLen":8000}),
+        json!({"key":"catchOutputMapJson","label":"Catch outputs JSON (child variable → parent variable)","type":"textarea","rows":2,"default":"{}","maxLen":8000}),
         json!({"key":"errorVar","label":"Save error message as variable","type":"text","default":"errorMessage","required":true,"maxLen":64}),
         json!({"preset":"timeout"}),
         json!({"preset":"onFail"}),
@@ -577,11 +581,18 @@ impl Block for TryCatch {
     fn supports_timeout(&self)->bool{true}
     fn spec(&self)->Option<Value>{Some(try_catch_spec())}
     fn validate(&self,c:&Value)->Result<(),String>{
-        spec::validate(&try_catch_spec(),c)?;no_nul(c,&["tryAutomationId","catchAutomationId","errorVar"])?;
+        spec::validate(&try_catch_spec(),c)?;no_nul(c,&["tryAutomationId","catchAutomationId","errorVar","tryInputMapJson","tryOutputMapJson","catchInputMapJson","catchOutputMapJson"])?;
         let a=txt(c,"tryAutomationId");let b=txt(c,"catchAutomationId");
         if a.is_empty()||b.is_empty(){return Err("Try and catch subflow IDs are required".into())}
         if a==b{return Err("Try and catch must reference different automations".into())}
         if !valid_name(&txt(c,"errorVar")){return Err("Error variable name is invalid".into())}
+        for key in ["tryInputMapJson","tryOutputMapJson","catchInputMapJson","catchOutputMapJson"] {
+            let value:Value=serde_json::from_str(&raw(c,key)).map_err(|e|format!("{key} must be valid JSON: {e}"))?;
+            if !value.is_object(){return Err(format!("{key} must be a JSON object"))}
+            for (child,parent) in value.as_object().unwrap() {
+                if !valid_name(child)||!parent.as_str().is_some_and(valid_name){return Err(format!("{key} must map valid variable names to variable names"))}
+            }
+        }
         Ok(())
     }
     async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Err("Try / Catch is executed by the workflow engine.".into())}
