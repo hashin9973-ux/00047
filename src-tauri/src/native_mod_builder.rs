@@ -588,8 +588,9 @@ WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) {
         let module = safe_module_relative_path("bin/test.dll").unwrap();
         create_package(&package, b"{}", &module, &dll).unwrap();
         let mut archive = zip::ZipArchive::new(File::open(&package).unwrap()).unwrap();
-        let names: Vec<String> = archive.file_names().map(str::to_owned).collect();
-        assert_eq!(names, vec!["manifest.json", "bin/test.dll"]);
+        let mut names: Vec<String> = archive.file_names().map(str::to_owned).collect();
+        names.sort();
+        assert_eq!(names, vec!["bin/test.dll", "manifest.json"]);
         assert!(archive.by_name("bin/test.dll").is_ok());
 
         fs::remove_dir_all(root).unwrap();
