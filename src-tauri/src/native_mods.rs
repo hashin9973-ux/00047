@@ -310,11 +310,10 @@ impl NativeModManager {
                     state.enabled.remove(id);
                     state.pending_signature_unloads.insert(id.clone());
                 }
-            } else {
-                // Turning the policy off is an explicit opt-out from cleanup
-                // retries. Persisted enabled intent remains disabled.
-                state.pending_signature_unloads.clear();
             }
+            // Pending unload is a runtime-safety invariant, not a signature
+            // policy choice. Keep it persisted even if enforcement is switched
+            // off; the next background scan must still finish safe cleanup.
             if let Err(error) = self.persist_state(&state) {
                 *state = previous;
                 return Err(error);
@@ -442,16 +441,14 @@ impl NativeModManager {
     }
 
     fn retry_pending_signature_unloads(&self) {
-        if !self.signature_policy_enabled() {
-            return;
-        }
+        // A pending unload is required for safe lifecycle recovery even when
+        // the user has turned signature enforcement back off.
         let pending = self.pending_signature_unloads_snapshot();
         for id in pending {
             let Ok(_transition) = self.lifecycle_gate.lock() else {
                 return;
             };
-            if !self.signature_policy_enabled()
-                || !self.pending_signature_unloads_snapshot().contains(&id) {
+            if !self.pending_signature_unloads_snapshot().contains(&id) {
                 continue;
             }
 
@@ -2839,6 +2836,28 @@ mod tests {
         assert_eq!(reloaded.enabled, HashSet::from(["com.example.second".to_string()]));
         assert!(!fs::read_dir(&root).unwrap().filter_map(Result::ok)
             .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp")));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn disabling_signature_policy_does_not_forget_pending_safe_unload() {
+        let root = state_test_root("pending-cleanup-policy-off");
+        let manager = NativeModManager::new(root.clone());
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.require_trusted_signature = true;
+            state.pending_signature_unloads.insert("com.example.pending".into());
+            manager.persist_state(&state).unwrap();
+        }
+
+        manager.set_require_trusted_signature(false).unwrap();
+
+        let state = load_persisted_state(&root.join("enabled.json"));
+        assert!(!state.require_trusted_signature);
+        assert!(!state.enabled.contains("com.example.pending"));
+        assert!(state.pending_signature_unloads.contains("com.example.pending"));
+        assert!(manager.pending_signature_unloads_snapshot().contains("com.example.pending"));
 
         fs::remove_dir_all(root).unwrap();
     }
