@@ -97,3 +97,28 @@ Use `{{variable_name}}` placeholders in supported text settings, including the R
 ### Wait until satisfied, polling, and timeouts
 
 Where conditions represent a state that can change over time, they support **Check once**, **Wait until satisfied**, and **Wait until state changes** with poll interval, optional stable-duration debounce, and timeout. This applies to network, CPU, disk, battery, file/folder, active-window, device-presence, lock/idle, application-responsiveness, visible-window-count, process-audio, process-count, service-state, clipboard, environment-variable, file-age, directory-count, file-watcher, file-content, HTTP-status, and window-state conditions. The legacy RAM Usage and Process Running conditions, plus Time Window, also expose wait and state-change modes with real polling, stable-duration debounce, and timeout handling. Interval remains a time gate rather than a polled state condition. For existing automations that predate the Behavior field, an absent setting defaults to **Check once** to preserve their previous semantics. Interval remains a time gate rather than a polled state condition.
+
+
+## UI automation and data-processing blocks
+
+The reliability follow-up adds UI Automation-backed blocks and typed data transformations.
+
+### UI Automation
+
+- **Wait for UI Element** checks whether a named control or Automation ID exists, is missing, or exposes a matching value. It supports Check once, Wait until satisfied, Wait for state change, polling, stable duration, and timeout.
+- **Find UI Element** queries a scoped application window and can store the matching element's name, value, Automation ID, control type, enabled status, and bounds as a JSON workflow variable.
+- **Click UI Element** invokes or selects the matched control through UI Automation.
+- **Set UI Element Value** sets controls exposing ValuePattern; it does not simulate keystrokes.
+- **Select UI Item** selects controls exposing SelectionItemPattern.
+
+UI Automation requires an interactive Windows desktop. Some elevated applications, browser canvas surfaces, remote sessions, and custom-drawn controls may not expose accessible UI Automation patterns. Scope searches to a process name or window title and a control name, Automation ID, or control type. Use keyboard/mouse blocks when UI Automation is unavailable.
+
+### Data processing
+
+- **Extract JSON Value** parses JSON, traverses dot-separated object properties and numeric array indices, and stores the selected value with its JSON type preserved.
+- **Regex Extract** evaluates a .NET regular expression with a two-second match timeout and stores a numbered capture group. A missing match returns Not Satisfied; invalid expressions and timeouts are errors.
+- **CSV to JSON** parses quoted CSV, including escaped quotes and embedded newlines, into an array of objects. Empty/duplicate headers and inconsistent column counts are rejected.
+- **JSON to CSV** converts an array of objects to CSV text in a workflow variable using the sorted union of property names as headers.
+- **Transform Value** trims, changes case, performs literal replacement, splits to an array, parses JSON, applies numeric arithmetic/rounding, or stores the current Unix timestamp.
+
+These data blocks process configured or variable-expanded text within bounded field sizes. They store values in per-run variables rather than logging sensitive data. Treat variables derived from clipboard content, HTTP responses, or UI text as potentially sensitive.
