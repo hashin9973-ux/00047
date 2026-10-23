@@ -861,6 +861,9 @@ impl NativeModManager {
     }
 
     fn disable_inner(&self, id: &str) -> Result<String, String> {
+        if !valid_id(id) {
+            return Err("Invalid native mod ID.".into());
+        }
         // Persist disabled intent before touching package files. A damaged or
         // temporarily inaccessible manifest must not keep the background
         // reconciler repeatedly trying to load a mod the user disabled.
@@ -3025,6 +3028,7 @@ mod tests {
         let root = state_test_root("pending-safe-unload");
         let manager = NativeModManager::new(root.clone());
 
+        assert!(manager.mark_pending_safe_unload("../invalid").is_err());
         manager.mark_pending_safe_unload("com.example.pending").unwrap();
         assert!(manager.pending_safe_unloads_snapshot().contains("com.example.pending"));
         assert!(load_persisted_state(&root.join("enabled.json"))
