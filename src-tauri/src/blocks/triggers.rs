@@ -273,7 +273,7 @@ impl Block for WindowsEvent{
   let start=SystemTime::now().duration_since(UNIX_EPOCH).map(|d|d.as_secs()).unwrap_or(0).to_string();
   let script=format!(r#"$ErrorActionPreference='Stop';$log={log};$ids={ids};$provider={provider};$needle={message};$start=[DateTimeOffset]::FromUnixTimeSeconds([long]({start})).LocalDateTime;
 $items=@(Get-WinEvent -FilterHashtable @{{LogName=$log;StartTime=$start}} -MaxEvents 100 -ErrorAction SilentlyContinue);
-$match=@($items|Where-Object{{($ids -eq '' -or $ids.Split(',') -contains [string]$_.Id) -and ($provider -eq '' -or $_.ProviderName -like ('*'+$provider+'*')) -and ($needle -eq '' -or $_.Message -like ('*'+$needle+'*'))}}|Select-Object -First 1);
+$match=@($items|Where-Object{{($ids -eq '' -or $ids.Split(',') -contains [string]$_.Id) -and ($provider -eq '' -or $_.ProviderName.IndexOf($provider,[StringComparison]::OrdinalIgnoreCase) -ge 0) -and ($needle -eq '' -or $_.Message.IndexOf($needle,[StringComparison]::OrdinalIgnoreCase) -ge 0)}}|Select-Object -First 1);
 if($match.Count -gt 0){{[pscustomobject]@{{matched=$true;id=$match[0].Id;provider=$match[0].ProviderName;time=$match[0].TimeCreated.ToString('o')}}|ConvertTo-Json -Compress}}else{{[pscustomobject]@{{matched=$false;id=0;provider='';time=''}}|ConvertTo-Json -Compress}}"#,
  log=log,ids=extra::ps_quote(&idlist),provider=provider,message=message,start=start);
   let(behavior,poll,stable,timeout)=extra::wait_settings(&cx.cfg)?;
