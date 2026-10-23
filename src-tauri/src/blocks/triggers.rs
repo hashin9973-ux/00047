@@ -223,7 +223,7 @@ impl Block for ProcessEvent{
  }
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
   self.validate(&cx.cfg)?;
-  let name=text(&cx.cfg,"processName");let event=text(&cx.cfg,"event");
+  let name=cx.expand_template(&text(&cx.cfg,"processName"))?;let event=text(&cx.cfg,"event");
   let class=if event=="started"{"Win32_ProcessStartTrace"}else{"Win32_ProcessStopTrace"};
   let query=format!("SELECT * FROM {class}");
   let script=format!(r#"$ErrorActionPreference='Stop';$query={};$needle={};$src='00047-'+[guid]::NewGuid().ToString('N');
@@ -267,8 +267,8 @@ impl Block for WindowsEvent{
   let log=extra::ps_quote(&text(&cx.cfg,"logName"));
   let ids:Vec<String>=text(&cx.cfg,"eventIds").split(',').map(str::trim).filter(|s|!s.is_empty()).map(|s|s.parse::<u32>().map(|x|x.to_string()).map_err(|_|"Invalid event ID".to_string())).collect::<Result<_,_>>()?;
   let idlist=ids.join(",");
-  let provider=extra::ps_quote(&text(&cx.cfg,"provider"));
-  let message=extra::ps_quote(&text(&cx.cfg,"messageContains"));
+  let provider=extra::ps_quote(&cx.expand_template(&raw(&cx.cfg,"provider"))?);
+  let message=extra::ps_quote(&cx.expand_template(&raw(&cx.cfg,"messageContains"))?);
   use std::time::{SystemTime,UNIX_EPOCH};
   let start=SystemTime::now().duration_since(UNIX_EPOCH).map(|d|d.as_secs()).unwrap_or(0).to_string();
   let script=format!(r#"$ErrorActionPreference='Stop';$log={log};$ids={ids};$provider={provider};$needle={message};$start=[DateTimeOffset]::FromUnixTimeSeconds([long]({start})).LocalDateTime;
