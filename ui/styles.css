@@ -94,6 +94,23 @@ main{flex:1;min-height:0;padding:12px;position:relative}
 .lr.info .lv{color:var(--bl)}.lr.warn .lv{color:var(--wa)}.lr.error .lv{color:var(--er)}.lr.error .ms{color:#ffb3bf}
 .lr .ms{white-space:pre-wrap;word-break:break-word}
 .dock-b .lr{grid-template-columns:90px 50px 130px 1fr}.dock-b .lr .an{display:none}
+.history-entry{border-bottom:1px solid rgba(255,255,255,.07);font:12px/1.5 Consolas,"Cascadia Mono",monospace}
+.history-entry>summary{display:grid;grid-template-columns:90px 70px 100px 1fr;gap:10px;padding:7px 8px;cursor:pointer;list-style:none}
+.history-entry>summary::-webkit-details-marker{display:none}
+.history-entry>summary::before{content:"▸";color:var(--mu)}
+.history-entry[open]>summary::before{content:"▾"}
+.history-entry summary .t,.history-entry summary .bl{color:var(--mu)}
+.history-entry .lv{text-transform:uppercase;font-size:10px}
+.history-entry.error .lv{color:var(--er)}.history-entry.warn .lv{color:var(--wa)}.history-entry.info .lv{color:var(--bl)}
+.history-trace{padding:0 8px 8px 28px;border-top:1px solid rgba(255,255,255,.04)}
+.trace-row{display:grid;grid-template-columns:76px minmax(130px,1fr) 110px 120px;gap:8px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);align-items:baseline}
+.trace-row small{grid-column:2/-1;color:var(--mu);white-space:pre-wrap;overflow-wrap:anywhere}
+.trace-state{font-size:10px;text-transform:uppercase}.trace-state.error{color:var(--er)}.trace-state.info{color:var(--bl)}.trace-state.warn{color:var(--wa)}
+.variable-grid{display:grid;grid-template-columns:1fr;gap:5px}
+.variable-row{display:grid;grid-template-columns:minmax(120px,180px) 70px minmax(0,1fr) 72px;gap:10px;align-items:start;padding:7px 8px;border-bottom:1px solid rgba(255,255,255,.05);font:12px/1.5 Consolas,"Cascadia Mono",monospace}
+.variable-row code{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--tx);max-height:90px;overflow:auto}
+.variable-row span,.variable-row small{color:var(--mu)}
+@media(max-width:800px){.trace-row{grid-template-columns:68px minmax(100px,1fr) 90px}.trace-row small{grid-column:2/-1}.variable-row{grid-template-columns:minmax(90px,120px) 60px minmax(0,1fr)}.variable-row small{grid-column:3}}
 
 /* editor shell */
 .ed-bar{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:14px;margin-bottom:10px;flex:none}
