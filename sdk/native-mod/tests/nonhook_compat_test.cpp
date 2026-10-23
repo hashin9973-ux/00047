@@ -92,7 +92,11 @@ bool StartLocalHttpResponse(std::string response, unsigned short& port, SOCKET& 
 bool TestWindhawkLifecycleAdapter(const std::filesystem::path& directory) {
     const auto dllPath = directory / L"00047_windhawk_nonhook_adapter_smoke.dll";
     HMODULE module = LoadLibraryW(dllPath.c_str());
-    if (!module) return false;
+    if (!module) {
+        std::wcerr << L"Lifecycle adapter test: LoadLibrary failed (" << GetLastError()
+                   << L"): " << dllPath.wstring() << L"\n";
+        return false;
+    }
 
     using GetApiVersion = std::uint32_t (WINAPI*)();
     using Initialize = BOOL (WINAPI*)();
@@ -112,27 +116,51 @@ bool TestWindhawkLifecycleAdapter(const std::filesystem::path& directory) {
         GetProcAddress(module, "AdapterSmokeSetInitAllowed"));
 
     if (!getApiVersion || !initialize || !shutdown || !getLifecycleStep || !setInitAllowed) {
+        std::wcerr << L"Lifecycle adapter test: required export missing. Error="
+                   << GetLastError() << L"\n";
         FreeLibrary(module);
         return false;
     }
     if (getApiVersion() != 1u || getLifecycleStep() != 0) {
+        std::wcerr << L"Lifecycle adapter test: bad initial state; version="
+                   << getApiVersion() << L", step=" << getLifecycleStep() << L"\n";
         FreeLibrary(module);
         return false;
     }
 
-    // A failed init must not invoke after-init or run uninit callbacks on shutdown.
     setInitAllowed(FALSE);
-    bool ok = initialize() == FALSE && getLifecycleStep() == 0;
+    const BOOL failedInit = initialize();
+    const int failedInitStep = getLifecycleStep();
     shutdown();
-    ok = ok && getLifecycleStep() == 0;
+    const int afterFailedShutdown = getLifecycleStep();
+    if (failedInit != FALSE || failedInitStep != 0 || afterFailedShutdown != 0) {
+        std::wcerr << L"Lifecycle adapter test: rejected init invariant failed; init="
+                   << failedInit << L", stepAfterInit=" << failedInitStep
+                   << L", stepAfterShutdown=" << afterFailedShutdown << L"\n";
+        FreeLibrary(module);
+        return false;
+    }
 
-    // Successful init runs its two startup callbacks once.
     setInitAllowed(TRUE);
-    ok = ok && initialize() != FALSE && getLifecycleStep() == 2;
+    const BOOL successfulInit = initialize();
+    const int afterInit = getLifecycleStep();
+    if (successfulInit == FALSE || afterInit != 2) {
+        std::wcerr << L"Lifecycle adapter test: successful init invariant failed; init="
+                   << successfulInit << L", step=" << afterInit << L"\n";
+        shutdown();
+        FreeLibrary(module);
+        return false;
+    }
+
     shutdown();
-    ok = ok && getLifecycleStep() == 4;
-    shutdown(); // repeated shutdown is ignored
-    ok = ok && getLifecycleStep() == 4;
+    const int afterShutdown = getLifecycleStep();
+    shutdown();
+    const int afterRepeatedShutdown = getLifecycleStep();
+    const bool ok = afterShutdown == 4 && afterRepeatedShutdown == 4;
+    if (!ok) {
+        std::wcerr << L"Lifecycle adapter test: shutdown invariant failed; step="
+                   << afterShutdown << L", afterRepeated=" << afterRepeatedShutdown << L"\n";
+    }
 
     FreeLibrary(module);
     return ok;
