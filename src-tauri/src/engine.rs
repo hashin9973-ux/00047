@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
-use tokio::task::JoinHandle;
+use tokio::{sync::Semaphore, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 pub fn now_ms() -> u64 {
@@ -29,6 +29,7 @@ const HIST_CAP: usize = 50;
 struct RunHandle {
     token: CancellationToken,
     run_id: u64,
+    step_gate: Arc<Semaphore>,
 }
 
 #[derive(Serialize)]
@@ -169,17 +170,18 @@ impl Engine {
             return Err(errs.join("\n"));
         }
         let token = CancellationToken::new();
+        let step_gate = Arc::new(Semaphore::new(0));
         let run_id = self.run_seq.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut r = self.runs.lock().unwrap();
             if r.contains_key(id) {
                 return Err("already running".into());
             }
-            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id });
+            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id, step_gate: step_gate.clone() });
         }
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
-            me.run_automation(auto, token, run_id).await;
+            me.run_automation(auto, token, run_id, step_gate).await;
         });
         Ok(())
     }
@@ -190,6 +192,15 @@ impl Engine {
             t.cancel();
             self.set_auto(id, |r| r.status = "stopping".into());
         }
+    }
+
+    pub fn resume_step(&self, id: &str) -> Result<(), String> {
+        let paused = self.nodes.lock().unwrap().get(id).map(|nodes| nodes.values().any(|n| n.state == "paused")).unwrap_or(false);
+        if !paused { return Err("automation is not paused at a debugger breakpoint".into()); }
+        let gate = self.runs.lock().unwrap().get(id).map(|r| r.step_gate.clone()).ok_or("automation is not running")?;
+        gate.add_permits(1);
+        self.log("info", id, &self.store.get(id).map(|a| a.name).unwrap_or_default(), None, "Debugger resumed execution".into());
+        Ok(())
     }
 
     pub async fn stop_and_wait(&self, id: &str) -> Result<(), String> {
@@ -292,7 +303,7 @@ impl Engine {
     }
 
     // ----- run -----
-    async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64) {
+    async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64, step_gate: Arc<Semaphore>) {
         let started = now_ms();
         self.nodes.lock().unwrap().remove(&auto.id);
         self.set_auto(&auto.id, |r| {
@@ -313,6 +324,9 @@ impl Engine {
             errors: AtomicU32::new(0),
             aborted: AtomicBool::new(false),
             single: entries.len() == 1,
+            step_gate,
+            depth: 0,
+            trace: Arc::new(Mutex::new(Vec::new())),
         });
         let hs: Vec<_> = entries.into_iter().map(|e| tokio::spawn(run_entry(ctx.clone(), e))).collect();
         for h in hs {
@@ -335,7 +349,10 @@ impl Engine {
         {
             let mut h = self.hist.lock().unwrap();
             let q = h.entry(aid.clone()).or_default();
-            q.push_front(RunRecord { id: run_id, started_at: started, ended_at: ended, outcome: outcome.into(), errors });
+            q.push_front(RunRecord {
+                id: run_id, started_at: started, ended_at: ended, outcome: outcome.into(), errors,
+                trace: ctx.trace.lock().unwrap().clone(),
+            });
             q.truncate(HIST_CAP);
             self.disk.save_history(&h);
         }
@@ -367,6 +384,9 @@ struct Ctx {
     errors: AtomicU32,
     aborted: AtomicBool,
     single: bool,
+    step_gate: Arc<Semaphore>,
+    depth: u8,
+    trace: Arc<Mutex<Vec<NodeTrace>>>,
 }
 
 impl Ctx {
@@ -383,6 +403,21 @@ impl Ctx {
     fn abort(&self) {
         self.aborted.store(true, Ordering::SeqCst);
         self.token.cancel();
+    }
+
+    fn trace_node(&self, node: &Node, visit: u64, state: &str, detail: &str, duration_ms: u64) {
+        let title = registry().get(node.kind.as_str()).map(|b| b.title()).unwrap_or("Unknown block");
+        let mut trace = self.trace.lock().unwrap();
+        if trace.len() >= 2000 { trace.remove(0); }
+        trace.push(NodeTrace {
+            automation_id: self.auto.id.clone(),
+            node_id: node.id.clone(),
+            block_title: title.to_string(),
+            state: state.to_string(),
+            detail: detail.chars().take(240).collect(),
+            visit,
+            duration_ms,
+        });
     }
     fn out(&self, from: &str, kinds: &[&str]) -> Vec<String> {
         let mut v: Vec<String> = vec![];
