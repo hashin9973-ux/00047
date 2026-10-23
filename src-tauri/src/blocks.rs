@@ -1,5 +1,6 @@
 use crate::sys;
 use async_trait::async_trait;
+use futures::future::BoxFuture;
 use crate::spec;
 use serde_json::{json, Value};
 use std::{
@@ -81,6 +82,8 @@ pub struct NodeCx {
     pub visible: Flag,
     /// Variables are shared by every block in this automation run and are discarded when it ends.
     pub variables: Arc<Mutex<HashMap<String, Value>>>,
+    /// Calls another saved automation as a nested subflow and returns its typed variable snapshot.
+    pub call_subflow: Arc<dyn Fn(String, Value) -> BoxFuture<'static, Result<Value, String>> + Send + Sync>,
 }
 
 impl NodeCx {
