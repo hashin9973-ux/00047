@@ -568,7 +568,7 @@ fn try_catch_spec()->Value {
         json!({"key":"catchAutomationId","label":"Catch subflow automation ID","type":"text","required":true,"maxLen":128}),
         json!({"key":"tryInputMapJson","label":"Try inputs JSON (child variable → parent variable)","type":"textarea","rows":2,"default":"{}","maxLen":8000}),
         json!({"key":"tryOutputMapJson","label":"Try outputs JSON (child variable → parent variable)","type":"textarea","rows":2,"default":"{}","maxLen":8000}),
-        json!({"key":"catchInputMapJson","label":"Catch inputs JSON (child variable → parent variable)","type":"textarea","rows":2,"default":"{\"errorMessage\":\"errorMessage\"}","maxLen":8000}),
+        json!({"key":"catchInputMapJson","label":"Catch inputs JSON (child variable → parent variable)","type":"textarea","rows":2,"default":"{}","maxLen":8000}),
         json!({"key":"catchOutputMapJson","label":"Catch outputs JSON (child variable → parent variable)","type":"textarea","rows":2,"default":"{}","maxLen":8000}),
         json!({"key":"errorVar","label":"Save error message as variable","type":"text","default":"errorMessage","required":true,"maxLen":64}),
         json!({"preset":"timeout"}),
