@@ -134,6 +134,8 @@ pub(super) fn wait_settings(c: &Value) -> Result<(String, f64, f64, f64), String
 #[derive(Deserialize, Clone, Default)]
 struct NetSample {
     connected: bool,
+    wireless: bool,
+    wireless_found: bool,
     ssid: String,
     rx: Option<u64>,
     tx: Option<u64>,
@@ -182,12 +184,13 @@ if ($hint.Length -gt 0 -and $wlanName.Length -gt 0 -and $wlanName.IndexOf($hint,
   if ($null -eq $a) {{ $a=$wireless | Select-Object -First 1 }}
 }}
 $found=($null -ne $a)
-$connected=$false;$ssid='';$rx=$null;$tx=$null;$adapterName='';$adapterStatus=''
+$connected=$false;$wirelessSelected=$false;$wirelessFound=($wireless.Count -gt 0 -or $wlanName.Length -gt 0);$ssid='';$rx=$null;$tx=$null;$adapterName='';$adapterStatus=''
 if ($found) {{
   $adapterName=[string]$a.Name;$adapterStatus=[string]$a.Status
   $isWireless=($wireless.Name -contains $a.Name)
   $connected=($a.Status -eq 'Up')
-  if ($isWireless) {{
+  $wirelessSelected=($isWireless -or ($wlanName.Length -gt 0 -and $adapterName -ieq $wlanName))
+  if ($wirelessSelected) {{
     # Wireless adapter "Up" only means the radio/interface is enabled, not joined to an AP.
     $connected=($wlanConnected -and $adapterName -ieq $wlanName)
   }}
@@ -196,10 +199,10 @@ if ($found) {{
     $stats=Get-NetAdapterStatistics -Name $a.Name -ErrorAction Stop
     $rx=[long]$stats.ReceivedBytes;$tx=[long]$stats.SentBytes
   }} catch {{$rx=$null;$tx=$null}}
-}} elseif ($hint.Length -eq 0 -and $wlanConnected) {{
-  $connected=$true;$ssid=$wlanSsid;$adapterName=$wlanName
+}} elseif ($hint.Length -eq 0 -and $wlanName.Length -gt 0) {{
+  $wirelessSelected=$true;$connected=$wlanConnected;$ssid=$wlanSsid;$adapterName=$wlanName
 }}
-[pscustomobject]@{{connected=[bool]$connected;ssid=[string]$ssid;rx=$rx;tx=$tx;adapter=[string]$adapterName;adapterFound=[bool]$found;adapterStatus=[string]$adapterStatus}} | ConvertTo-Json -Compress
+[pscustomobject]@{{connected=[bool]$connected;wireless=[bool]$wirelessSelected;wirelessFound=[bool]$wirelessFound;ssid=[string]$ssid;rx=$rx;tx=$tx;adapter=[string]$adapterName;adapterFound=[bool]$found;adapterStatus=[string]$adapterStatus}} | ConvertTo-Json -Compress
 "#, hint = ps_quote(adapter_hint));
     ps_json(cx, &script).await
 }
@@ -232,6 +235,16 @@ fn network_rate(bytes_start: u64, bytes_end: u64, elapsed_seconds: f64, unit: &s
 fn network_rate_matches(rate: f64, threshold: f64, op: &str) -> bool {
     if !rate.is_finite() || !threshold.is_finite() { return false; }
     if op == "above" { rate > threshold } else { rate <= threshold }
+}
+
+fn wifi_state_matches(mode: &str, sample: &NetSample, expected_ssid: &str) -> bool {
+    match mode {
+        "wifi_connected" => sample.wireless && sample.connected,
+        "wifi_disconnected" => sample.wireless_found && !sample.connected,
+        "ssid" => sample.wireless && sample.connected && !sample.ssid.is_empty()
+            && sample.ssid.eq_ignore_ascii_case(expected_ssid.trim()),
+        _ => false,
+    }
 }
 
 fn network_spec() -> Value {
@@ -325,12 +338,7 @@ impl Block for NetworkCondition {
                     return Ok(ok);
                 }
                 let sample = net_sample(cx, &adapter).await?;
-                let ok = match mode.as_str() {
-                    "wifi_connected" => sample.connected,
-                    "wifi_disconnected" => !sample.connected,
-                    "ssid" => sample.connected && !sample.ssid.is_empty() && sample.ssid.eq_ignore_ascii_case(ssid.trim()),
-                    _ => false
-                };
+                let ok = wifi_state_matches(&mode, &sample, &ssid);
                 (cx.report)(if behavior=="check" {"running"} else {"waiting"},None,
                     format!("Network mode {}: {}{}",
                         mode,
@@ -753,6 +761,20 @@ mod network_condition_tests {
         assert!(network_rate(200, 100, 1.0, "Mbps").is_none());
         assert!(network_rate(0, 100, 0.0, "Mbps").is_none());
         assert!(network_rate(0, 100, f64::NAN, "Mbps").is_none());
+    }
+
+    #[test]
+    fn wifi_disconnected_requires_a_real_wireless_interface() {
+        let none = NetSample::default();
+        assert!(!wifi_state_matches("wifi_connected", &none, ""));
+        assert!(!wifi_state_matches("wifi_disconnected", &none, ""));
+        let disconnected = NetSample { wireless_found: true, ..NetSample::default() };
+        assert!(wifi_state_matches("wifi_disconnected", &disconnected, ""));
+        assert!(!wifi_state_matches("wifi_connected", &disconnected, ""));
+        let connected = NetSample { connected: true, wireless: true, wireless_found: true, ssid: "office".into(), ..NetSample::default() };
+        assert!(wifi_state_matches("wifi_connected", &connected, ""));
+        assert!(wifi_state_matches("ssid", &connected, "OFFICE"));
+        assert!(!wifi_state_matches("ssid", &connected, "guest"));
     }
 
     #[test]
