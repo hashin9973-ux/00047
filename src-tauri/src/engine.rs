@@ -209,11 +209,12 @@ impl Engine {
         if !self.runs.lock().unwrap().contains_key(id) { return Err("automation is not running".into()); }
         if !self.debug_paused.lock().unwrap().contains(id) { return Err("pause the automation before stepping".into()); }
         let mut budgets = self.debug_steps.lock().unwrap();
-        *budgets.entry(id.to_string()).or_insert(0) = budgets.get(id).copied().unwrap_or(0).saturating_add(1);
+        let budget = budgets.entry(id.to_string()).or_insert(0);
+        *budget = budget.saturating_add(1);
         Ok(())
     }
 
-    pub fn stop(&self, id: &str) -> {
+    pub fn stop(&self, id: &str) {
         let t = self.runs.lock().unwrap().get(id).map(|r| r.token.clone());
         if let Some(t) = t {
             t.cancel();
