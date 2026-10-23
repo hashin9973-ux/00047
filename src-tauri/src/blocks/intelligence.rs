@@ -167,6 +167,7 @@ impl Block for UiElementCondition{
         let cfg=cx.cfg.clone();
         extra::poll_condition(cx,&behavior,poll,stable,timeout,||{
             let cfg=cfg.clone();
+            let behavior=behavior.clone();
             Box::pin(async move{
                 let condition=txt(&cfg,"conditionMode");
                 let expected=templ(cx,&txt(&cfg,"expectedValue"))?;
