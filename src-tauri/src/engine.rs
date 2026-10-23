@@ -1116,19 +1116,26 @@ async fn execute_try_catch(ctx: Arc<Ctx>, node: &Node) -> Result<bool,String> {
     let catch_id=node.cfg.get("catchAutomationId").and_then(Value::as_str).unwrap_or("");
     let error_var=node.cfg.get("errorVar").and_then(Value::as_str).unwrap_or("errorMessage");
     let mut proxy=node.clone();
-    proxy.cfg=json!({"automationId":try_id,"inputMapJson":"{}","outputMapJson":"{}","onFail":"stop"});
+    let try_inputs=node.cfg.get("tryInputMapJson").and_then(Value::as_str).unwrap_or("{}");
+    let try_outputs=node.cfg.get("tryOutputMapJson").and_then(Value::as_str).unwrap_or("{}");
+    let catch_inputs=node.cfg.get("catchInputMapJson").and_then(Value::as_str).unwrap_or("{\"errorMessage\":\"errorMessage\"}");
+    let catch_outputs=node.cfg.get("catchOutputMapJson").and_then(Value::as_str).unwrap_or("{}");
+    proxy.cfg=json!({"automationId":try_id,"inputMapJson":try_inputs,"outputMapJson":try_outputs,"onFail":"stop"});
     match Box::pin(execute_subflow(ctx.clone(),&proxy)).await {
         Ok(()) => Ok(false),
         Err(try_error) => {
             if ctx.token.is_cancelled(){return Err("cancelled".into())}
             let detail:String=try_error.chars().take(2048).collect();
             ctx.variables.lock().map_err(|e|e.to_string())?.insert(error_var.to_string(),Value::String(detail));
-            proxy.cfg=json!({"automationId":catch_id,"inputMapJson":"{}","outputMapJson":"{}","onFail":"stop"});
+            proxy.cfg=json!({"automationId":catch_id,"inputMapJson":catch_inputs,"outputMapJson":catch_outputs,"onFail":"stop"});
             Box::pin(execute_subflow(ctx.clone(),&proxy)).await.map_err(|catch_error|format!("Try subflow failed ({try_error}); catch subflow also failed ({catch_error})"))?;
             Ok(true)
         }
     }
 }
+
+struct CancelOnDrop(Option<CancellationToken>);
+impl Drop for CancelOnDrop { fn drop(&mut self) { if let Some(token)=self.0.take(){token.cancel();} } }
 
 async fn execute_subflow(ctx: Arc<Ctx>, node: &Node) -> Result<(),String> {
     if ctx.depth >= 8 { return Err("Subflow nesting is limited to 8 levels".into()); }
@@ -1148,8 +1155,10 @@ async fn execute_subflow(ctx: Arc<Ctx>, node: &Node) -> Result<(),String> {
     let entries=entry_nodes(&child);
     if entries.is_empty(){return Err("Subflow has no entry point".into())}
     ctx.log("info",Some(node),format!("Calling subflow '{}' with {} entry path(s)",child.name,entries.len()));
+    let child_token=ctx.token.child_token();
+    let mut cancel_on_drop=CancelOnDrop(Some(child_token.clone()));
     let child_ctx=Arc::new(Ctx{
-        eng:ctx.eng.clone(),auto:Arc::new(child),token:ctx.token.child_token(),
+        eng:ctx.eng.clone(),auto:Arc::new(child),token:child_token.clone(),
         visits:Default::default(),variables:Arc::new(Mutex::new(values)),rate:Default::default(),
         handles:Default::default(),errors:AtomicU32::new(0),aborted:AtomicBool::new(false),
         single:entries.len()==1,depth:ctx.depth+1,
@@ -1167,6 +1176,8 @@ async fn execute_subflow(ctx: Arc<Ctx>, node: &Node) -> Result<(),String> {
             .ok_or_else(||format!("Subflow output variable '{child_var}' was not set"))?;
         ctx.variables.lock().map_err(|e|e.to_string())?.insert(parent_var.to_string(),value);
     }
+    child_token.cancel();
+    cancel_on_drop.0 = None;
     Ok(())
 }
 
