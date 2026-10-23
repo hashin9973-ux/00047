@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
@@ -37,6 +37,20 @@ pub struct Runtime {
     pub nodes: HashMap<String, HashMap<String, NodeState>>,
 }
 
+#[derive(Clone)]
+struct VariableSession {
+    values: Arc<Mutex<HashMap<String, Value>>>,
+    secrets_to_redact: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct VariableSnapshot {
+    pub name: String,
+    pub kind: String,
+    pub preview: String,
+    pub truncated: bool,
+}
+
 pub struct Engine {
     app: AppHandle,
     pub store: Arc<Store>,
@@ -49,6 +63,10 @@ pub struct Engine {
     run_seq: AtomicU64,
     ui: AtomicBool,
     disk: LogStore,
+    debug_paused: Mutex<HashSet<String>>,
+    debug_steps: Mutex<HashMap<String, u32>>,
+    snapshots: Mutex<HashMap<String, VecDeque<(u64, Automation)>>>,
+    variable_sessions: Mutex<HashMap<String, VariableSession>>,
 }
 
 impl Engine {
@@ -77,6 +95,10 @@ impl Engine {
             run_seq: AtomicU64::new(max_run),
             ui: AtomicBool::new(false),
             disk,
+            debug_paused: Default::default(),
+            debug_steps: Default::default(),
+            snapshots: Default::default(),
+            variable_sessions: Default::default(),
         }
     }
 
@@ -159,28 +181,102 @@ impl Engine {
         self.hist.lock().unwrap().get(id).map(|h| h.iter().cloned().collect()).unwrap_or_default()
     }
 
+    /// In-memory inspection surface for the most recent run of an automation.
+    /// Values are redacted and bounded before they cross the command boundary.
+    pub fn inspect_variables(&self, id: &str) -> Vec<VariableSnapshot> {
+        let session = self.variable_sessions.lock().ok().and_then(|m| m.get(id).cloned());
+        let Some(session) = session else { return Vec::new(); };
+        let values = match session.values.lock() { Ok(v) => v, Err(_) => return Vec::new() };
+        let mut snapshots = values.iter().map(|(name, value)| {
+            let (kind, text) = match value {
+                Value::Null => ("null", String::new()),
+                Value::Bool(_) => ("boolean", value.to_string()),
+                Value::Number(_) => ("number", value.to_string()),
+                Value::String(s) => ("string", s.clone()),
+                Value::Array(_) => ("array", value.to_string()),
+                Value::Object(_) => ("object", value.to_string()),
+            };
+            let safe = crate::blocks::redact_message(&session.secrets_to_redact, &text);
+            let truncated = safe.chars().count() > 500;
+            let preview = safe.chars().take(500).collect::<String>();
+            VariableSnapshot { name: name.clone(), kind: kind.into(), preview, truncated }
+        }).collect::<Vec<_>>();
+        snapshots.sort_by(|a,b| a.name.cmp(&b.name));
+        snapshots
+    }
+
     // ----- control -----
     pub fn start(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let auto = self.store.get(id).ok_or_else(|| "automation not found".to_string())?;
+        self.start_snapshot(auto)
+    }
+
+    fn start_snapshot(self: &Arc<Self>, auto: Automation) -> Result<(), String> {
         if let Err(errs) = validate_automation(&auto) {
             for e in &errs {
                 self.log("error", &auto.id, &auto.name, None, format!("Cannot start: {e}"));
             }
             return Err(errs.join("\n"));
         }
+        let id = auto.id.clone();
         let token = CancellationToken::new();
         let run_id = self.run_seq.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut r = self.runs.lock().unwrap();
-            if r.contains_key(id) {
-                return Err("already running".into());
-            }
-            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id });
+            if r.contains_key(&id) { return Err("already running".into()); }
+            r.insert(id, RunHandle { token: token.clone(), run_id });
         }
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
             me.run_automation(auto, token, run_id).await;
         });
+        Ok(())
+    }
+
+    /// Replays a session-captured snapshot only when every action has a conservative replay-safe classification.
+    pub fn replay_run(self: &Arc<Self>, id: &str, run_id: u64) -> Result<(), String> {
+        let snapshot = self.snapshots.lock().unwrap().get(id)
+            .and_then(|q| q.iter().find(|(rid, _)| *rid == run_id).map(|(_, a)| a.clone()))
+            .ok_or_else(|| "run snapshot is no longer available in this app session".to_string())?;
+        for n in &snapshot.nodes {
+            let Some(block) = registry().get(n.kind.as_str()) else { return Err("Replay refused: snapshot contains an unknown block".into()); };
+            let unsafe_kind = n.kind.starts_with("user.") || matches!(n.kind.as_str(),
+                "act.command"|"act.retry_command"|"act.delete_file"|"act.power"|"act.power_control"|
+                "act.service_control"|"act.stop_proc"|"act.launch"|"act.keyboard_shortcut"|"act.mouse"|
+                "act.type_text"|"act.ui_click"|"act.ui_set_value"|"act.bulk_files"|"act.copy_move_file"|
+                "act.write_text_file"|"act.csv_write"|"act.capture_screenshot"|"act.extract_zip"|
+                "act.create_shortcut"|"act.set_wallpaper"|"act.ask_user"|"act.set_brightness"|"act.power_plan");
+            if block.risky() || unsafe_kind {
+                return Err(format!("Replay refused because '{}' may have side effects. Review and start the automation manually.", block.title()));
+            }
+        }
+        self.log("info", id, &snapshot.name, None, format!("Replaying safe snapshot from run {run_id}"));
+        self.start_snapshot(snapshot)
+    }
+
+    /// Pause at the next block boundary. A currently executing block is not forcibly suspended.
+    pub fn pause(&self, id: &str) -> Result<(), String> {
+        if !self.runs.lock().unwrap().contains_key(id) { return Err("automation is not running".into()); }
+        self.debug_paused.lock().unwrap().insert(id.to_string());
+        self.debug_steps.lock().unwrap().remove(id);
+        self.app_log("info", format!("Pause requested for automation {id}"));
+        Ok(())
+    }
+
+    pub fn resume(&self, id: &str) -> Result<(), String> {
+        self.debug_paused.lock().unwrap().remove(id);
+        self.debug_steps.lock().unwrap().remove(id);
+        self.app_log("info", format!("Resumed automation {id}"));
+        Ok(())
+    }
+
+    /// Permit exactly one block to start, then remain paused at the next boundary.
+    pub fn step(&self, id: &str) -> Result<(), String> {
+        if !self.runs.lock().unwrap().contains_key(id) { return Err("automation is not running".into()); }
+        if !self.debug_paused.lock().unwrap().contains(id) { return Err("pause the automation before stepping".into()); }
+        let mut budgets = self.debug_steps.lock().unwrap();
+        let budget = budgets.entry(id.to_string()).or_insert(0);
+        *budget = budget.saturating_add(1);
         Ok(())
     }
 
@@ -243,6 +339,7 @@ impl Engine {
             },
             visible: Box::new(|| false),
             variables: Arc::new(Mutex::new(HashMap::new())),
+            secrets_to_redact: Arc::new(Mutex::new(Vec::new())),
         };
         let out = tokio::time::timeout(Duration::from_secs(60), blk.run(&cx))
             .await
@@ -293,6 +390,12 @@ impl Engine {
 
     // ----- run -----
     async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64) {
+        {
+            let mut snapshots = self.snapshots.lock().unwrap();
+            let q = snapshots.entry(auto.id.clone()).or_default();
+            q.push_front((run_id, auto.clone()));
+            q.truncate(HIST_CAP);
+        }
         let started = now_ms();
         self.nodes.lock().unwrap().remove(&auto.id);
         self.set_auto(&auto.id, |r| {
@@ -302,17 +405,26 @@ impl Engine {
         });
         self.log("info", &auto.id, &auto.name, None, "Automation started".into());
         let entries = entry_nodes(&auto);
+        let call_stack = vec![auto.id.clone()];
+        let secrets_to_redact = Arc::new(Mutex::new(Vec::new()));
+        let variables = Arc::new(Mutex::new(HashMap::new()));
+        self.variable_sessions.lock().unwrap().insert(auto.id.clone(), VariableSession {
+            values: variables.clone(),
+            secrets_to_redact: secrets_to_redact.clone(),
+        });
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
             auto: Arc::new(auto),
             token: parent.child_token(),
             visits: Default::default(),
-            variables: Arc::new(Mutex::new(HashMap::new())),
+            variables,
+            secrets_to_redact,
             rate: Default::default(),
             handles: Default::default(),
             errors: AtomicU32::new(0),
             aborted: AtomicBool::new(false),
             single: entries.len() == 1,
+            call_stack,
         });
         let hs: Vec<_> = entries.into_iter().map(|e| tokio::spawn(run_entry(ctx.clone(), e))).collect();
         for h in hs {
@@ -345,6 +457,8 @@ impl Engine {
                 r.remove(&aid);
             }
         }
+        self.debug_paused.lock().unwrap().remove(&aid);
+        self.debug_steps.lock().unwrap().remove(&aid);
         let label = if errors > 0 { format!("{outcome} ({errors} errors)") } else { outcome.to_string() };
         self.set_auto(&aid, |r| {
             r.status = outcome.into();
@@ -362,11 +476,13 @@ struct Ctx {
     token: CancellationToken,
     visits: Mutex<HashMap<String, u64>>,
     variables: Arc<Mutex<HashMap<String, Value>>>,
+    secrets_to_redact: Arc<Mutex<Vec<String>>>,
     rate: Mutex<HashMap<String, VecDeque<Instant>>>,
     handles: Mutex<Vec<JoinHandle<()>>>,
     errors: AtomicU32,
     aborted: AtomicBool,
     single: bool,
+    call_stack: Vec<String>,
 }
 
 impl Ctx {
@@ -378,6 +494,7 @@ impl Ctx {
         format!("{t} #{}", n.id.chars().take(4).collect::<String>())
     }
     fn log(&self, level: &str, n: Option<&Node>, msg: String) {
+        let msg = crate::blocks::redact_message(&self.secrets_to_redact, &msg);
         self.eng.log(level, &self.auto.id, &self.auto.name, n.map(|n| (n.id.clone(), self.label(n))), msg);
     }
     fn abort(&self) {
@@ -397,9 +514,33 @@ impl Ctx {
         resolve_targets(&self.auto, id)
     }
     /// Runaway guard: too many executions of one block in a short window aborts the automation.
+    fn in_active_for_each_body(&self, target: &str) -> bool {
+        let visited = self.visits.lock().map(|v| v.clone()).unwrap_or_default();
+        for loop_node in self.auto.nodes.iter().filter(|n| n.kind == "act.for_each" && visited.get(&n.id).copied().unwrap_or(0) > 0) {
+            let mut pending = self.auto.edges.iter()
+                .filter(|e| e.from == loop_node.id && e.kind == "if")
+                .map(|e| e.to.clone()).collect::<Vec<_>>();
+            let mut seen = HashSet::new();
+            while let Some(id) = pending.pop() {
+                if id == target { return true; }
+                if id == loop_node.id || !seen.insert(id.clone()) { continue; }
+                for edge in self.auto.edges.iter().filter(|e| e.from == id && matches!(e.kind.as_str(), "if" | "else" | "after")) {
+                    if edge.to != loop_node.id { pending.push(edge.to.clone()); }
+                }
+            }
+        }
+        false
+    }
+
     fn rate_ok(&self, node: &Node) -> bool {
         let risky = registry().get(node.kind.as_str()).map(|b| b.risky()).unwrap_or(false);
-        let (win, limit) = if risky || matches!(node.kind.as_str(), "act.trim" | "act.launch" | "act.stop_proc" | "act.notify") { (10, 12) } else { (2, 40) };
+        let in_loop_body = self.in_active_for_each_body(&node.id);
+        let (win, limit) = if node.kind == "act.for_each" || (in_loop_body && !risky) {
+            // Data-only loop bodies can run quickly, while risky side effects keep the ordinary rate limit.
+            (2, 1000)
+        } else if risky || matches!(node.kind.as_str(), "act.trim" | "act.launch" | "act.stop_proc" | "act.notify") {
+            (10, 12)
+        } else { (2, 40) };
         let mut m = self.rate.lock().unwrap();
         let q = m.entry(node.id.clone()).or_default();
         let now = Instant::now();
@@ -623,6 +764,90 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
     }
 }
 
+/// Blocks at node boundaries when the editor has paused this automation. Step budget is consumed
+/// once per block, so a single-step operation pauses again before its successor begins.
+async fn wait_debug_gate(ctx: &Arc<Ctx>, node: &Node) -> bool {
+    loop {
+        if ctx.token.is_cancelled() { return false; }
+        let is_paused = ctx.eng.debug_paused.lock().unwrap().contains(&ctx.auto.id);
+        if !is_paused { return true; }
+        let mut budgets = ctx.eng.debug_steps.lock().unwrap();
+        let budget = budgets.entry(ctx.auto.id.clone()).or_insert(0);
+        if *budget > 0 {
+            *budget -= 1;
+            return true;
+        }
+        drop(budgets);
+        ctx.eng.set_node(&ctx.auto.id, &node.id, "paused", None, "Paused at block boundary".into());
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+            _ = ctx.token.cancelled() => return false,
+        }
+    }
+}
+
+/// Runs a saved automation inside the caller's variable scope. A bounded call stack prevents
+/// recursive subflows; nested failures return to the Call Subflow block's configured ELSE route.
+async fn run_try_catch(parent: &Arc<Ctx>, node: &Node) -> Result<(), String> {
+    let try_id = node.cfg.get("tryAutomationId").and_then(Value::as_str).unwrap_or("").trim();
+    let catch_id = node.cfg.get("catchAutomationId").and_then(Value::as_str).unwrap_or("").trim();
+    let mut try_node = node.clone();
+    try_node.cfg["automationId"] = json!(try_id);
+    match run_subflow(parent, &try_node).await {
+        Ok(()) => Ok(()),
+        Err(cause) => {
+            let variable = node.cfg.get("errorVariable").and_then(Value::as_str).unwrap_or("workflow_error").trim();
+            if !variable.is_empty() {
+                parent.variables.lock().map_err(|e|e.to_string())?.insert(variable.to_string(), json!(cause));
+            }
+            let mut catch_node = node.clone();
+            catch_node.cfg["automationId"] = json!(catch_id);
+            run_subflow(parent, &catch_node).await.map_err(|e|format!("Try failed and Catch failed: {e}"))
+        }
+    }
+}
+
+struct CancelTokenOnDrop(CancellationToken);
+impl Drop for CancelTokenOnDrop {
+    fn drop(&mut self) { self.0.cancel(); }
+}
+
+async fn run_subflow(parent: &Arc<Ctx>, call_node: &Node) -> Result<(), String> {
+    let id = call_node.cfg.get("automationId").and_then(Value::as_str).unwrap_or("").trim();
+    let sub = parent.eng.store.get(id).ok_or_else(|| format!("subflow automation '{id}' was not found"))?;
+    if parent.call_stack.contains(&sub.id) { return Err(format!("recursive subflow call rejected: {}", sub.name)); }
+    if parent.call_stack.len() >= 16 { return Err("subflow nesting limit (16) exceeded".into()); }
+    validate_automation(&sub).map_err(|es| format!("subflow '{}' is invalid: {}", sub.name, es.join("; ")))?;
+    let entries = entry_nodes(&sub);
+    if entries.is_empty() { return Err(format!("subflow '{}' has no entry block", sub.name)); }
+    let entries_for_run = entries.clone();
+    let mut stack = parent.call_stack.clone();
+    stack.push(sub.id.clone());
+    let child = Arc::new(Ctx {
+        eng: parent.eng.clone(),
+        auto: Arc::new(sub),
+        token: parent.token.child_token(),
+        visits: Default::default(),
+        variables: parent.variables.clone(),
+        secrets_to_redact: parent.secrets_to_redact.clone(),
+        rate: Default::default(),
+        handles: Default::default(),
+        errors: AtomicU32::new(0),
+        aborted: AtomicBool::new(false),
+        single: entries_for_run.len() == 1,
+        call_stack: stack,
+    });
+    let _cancel_children_on_drop = CancelTokenOnDrop(child.token.clone());
+    let mut handles = Vec::new();
+    for entry in entries_for_run { handles.push(tokio::spawn(run_entry(child.clone(), entry))); }
+    for h in handles { let _ = h.await; }
+    if child.token.is_cancelled() && parent.token.is_cancelled() { return Err("subflow cancelled".into()); }
+    let count = child.errors.load(Ordering::SeqCst);
+    if child.aborted.load(Ordering::SeqCst) || count > 0 {
+        Err(format!("subflow failed ({count} block error(s)); route ELSE to handle it"))
+    } else { Ok(()) }
+}
+
 async fn run_entry(ctx: Arc<Ctx>, id: String) {
     let repeat = ctx
         .node(&id)
@@ -670,6 +895,10 @@ fn branch(ctx: Arc<Ctx>, start: String) -> BoxFuture<'static, ()> {
 }
 
 async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
+    if node.kind == "flow.breakpoint" {
+        ctx.eng.debug_paused.lock().unwrap().insert(ctx.auto.id.clone());
+    }
+    if !wait_debug_gate(ctx, node).await { return vec![]; }
     let eng = &ctx.eng;
     let aid = ctx.auto.id.clone();
     let Some(blk) = registry().get(node.kind.as_str()) else {
@@ -705,7 +934,10 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         report: {
             let c = ctx.clone();
             let nid = node.id.clone();
-            Box::new(move |st: &str, p: Option<f64>, d: String| c.eng.set_node(&c.auto.id, &nid, st, p, d))
+            Box::new(move |st: &str, p: Option<f64>, d: String| {
+                let detail = crate::blocks::redact_message(&c.secrets_to_redact, &d);
+                c.eng.set_node(&c.auto.id, &nid, st, p, detail)
+            })
         },
         log: {
             let c = ctx.clone();
@@ -722,18 +954,26 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             Box::new(move || c.eng.visible())
         },
         variables: ctx.variables.clone(),
+        secrets_to_redact: ctx.secrets_to_redact.clone(),
     };
 
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
     let t0 = Instant::now();
+    let execute = async {
+        if node.kind == "act.call_subflow" {
+            run_subflow(ctx, node).await.map(|_| Outcome::Satisfied)
+        } else if node.kind == "act.try_catch" {
+            run_try_catch(ctx, node).await.map(|_| Outcome::Satisfied)
+        } else {
+            blk.run(&cx).await
+        }
+    };
     let res = if timeout > 0.0 {
-        match tokio::time::timeout(Duration::from_secs_f64(timeout), blk.run(&cx)).await {
+        match tokio::time::timeout(Duration::from_secs_f64(timeout), execute).await {
             Ok(r) => r,
             Err(_) => Err(format!("timed out after {timeout}s")),
         }
-    } else {
-        blk.run(&cx).await
-    };
+    } else { execute.await };
     if ctx.token.is_cancelled() {
         eng.set_node(&aid, &node.id, "idle", None, String::new());
         return vec![];
@@ -766,12 +1006,14 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             }
             eng.set_node(&aid, &node.id, "done", None, format!("{txt} · {dt:.1}s"));
             ctx.log("info", Some(node), format!("{txt} ({dt:.2}s)"));
+            if node.kind == "flow.return_value" { return vec![]; }
             ctx.out(&node.id, kinds)
         }
         Err(e) => {
             ctx.errors.fetch_add(1, Ordering::SeqCst);
-            eng.set_node(&aid, &node.id, "failed", None, e.clone());
-            ctx.log("error", Some(node), format!("failed: {e}"));
+            let safe_error = crate::blocks::redact_message(&ctx.secrets_to_redact, &e);
+            eng.set_node(&aid, &node.id, "failed", None, safe_error.clone());
+            ctx.log("error", Some(node), format!("failed: {safe_error}"));
             match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
                 "else" => ctx.out(&node.id, &["else"]),
                 "after" => ctx.out(&node.id, &["after"]),
@@ -817,6 +1059,14 @@ mod loop_semantics_tests {
             viewport: Viewport { x: 0.0, y: 0.0, k: 1.0 },
             auto_start: false,
         }
+    }
+
+    #[test]
+    fn replay_safety_is_conservative_for_shell_and_side_effect_blocks() {
+        assert!(registry().get("act.command").unwrap().risky());
+        assert!(registry().get("act.ui_click").unwrap().risky());
+        assert_eq!(registry().get("cond.hotkey_event").unwrap().category(), Cat::Condition);
+        assert_eq!(registry().get("act.try_catch").unwrap().category(), Cat::Action);
     }
 
     #[test]

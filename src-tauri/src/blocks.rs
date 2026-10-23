@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) mod extra;
 mod extra_more;
 mod advanced;
+mod nextgen;
 
 #[cfg(windows)]
 const MAX_COMMAND_OUTPUT_BYTES: usize = 16 * 1024;
@@ -80,6 +81,8 @@ pub struct NodeCx {
     pub visible: Flag,
     /// Variables are shared by every block in this automation run and are discarded when it ends.
     pub variables: Arc<Mutex<HashMap<String, Value>>>,
+    /// Plaintext secrets expanded during this run; retained only in memory to redact logs and node details.
+    pub secrets_to_redact: Arc<Mutex<Vec<String>>>,
 }
 
 impl NodeCx {
@@ -115,6 +118,16 @@ impl NodeCx {
                 return Ok(output);
             };
             let name = &after[..end];
+            if let Some(secret_name) = name.strip_prefix("secret:") {
+                let secret = crate::secrets::get(secret_name)?;
+                if !secret.is_empty() {
+                    let mut known = self.secrets_to_redact.lock().map_err(|e| e.to_string())?;
+                    if !known.iter().any(|x| x == &secret) { known.push(secret.clone()); }
+                }
+                output.push_str(&secret);
+                rest = &after[end + 2..];
+                continue;
+            }
             if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.') {
                 output.push_str("{{");
                 rest = after;
@@ -131,6 +144,45 @@ impl NodeCx {
         output.push_str(rest);
         Ok(output)
     }
+}
+
+
+/// Replaces expanded secrets in messages before they reach persistent logs or UI node details.
+/// Extremely short values are intentionally not substring-redacted because that would corrupt
+/// nearly every ordinary diagnostic; callers should avoid using low-entropy values as secrets.
+pub fn redact_message(secrets: &Mutex<Vec<String>>, input: &str) -> String {
+    fn short_value(s: &str) -> bool { s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') }
+    fn word(c: char) -> bool { c.is_ascii_alphanumeric() || c == '_' }
+    fn redact_short(input: &str, secret: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut cursor = 0;
+        while let Some(rel) = input[cursor..].find(secret) {
+            let start = cursor + rel;
+            let end = start + secret.len();
+            let left = input[..start].chars().next_back();
+            let right = input[end..].chars().next();
+            out.push_str(&input[cursor..start]);
+            if !left.is_some_and(word) && !right.is_some_and(word) {
+                out.push_str("[REDACTED]");
+            } else {
+                out.push_str(secret);
+            }
+            cursor = end;
+        }
+        out.push_str(&input[cursor..]);
+        out
+    }
+    let mut output = input.to_string();
+    if let Ok(known) = secrets.lock() {
+        for secret in known.iter().filter(|s| !s.is_empty()) {
+            if secret.chars().count() >= 4 {
+                output = output.replace(secret, "[REDACTED]");
+            } else if short_value(secret) {
+                output = redact_short(&output, secret);
+            }
+        }
+    }
+    output
 }
 
 #[async_trait]
@@ -903,6 +955,7 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn Block>> {
         extra::register_into(&mut m);
         extra_more::register_into(&mut m);
         advanced::register_into(&mut m);
+        nextgen::register_into(&mut m);
         crate::custom::load_into(&mut m);
         m
     })
@@ -1067,5 +1120,17 @@ mod expanded_blocks_tests {
         assert!(r["act.delete_file"].validate(&json!({"path":"C:\\temp\\old.txt","mode":"recycle","onFail":"stop"})).is_ok());
         assert!(r["act.play_sound"].validate(&json!({"mode":"speak","text":"hello","onFail":"stop"})).is_ok());
         assert!(r["act.service"].validate(&json!({"serviceName":"Spooler","operation":"stop","onFail":"stop","timeoutSec":0})).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod secret_redaction_tests {
+    use super::redact_message;
+    use std::sync::Mutex;
+    #[test]
+    fn redact_secret_strings_and_short_tokens_without_corrupting_words() {
+        let values = Mutex::new(vec!["token-abc-123".to_string(), "key".to_string()]);
+        assert_eq!(redact_message(&values, "header token-abc-123 done"), "header [REDACTED] done");
+        assert_eq!(redact_message(&values, "key=value; monkey"), "[REDACTED]=value; monkey");
     }
 }

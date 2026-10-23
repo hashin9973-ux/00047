@@ -373,3 +373,26 @@ textarea.glass.liquidglass-variant {
 .native-settings-actions{display:flex;gap:8px;flex-wrap:wrap}
 .native-log-panel pre{box-sizing:border-box;max-height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:10px;border-radius:8px;background:var(--bg);font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
 @media(max-width:760px){.native-setting-field{grid-template-columns:1fr;gap:6px}}
+
+.secret-page{max-width:1000px;margin:18px auto;padding:22px}
+.secret-page h3{margin:0}
+.secret-page p{max-width:760px;line-height:1.5}
+.secret-form{display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,2fr) auto;gap:12px;align-items:end;margin:20px 0}
+.secret-form label{display:grid;gap:6px;color:var(--mu);font-size:12px}
+.secret-form input{width:100%;min-width:0;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.18);color:var(--tx);padding:10px}
+.secret-rows{display:grid;gap:8px;margin-top:16px}
+.secret-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px;border:1px solid var(--line);border-radius:10px}
+.secret-row div{display:grid;gap:4px;min-width:0}
+.secret-row small{color:var(--mu);font-size:11px}
+@media(max-width:760px){.secret-form{grid-template-columns:1fr}.secret-form .btn{width:100%}}
+
+.history-replay{margin-left:8px;padding:3px 8px;font-size:10px;line-height:1.2}
+.lr .ms{display:flex;align-items:center;justify-content:flex-end;gap:4px}
+
+.variable-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-bottom:1px solid var(--line)}
+.variable-list{display:grid;gap:0}
+.variable-row{display:grid;grid-template-columns:minmax(100px,180px) minmax(0,1fr);gap:12px;padding:9px 12px;border-bottom:1px solid var(--line);align-items:start}
+.variable-name{display:grid;gap:3px;min-width:0}
+.variable-name strong{overflow-wrap:anywhere;font-size:12px}
+.variable-name small{font-size:10px;color:var(--mu)}
+.variable-row code{font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:120px;overflow:auto;color:var(--tx)}

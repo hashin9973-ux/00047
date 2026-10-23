@@ -49,6 +49,11 @@ const I = {
   usb: ic('<path d="M12 19V4M9 7l3-3 3 3M12 12l-4 4M12 15l4 4M8 16H6a2 2 0 1 0 0 4h2M16 19h2a2 2 0 1 0 0-4h-2"/><circle cx="12" cy="21" r="1"/>'),
   variable: ic('<path d="M5 5c3 0 3 14 6 14s3-14 8-14M4 19h4M16 5h4"/>'),
   'volume-2': ic('<path d="M3 9v6h4l5 4V5L7 9zM16 9a5 5 0 0 1 0 6M18 6a9 9 0 0 1 0 12"/>'),
+  'file-json': ic('<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13l-2 2 2 2M16 13l2 2-2 2M13 12l-2 6"/>'),
+  regex: ic('<path d="M4 6h16M4 12h6M4 18h16"/><path d="m13 9 4 6m0-6-4 6"/>'),
+  'file-spreadsheet': ic('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18M15 9v12M9 15h12"/>'),
+  workflow: ic('<rect x="2" y="3" width="7" height="6" rx="1"/><rect x="15" y="15" width="7" height="6" rx="1"/><rect x="15" y="3" width="7" height="6" rx="1"/><path d="M9 6h6M18 9v6M9 6v12h6"/>'),
+  'log-out': ic('<path d="M10 17l5-5-5-5M15 12H3"/><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7"/>'),
   wifi: ic('<path d="M3 9a14 14 0 0 1 18 0M6 12a9 9 0 0 1 12 0M9 15a4 4 0 0 1 6 0M12 19h.01"/>'),
 };
 
@@ -229,6 +234,10 @@ export function fieldError(f, cfg) {
     if (v < f.min || v > f.max) return `${f.min} – ${f.max}`;
   }
   if (f.type === 'time' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? ''))) return 'Use HH:MM';
+  if (f.type === 'automation') {
+    const s = String(v ?? '').trim();
+    if (f.required && !s) return 'Select a saved automation';
+  }
   if (f.type === 'text' || f.type === 'textarea' || f.type === 'file') {
     const s = String(v ?? '').trim();
     if (f.required && !s) return 'Required';

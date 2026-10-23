@@ -11,8 +11,9 @@ mod logstore;
 mod model;
 mod store;
 mod sys;
+mod secrets;
 
-use engine::{Engine, Runtime};
+use engine::{Engine, Runtime, VariableSnapshot};
 use model::{Automation, LogEntry, RunRecord};
 use std::{sync::{Arc, Mutex}, time::Duration};
 use store::Store;
@@ -206,6 +207,26 @@ async fn stop_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), 
 }
 
 #[tauri::command]
+fn pause_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.pause(&id)
+}
+#[tauri::command]
+fn resume_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.resume(&id)
+}
+#[tauri::command]
+fn step_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.step(&id)
+}
+
+#[tauri::command]
+fn list_secrets() -> Result<Vec<String>, String> { secrets::list() }
+#[tauri::command]
+fn secret_set(name: String, value: String) -> Result<(), String> { secrets::set(&name, &value) }
+#[tauri::command]
+fn secret_delete(name: String) -> Result<bool, String> { secrets::delete(&name) }
+
+#[tauri::command]
 async fn restart_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
     let e = eng.inner().clone();
     e.restart(&id).await
@@ -224,6 +245,17 @@ fn get_logs(eng: State<'_, Arc<Engine>>, since: Option<u64>, auto_id: Option<Str
 #[tauri::command]
 fn get_history(eng: State<'_, Arc<Engine>>, id: String) -> Vec<RunRecord> {
     eng.history(&id)
+}
+
+#[tauri::command]
+fn inspect_workflow_variables(eng: State<'_, Arc<Engine>>, id: String) -> Vec<VariableSnapshot> {
+    eng.inspect_variables(&id)
+}
+
+#[tauri::command]
+fn replay_run(eng: State<'_, Arc<Engine>>, id: String, run_id: u64) -> Result<(), String> {
+    let engine = eng.inner().clone();
+    engine.replay_run(&id, run_id)
 }
 
 #[tauri::command]
@@ -621,10 +653,18 @@ fn main() {
             delete_automation,
             start_automation,
             stop_automation,
+            pause_automation,
+            resume_automation,
+            step_automation,
             restart_automation,
+            list_secrets,
+            secret_set,
+            secret_delete,
             get_runtime,
             get_logs,
             get_history,
+            inspect_workflow_variables,
+            replay_run,
             clear_logs,
             app_stats,
             get_autostart,
@@ -665,6 +705,7 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            let secrets_warning = secrets::init(dir.join("secrets.json")).err();
             custom::init(dir.join("blocks"));
             let _ = std::fs::create_dir_all(dir.join("blocks"));
             app.manage(extensions::ExtensionManager::new(dir.join("extensions")));
@@ -685,6 +726,7 @@ fn main() {
             app.manage(engine.clone());
             app.manage(Mutex::new(sys::CpuState::default()));
             engine.app_log("info", format!("00047 started (data folder: {})", dir.display()));
+            if let Some(w) = secrets_warning { engine.app_log("warn", w); }
             if let Some(w) = warn {
                 engine.app_log("error", w);
             }

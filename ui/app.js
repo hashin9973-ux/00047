@@ -23,7 +23,7 @@ const fmtAgo = ts => {
 };
 
 const LABEL = { running: 'Running', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
-const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
+const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], vars: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '', secrets: [] };
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
 const isRun = id => ['running', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
@@ -125,6 +125,7 @@ const editor = new Editor($('#ed-host'), {
   toast,
   pickFile: async () => { try { return await invoke('pick_file'); } catch (e) { toast('File picker failed: ' + e, 'err'); return null; } },
   testBlock: id => testBlock(id),
+  getAutomations: () => S.autos,
 });
 
 async function testBlock(nodeId) {
@@ -277,8 +278,11 @@ function renderDock() {
     el.innerHTML = rows.join('') || '<div class="empty">No events yet. Start the automation to see live logs.</div>';
   } else if (S.tab === 'history') {
     el.innerHTML = S.hist.length
-      ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
+      ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms"><button class="ib history-replay" data-run-replay="${r.id}" title="Replay if the captured workflow is classified safe">Replay</button>${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
       : '<div class="empty">No finished runs yet.</div>';
+  } else if (S.tab === 'variables') {
+    el.innerHTML = `<div class="variable-toolbar"><span class="mu">Latest in-memory run scope · values are redacted and capped for display.</span><button class="ib" data-vars-refresh>Refresh</button></div>` +
+      (S.vars.length ? `<div class="variable-list">${S.vars.map(v => `<div class="variable-row"><div class="variable-name"><strong>${esc(v.name)}</strong><small>${esc(v.kind)}</small></div><code>${esc(v.preview)}${v.truncated ? ' …' : ''}</code></div>`).join('')}</div>` : '<div class="empty">No variables have been set in this run yet.</div>');
   } else el.innerHTML = HELP;
 }
 
@@ -286,6 +290,13 @@ async function refreshHist() {
   if (!S.editId) return;
   try { S.hist = await invoke('get_history', { id: S.editId }); } catch { S.hist = []; }
   if (S.tab === 'history') renderDock();
+}
+
+async function refreshWorkflowVariables() {
+  if (!S.editId) return;
+  try { S.vars = await invoke('inspect_workflow_variables', { id: S.editId }); }
+  catch (e) { S.vars = []; toast('Could not inspect variables: ' + String(e?.message || e), 'err'); }
+  if (S.view === 'editor' && S.tab === 'variables') renderDock();
 }
 
 function openEditor(id) {
@@ -311,7 +322,17 @@ $('#dock-toggle').addEventListener('click', () => { $('#ed-dock').classList.togg
 $('#dock-tabs').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   S.tab = b.dataset.tab; $('#ed-dock').classList.remove('closed');
-  if (S.tab === 'history') refreshHist(); else renderDock();
+  if (S.tab === 'history') refreshHist(); else if (S.tab === 'variables') refreshWorkflowVariables(); else renderDock();
+});
+$('#dock-body').addEventListener('click', async e => {
+  if (e.target.closest('[data-vars-refresh]')) { await refreshWorkflowVariables(); return; }
+  const b = e.target.closest('[data-run-replay]');
+  if (!b || !S.editId) return;
+  const runId = Number(b.dataset.runReplay);
+  const answer = await modal({ title: 'Replay saved run snapshot?', body: 'Only snapshots retained in this app session can be replayed. Workflows containing command execution, UI input, file changes, or other classified side effects are refused by the engine. Review the workflow before continuing.', buttons: [['cancel','Cancel'],['replay','Replay snapshot','primary']] });
+  if (answer !== 'replay') return;
+  try { await invoke('replay_run', { id: S.editId, runId }); toast('Safe snapshot replay started.'); }
+  catch (err) { toast('Replay refused or failed: ' + String(err?.message || err), 'err'); }
 });
 
 // ---------- controls ----------
@@ -391,11 +412,58 @@ document.addEventListener('click', e => {
 // ---------- views ----------
 function show(view) {
   S.view = view;
-  for (const v of ['overview', 'automations', 'logs', 'plugins', 'extensions', 'native-mods', 'editor']) $('#view-' + v).hidden = v !== view;
+  for (const v of ['overview', 'automations', 'logs', 'plugins', 'extensions', 'native-mods', 'secrets', 'editor']) $('#view-' + v).hidden = v !== view;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === (view === 'editor' ? 'automations' : view)));
   editor.setActive(view === 'editor');
   render();
 }
+
+function renderSecrets() {
+  const host = $('#view-secrets');
+  host.innerHTML = `<div class="glass card secret-page">
+    <div class="chead"><h3>Secrets Vault</h3><button class="btn" id="secret-refresh">Refresh</button></div>
+    <p class="mu">Secrets are encrypted with Windows DPAPI for the current Windows user. Only names are listed; saved values are never read back into this form. Use <code>{{secret:NAME}}</code> in supported block text fields. Do not print secret values in commands or logs.</p>
+    <form id="secret-form" class="secret-form">
+      <label>Secret name<input id="secret-name" required maxlength="64" spellcheck="false" placeholder="API_TOKEN"></label>
+      <label>Secret value<input id="secret-value" required maxlength="16384" type="password" autocomplete="new-password" spellcheck="false" placeholder="Paste secret; never shown again"></label>
+      <button class="btn primary" type="submit">Save / Replace</button>
+    </form>
+    <div id="secret-status" class="mu" role="status"></div>
+    <div id="secret-rows" class="secret-rows"><div class="empty">Loading secrets…</div></div>
+  </div>`;
+  const status = $('#secret-status', host), rows = $('#secret-rows', host);
+  const refresh = async () => {
+    try {
+      S.secrets = await invoke('list_secrets');
+      rows.innerHTML = S.secrets.length ? S.secrets.map(k => `<div class="secret-row"><div><strong>${esc(k)}</strong><small>Encrypted for this Windows user</small></div><button class="btn danger" type="button" data-secret-delete="${esc(k)}">Delete</button></div>`).join('') : '<div class="empty">No saved secrets. Create one above.</div>';
+      status.textContent = `${S.secrets.length} secret name(s) stored. Values are not retrievable through the listing API.`;
+    } catch (e) { status.textContent = 'Could not load the vault: ' + String(e?.message || e); rows.innerHTML = ''; }
+  };
+  $('#secret-refresh', host).addEventListener('click', refresh);
+  $('#secret-form', host).addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = $('#secret-name', host).value.trim(), value = $('#secret-value', host).value;
+    if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(name)) { toast('Use 1–64 letters, digits, underscore, dash, or dot; start with a letter, digit, or underscore.', 'err'); return; }
+    try {
+      await invoke('secret_set', { name, value });
+      $('#secret-value', host).value = '';
+      $('#secret-name', host).value = '';
+      toast('Secret saved to the encrypted vault.');
+      await refresh();
+    } catch (err) { toast('Secret save failed: ' + String(err?.message || err), 'err'); }
+  });
+  rows.addEventListener('click', async e => {
+    const b = e.target.closest('[data-secret-delete]');
+    if (!b) return;
+    const n = b.dataset.secretDelete;
+    const answer = await modal({ title: 'Delete secret?', body: `The encrypted value “${n}” will be removed. Workflows referencing it will fail until it is saved again.`, buttons: [['cancel','Cancel'],['delete','Delete','danger']] });
+    if (answer !== 'delete') return;
+    try { await invoke('secret_delete', { name: n }); toast('Secret deleted.'); await refresh(); }
+    catch (err) { toast('Secret delete failed: ' + String(err?.message || err), 'err'); }
+  });
+  refresh();
+}
+
 function render() {
   if (S.view === 'overview') buildOverview();
   else if (S.view === 'automations') renderAutomations();
@@ -403,6 +471,7 @@ function render() {
   else if (S.view === 'plugins') renderPlugins();
   else if (S.view === 'extensions') renderExtensions();
   else if (S.view === 'native-mods') renderNativeMods();
+  else if (S.view === 'secrets') renderSecrets();
   else renderDock();
 }
 document.querySelectorAll('#tabs button').forEach(b => b.addEventListener('click', () => { if (S.view === 'editor') flushSaves(); show(b.dataset.view); }));
@@ -457,6 +526,7 @@ setInterval(() => {
   if (tick % 10 === 0) { fillTable(); return; }
   document.querySelectorAll('#ov-rows .rt').forEach(td => { const s = +td.dataset.s; if (s) td.textContent = fmtDur(Date.now() - s); });
 }, 1000);
+setInterval(() => { if (S.view === 'editor' && S.tab === 'variables' && S.editId) refreshWorkflowVariables(); }, 1200);
 setInterval(tickStats, 2000);
 
 // Automations

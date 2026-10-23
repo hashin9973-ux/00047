@@ -1044,6 +1044,7 @@ mod tests {
             resolve: Box::new(|| Ok(Vec::new())),
             visible: Box::new(|| false),
             variables: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            secrets_to_redact: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         };
         cx.set_variable("folder".into(), json!("C:\\Temp\\logs")).unwrap();
         cx.set_variable("count".into(), json!(3)).unwrap();
