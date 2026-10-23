@@ -67,7 +67,7 @@ add_executable(00047_windhawk_symbol_compat_test symbol_compat_test.cpp ${WMOD_H
 target_compile_features(00047_windhawk_symbol_compat_test PRIVATE cxx_std_17)
 target_compile_definitions(00047_windhawk_symbol_compat_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_include_directories(00047_windhawk_symbol_compat_test PRIVATE ${WMOD_HOOK_INCLUDE_DIRS})
-target_link_libraries(00047_windhawk_symbol_compat_test PRIVATE dbghelp psapi)
+target_link_libraries(00047_windhawk_symbol_compat_test PRIVATE winhttp dbghelp psapi)
 if(MSVC)
   target_compile_options(00047_windhawk_symbol_compat_test PRIVATE /Zi)
   target_link_options(00047_windhawk_symbol_compat_test PRIVATE /DEBUG)

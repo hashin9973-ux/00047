@@ -84,6 +84,17 @@ int wmain() {
     hookOptions.optionsSize = sizeof(hookOptions);
     hookOptions.symbolServer = L"";
     hookOptions.noUndecoratedSymbols = FALSE;
+    std::wstring resolvedCacheBase;
+    hookOptions.onlineCacheUrl = L"https://example.invalid/cache";
+    CHECK(wmod::windhawk_symbol_compat::ResolveOnlineCacheBase(
+        &hookOptions, resolvedCacheBase) == TRUE);
+    CHECK(resolvedCacheBase == L"https://example.invalid/cache/");
+    hookOptions.onlineCacheUrl = L"http://example.invalid/cache/";
+    CHECK(wmod::windhawk_symbol_compat::ResolveOnlineCacheBase(
+        &hookOptions, resolvedCacheBase) == FALSE);
+    hookOptions.onlineCacheUrl = L"";
+    CHECK(wmod::windhawk_symbol_compat::ResolveOnlineCacheBase(
+        &hookOptions, resolvedCacheBase) == FALSE);
     CHECK(Wh_HookSymbols(GetModuleHandleW(nullptr), &probeHook, 1, &hookOptions) == TRUE);
     CHECK(originalProbe != nullptr);
     g_originalProbe = originalProbe;

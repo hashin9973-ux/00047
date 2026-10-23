@@ -795,7 +795,9 @@ inline bool WriteUrlContentFile(PCWSTR target, const std::string& content) noexc
 }
 
 inline const WH_URL_CONTENT* GetUrlContent(PCWSTR url,
-    const WH_GET_URL_CONTENT_OPTIONS* options) noexcept {
+    const WH_GET_URL_CONTENT_OPTIONS* options,
+    ULONGLONG requestTimeoutMs = kMaxUrlRequestMs) noexcept {
+    if (requestTimeoutMs == 0 || requestTimeoutMs > kMaxUrlRequestMs) return nullptr;
     if (options && options->optionsSize != sizeof(WH_GET_URL_CONTENT_OPTIONS)) return nullptr;
     if (options && options->targetFilePath && !*options->targetFilePath) return nullptr;
     if (options && options->targetFilePath) {
@@ -854,7 +856,18 @@ inline const WH_URL_CONTENT* GetUrlContent(PCWSTR url,
         session = WinHttpOpen(L"00047 Native Mod SDK/1.0",
             WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
             WINHTTP_NO_PROXY_BYPASS, 0);
-        if (!session || !WinHttpSetTimeouts(session, 5000, 5000, 10000, 10000)) {
+        const DWORD deadlineMs = static_cast<DWORD>(requestTimeoutMs);
+        const DWORD resolveTimeoutMs = requestTimeoutMs >= 30000
+            ? 5000 : static_cast<DWORD>(std::max<ULONGLONG>(250, requestTimeoutMs / 8));
+        const DWORD connectTimeoutMs = requestTimeoutMs >= 30000
+            ? 5000 : static_cast<DWORD>(std::max<ULONGLONG>(250, requestTimeoutMs / 6));
+        const DWORD sendTimeoutMs = requestTimeoutMs >= 30000
+            ? 10000 : static_cast<DWORD>(std::max<ULONGLONG>(500, requestTimeoutMs / 4));
+        const DWORD receiveTimeoutMs = requestTimeoutMs >= 30000
+            ? 10000 : static_cast<DWORD>(std::max<ULONGLONG>(500, requestTimeoutMs / 3));
+        if (!session || !WinHttpSetTimeouts(
+                session, resolveTimeoutMs, connectTimeoutMs,
+                sendTimeoutMs, receiveTimeoutMs)) {
             cleanup();
             return nullptr;
         }
@@ -885,7 +898,7 @@ inline const WH_URL_CONTENT* GetUrlContent(PCWSTR url,
         content.reserve(16 * 1024);
         const ULONGLONG started = GetTickCount64();
         for (;;) {
-            if (GetTickCount64() - started > kMaxUrlRequestMs) {
+            if (GetTickCount64() - started > deadlineMs) {
                 cleanup();
                 return nullptr;
             }

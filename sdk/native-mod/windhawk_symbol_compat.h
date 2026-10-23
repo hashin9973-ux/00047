@@ -11,6 +11,9 @@
 #include <Windows.h>
 #include <DbgHelp.h>
 #include <Psapi.h>
+// This header can be included standalone. The umbrella includes it at its end;
+// both include guards make this include cycle safe.
+#include "windhawk_nonhook_compat.h"
 #include "windhawk_hook_compat.h"
 #include "00047_mod_services.h"
 
@@ -810,6 +813,113 @@ inline bool ResolveHookCacheText(
         return false;
     }
 }
+
+inline bool IsSafeOnlineCacheBase(std::wstring_view base) noexcept {
+    if (base.empty() || base.size() > kMaxSearchPathChars ||
+        base.rfind(L"https://", 0) != 0) return false;
+    for (wchar_t c : base) {
+        if (c <= 0x20 || c == L'#' || c == L'?' || c == L'\\' ||
+            c == L'\r' || c == L'\n') return false;
+    }
+    return base.find(L'@', 8) == std::wstring_view::npos;
+}
+
+inline bool ResolveOnlineCacheBase(
+    const WH_HOOK_SYMBOLS_OPTIONS* options,
+    std::wstring& base) noexcept {
+    base.clear();
+    try {
+        if (options && options->optionsSize == sizeof(WH_HOOK_SYMBOLS_OPTIONS) &&
+            options->onlineCacheUrl) {
+            size_t length = 0;
+            while (length <= kMaxSearchPathChars && options->onlineCacheUrl[length] != L'\0') {
+                ++length;
+            }
+            if (length > kMaxSearchPathChars || length == 0) return false;
+            const std::wstring_view supplied(options->onlineCacheUrl, length);
+            if (!IsSafeOnlineCacheBase(supplied)) return false;
+            base.assign(supplied);
+        } else {
+            const auto package = wmod::PackageDirectory();
+            if (package.empty()) return false;
+            const std::wstring modId = package.filename().wstring();
+            if (modId.empty() || modId.size() > 256 ||
+                modId.rfind(L"local@", 0) == 0) return false;
+            for (wchar_t c : modId) {
+                const bool valid = (c >= L'a' && c <= L'z') ||
+                    (c >= L'A' && c <= L'Z') ||
+                    (c >= L'0' && c <= L'9') || c == L'.' ||
+                    c == L'_' || c == L'-';
+                if (!valid) return false;
+            }
+            base = L"https://ramensoftware.github.io/windhawk-mod-symbol-cache/";
+            base += modId;
+            base += L'/';
+        }
+        if (!IsSafeOnlineCacheBase(base)) return false;
+        if (base.back() != L'/') base.push_back(L'/');
+        return true;
+    } catch (...) {
+        base.clear();
+        return false;
+    }
+}
+
+inline bool FetchOnlineHookCache(
+    const WH_HOOK_SYMBOLS_OPTIONS* options,
+    const HookCacheIdentity& identity,
+    const WH_SYMBOL_HOOK* hooks,
+    size_t hookCount,
+    std::wstring& cacheText,
+    std::vector<bool>& found,
+    std::vector<HookCachedResolution>& resolved) noexcept {
+    cacheText.clear();
+    try {
+        std::wstring base;
+        if (!ResolveOnlineCacheBase(options, base)) return false;
+        const std::wstring url = base + identity.cacheKey + L".txt";
+        if (url.size() > kMaxUrlChars) return false;
+
+        // Symbol lookup runs inside the target shell process. Keep network
+        // fallback bounded well below the host's 10-second remote-operation wait.
+        constexpr ULONGLONG kOnlineSymbolCacheTimeoutMs = 3500;
+        const WH_URL_CONTENT* content =
+            ::wmod::windhawk_compat::GetUrlContent(
+                url.c_str(), nullptr, kOnlineSymbolCacheTimeoutMs);
+        if (!content) return false;
+
+        bool decoded = false;
+        if (content->statusCode == 200 && content->data &&
+            content->length > 0 && content->length <= 4 * 1024 * 1024) {
+            const int chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                content->data, static_cast<int>(content->length), nullptr, 0);
+            if (chars > 0) {
+                cacheText.resize(static_cast<size_t>(chars));
+                if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                        content->data, static_cast<int>(content->length),
+                        cacheText.data(), chars) == chars) {
+                    if (!cacheText.empty() && cacheText.front() == 0xFEFF) {
+                        cacheText.erase(cacheText.begin());
+                    }
+                    while (!cacheText.empty() &&
+                        (cacheText.back() == L'\r' || cacheText.back() == L'\n' ||
+                         cacheText.back() == L' ' || cacheText.back() == L'\t')) {
+                        cacheText.pop_back();
+                    }
+                    decoded = ResolveHookCacheText(
+                        cacheText, identity, hooks, hookCount, found, resolved);
+                }
+            }
+        }
+        Wh_FreeUrlContent(content);
+        if (!decoded) cacheText.clear();
+        return decoded;
+    } catch (...) {
+        cacheText.clear();
+        return false;
+    }
+}
+
 } // namespace wmod::windhawk_symbol_compat
 
 
@@ -871,6 +981,7 @@ inline BOOL Wh_HookSymbols(HMODULE module,
             cacheIdentity, symbolHooks, symbolHooksCount, noUndecoratedSymbols)
         : std::filesystem::path{};
     bool cacheHit = false;
+    bool onlineCacheHit = false;
     bool enumerationSucceeded = false;
     if (!cachePath.empty()) {
         std::wstring cached;
@@ -879,6 +990,15 @@ inline BOOL Wh_HookSymbols(HMODULE module,
                 cached, cacheIdentity, symbolHooks, symbolHooksCount, found, resolved)) {
             cacheHit = true;
             wmod::windhawk_symbol_compat::HookCacheHitsCounter().fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (!cacheHit && identityAvailable) {
+        std::wstring onlineCacheText;
+        if (wmod::windhawk_symbol_compat::FetchOnlineHookCache(
+                options, cacheIdentity, symbolHooks, symbolHooksCount,
+                onlineCacheText, found, resolved)) {
+            cacheHit = true;
+            onlineCacheHit = true;
         }
     }
 
@@ -954,7 +1074,9 @@ inline BOOL Wh_HookSymbols(HMODULE module,
             if (!hook.hookFunction && hook.pOriginalFunction) *hook.pOriginalFunction = match.target;
         }
 
-        if (!cacheHit && enumerationSucceeded && identityAvailable && !cachePath.empty()) {
+        if ((!cacheHit || onlineCacheHit) &&
+            (enumerationSucceeded || onlineCacheHit) &&
+            identityAvailable && !cachePath.empty()) {
             try {
                 const auto cacheText = wmod::windhawk_symbol_compat::HookCacheText(
                     cacheIdentity, symbolHooks, symbolHooksCount, found, resolved);
