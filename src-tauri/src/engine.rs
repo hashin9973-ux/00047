@@ -352,6 +352,8 @@ impl Engine {
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
+        self.debug_resume(id);
+        self.debug_breakpoints.lock().map_err(|e|e.to_string())?.remove(id);
         self.store.remove(id)?;
         self.autos.lock().unwrap().remove(id);
         self.nodes.lock().unwrap().remove(id);
@@ -372,6 +374,8 @@ impl Engine {
 
     // ----- run -----
     async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64) {
+        // A new run starts from a clean debug state even when the previous run was stopped while paused.
+        self.debug_resume(&auto.id);
         let started = now_ms();
         self.nodes.lock().unwrap().remove(&auto.id);
         self.set_auto(&auto.id, |r| {
@@ -398,6 +402,7 @@ impl Engine {
         for h in hs {
             let _ = h.await;
         }
+        self.debug_resume(&auto.id);
         let stopped = parent.is_cancelled();
         let aborted = ctx.aborted.load(Ordering::SeqCst);
         let errors = ctx.errors.load(Ordering::SeqCst);
