@@ -472,7 +472,7 @@ fn in_window(c: &Value) -> Result<bool, String> {
     let start = spec::parse_hhmm(&get("start", "09:00")).ok_or("Start time must look like 09:00")?;
     let end = spec::parse_hhmm(&get("end", "17:00")).ok_or("End time must look like 17:00")?;
     let (dow, now) = sys::local_weekday_minutes();
-    Ok(window_matches(start, end, &text(c, "days"), dow, now))
+    Ok(window_matches(start, end, &text(c, "days"), u32::from(dow), now))
 }
 
 #[async_trait]
