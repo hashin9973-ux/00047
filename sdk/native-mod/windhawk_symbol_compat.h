@@ -491,16 +491,57 @@ inline bool BuildHookCacheIdentity(
         }
         identity.version = std::to_wstring(identity.timestamp) + L"-" +
             std::to_wstring(identity.imageSize);
-        // PE timestamp + image size + lowercase image name is Windhawk's
-        // documented fallback identity when a module has no usable PDB GUID.
-        // This local cache deliberately uses that conservative identity even for
-        // PDB-backed images; a cache miss simply falls back to DbgHelp.
-        identity.cacheKey = L"pe_x86-64_";
-        identity.cacheKey += std::to_wstring(identity.timestamp);
-        identity.cacheKey += L'_';
-        identity.cacheKey += std::to_wstring(identity.imageSize);
-        identity.cacheKey += L'_';
-        identity.cacheKey += identity.moduleFileName;
+
+        bool hasPdbIdentity = false;
+        if (nt.OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_DEBUG) {
+            const auto& debug = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+            const size_t debugRva = debug.VirtualAddress;
+            const size_t debugSize = debug.Size;
+            if (debugRva != 0 && debugRva <= identity.imageSize &&
+                debugSize <= identity.imageSize - debugRva &&
+                debugSize >= sizeof(IMAGE_DEBUG_DIRECTORY)) {
+                const size_t count = debugSize / sizeof(IMAGE_DEBUG_DIRECTORY);
+                for (size_t i = 0; i < count; ++i) {
+                    IMAGE_DEBUG_DIRECTORY entry{};
+                    std::memcpy(&entry, base + debugRva + i * sizeof(entry), sizeof(entry));
+                    const size_t dataRva = entry.AddressOfRawData;
+                    const size_t dataSize = entry.SizeOfData;
+                    if (entry.Type != IMAGE_DEBUG_TYPE_CODEVIEW || dataRva == 0 ||
+                        dataRva > identity.imageSize ||
+                        dataSize < sizeof(DWORD) + sizeof(GUID) + sizeof(DWORD) ||
+                        dataSize > identity.imageSize - dataRva) {
+                        continue;
+                    }
+                    struct CodeViewPdb70 { DWORD signature; GUID guid; DWORD age; } codeView{};
+                    std::memcpy(&codeView, base + dataRva, sizeof(codeView));
+                    if (codeView.signature != 0x53445352u) continue; // "RSDS"
+                    wchar_t identifier[64]{};
+                    const GUID& guid = codeView.guid;
+                    if (swprintf_s(identifier, _countof(identifier),
+                            L"%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%x",
+                            guid.Data1, guid.Data2, guid.Data3,
+                            guid.Data4[0], guid.Data4[1], guid.Data4[2],
+                            guid.Data4[3], guid.Data4[4], guid.Data4[5],
+                            guid.Data4[6], guid.Data4[7], codeView.age) > 0) {
+                        identity.cacheKey = L"pdb_";
+                        identity.cacheKey += identifier;
+                        hasPdbIdentity = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Windhawk's fallback key is based on PE timestamp, image size, and
+        // lowercase filename when no usable CodeView PDB identity is present.
+        if (!hasPdbIdentity) {
+            identity.cacheKey = L"pe_x86-64_";
+            identity.cacheKey += std::to_wstring(identity.timestamp);
+            identity.cacheKey += L'_';
+            identity.cacheKey += std::to_wstring(identity.imageSize);
+            identity.cacheKey += L'_';
+            identity.cacheKey += identity.moduleFileName;
+        }
         return true;
     } catch (...) {
         return false;
@@ -830,6 +871,7 @@ inline BOOL Wh_HookSymbols(HMODULE module,
             cacheIdentity, symbolHooks, symbolHooksCount, noUndecoratedSymbols)
         : std::filesystem::path{};
     bool cacheHit = false;
+    bool enumerationSucceeded = false;
     if (!cachePath.empty()) {
         std::wstring cached;
         if (wmod::windhawk_symbol_compat::ReadLocalHookCache(cachePath, cached) &&
@@ -852,6 +894,7 @@ inline BOOL Wh_HookSymbols(HMODULE module,
                 if (!symbolHooks[i].optional) return FALSE;
             }
         } else {
+            enumerationSucceeded = true;
             try {
                 do {
                     const std::wstring_view undecorated =
@@ -911,7 +954,7 @@ inline BOOL Wh_HookSymbols(HMODULE module,
             if (!hook.hookFunction && hook.pOriginalFunction) *hook.pOriginalFunction = match.target;
         }
 
-        if (!cacheHit && identityAvailable && !cachePath.empty()) {
+        if (!cacheHit && enumerationSucceeded && identityAvailable && !cachePath.empty()) {
             try {
                 const auto cacheText = wmod::windhawk_symbol_compat::HookCacheText(
                     cacheIdentity, symbolHooks, symbolHooksCount, found, resolved);

@@ -108,6 +108,22 @@ int wmain() {
     CHECK(discoveredProbe == reinterpret_cast<void*>(&CompatibilityProbeSymbol));
     CHECK(wmod::windhawk_symbol_compat::HookCacheHitCount() > cacheHitsBeforeLookup);
 
+    // Reject a cache that attempts to redirect a valid selector outside the
+    // loaded PE image; no arbitrary address from cache contents is trusted.
+    MODULEINFO cacheModuleInfo{};
+    CHECK(GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(nullptr),
+        &cacheModuleInfo, sizeof(cacheModuleInfo)) != FALSE);
+    wmod::windhawk_symbol_compat::HookCacheIdentity cacheIdentity{};
+    CHECK(wmod::windhawk_symbol_compat::BuildHookCacheIdentity(
+        GetModuleHandleW(nullptr), cacheModuleInfo, cacheIdentity));
+    const std::wstring invalidOffsetCache =
+        L"1#" + cacheIdentity.headerModuleName + L"#" + cacheIdentity.version +
+        L"#CompatibilityProbeSymbol#" + std::to_wstring(cacheIdentity.imageSize + 1);
+    std::vector<bool> cacheFound;
+    std::vector<wmod::windhawk_symbol_compat::HookCachedResolution> cacheResolved;
+    CHECK(wmod::windhawk_symbol_compat::ResolveHookCacheText(
+        invalidOffsetCache, cacheIdentity, &lookupHook, 1, cacheFound, cacheResolved) == FALSE);
+
     // Missing required names fail without publishing partial symbol results.
     struct MissingSelector {
         PCWSTR string;
