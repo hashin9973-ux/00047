@@ -534,6 +534,56 @@ impl Block for VariableCompare{
     }
 }
 
+struct SwitchCase;
+fn switch_case_spec()->Value{
+    let mut fields=vec![
+        json!({"key":"sourceVar","label":"Variable to inspect","type":"text","required":true,"maxLen":64}),
+        json!({"key":"operator","label":"Match operator","type":"select","default":"equals","options":[["equals","Equals one case"],["contains","Contains case text"],["starts_with","Starts with case text"],["numeric","Numeric equals"]]}),
+        json!({"key":"caseValuesJson","label":"Case values (JSON array)","type":"textarea","rows":4,"required":true,"default":"[\"ready\",\"completed\"]","maxLen":8000}),
+    ];
+    fields.extend(extra::behavior_fields());
+    json!({"category":"condition","title":"Switch / Case","icon":"git-branch","description":"Routes IF when a variable matches one of the configured case values; ELSE acts as the default branch. Chain these blocks to build a multi-case switch.","fields":fields,"summary":"Switch {sourceVar} · {operator}","help":"Case values are a JSON array with 1–100 strings or numbers. Connect IF to the matching case body and ELSE to the next case or default path. Numeric equals converts both sides to finite numbers."})
+}
+#[async_trait]
+impl Block for SwitchCase{
+ fn title(&self)-> &'static str{"Switch / Case"}fn category(&self)->Cat{Cat::Condition}fn supports_timeout(&self)->bool{true}
+ fn spec(&self)->Option<Value>{Some(switch_case_spec())}
+ fn validate(&self,c:&Value)->Result<(),String>{
+    spec::validate(&switch_case_spec(),c)?;no_nul(c,&["sourceVar","caseValuesJson"])?;
+    if !valid_name(&txt(c,"sourceVar")){return Err("Variable name is invalid".into())}
+    let values:Value=serde_json::from_str(&raw(c,"caseValuesJson")).map_err(|e|format!("Case values must be valid JSON: {e}"))?;
+    let values=values.as_array().ok_or("Case values must be a JSON array")?;
+    if values.is_empty()||values.len()>100{return Err("Provide between 1 and 100 case values".into())}
+    if values.iter().any(|v|!v.is_string()&&!v.is_number()){return Err("Case values must be strings or numbers".into())}
+    if !matches!(txt(c,"operator").as_str(),"equals"|"contains"|"starts_with"|"numeric"){return Err("Unknown case match operator".into())}
+    extra::wait_settings(c).map(|_|())
+ }
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+    self.validate(&cx.cfg)?;
+    let var=txt(&cx.cfg,"sourceVar");let op=txt(&cx.cfg,"operator");
+    let cases:Vec<Value>=serde_json::from_str(&raw(&cx.cfg,"caseValuesJson")).map_err(|e|e.to_string())?;
+    let(behavior,poll,stable,timeout)=extra::wait_settings(&cx.cfg)?;
+    extra::poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{
+        let actual=cx.get_variable(&var);
+        let result=actual.as_ref().is_some_and(|v|{
+            let rendered=match v{Value::String(s)=>s.clone(),other=>other.to_string()};
+            cases.iter().any(|case|{
+                let target=match case{Value::String(s)=>s.clone(),other=>other.to_string()};
+                match op.as_str(){
+                    "equals"=>rendered.eq_ignore_ascii_case(&target),
+                    "contains"=>rendered.to_lowercase().contains(&target.to_lowercase()),
+                    "starts_with"=>rendered.to_lowercase().starts_with(&target.to_lowercase()),
+                    "numeric"=>rendered.parse::<f64>().ok().zip(target.parse::<f64>().ok()).is_some_and(|(a,b)|a.is_finite()&&b.is_finite()&&a==b),
+                    _=>false
+                }
+            })
+        });
+        (cx.report)("waiting",None,format!("Switch on {var}: {}",if result{"a case matched"}else{"no case matched"}));
+        Ok(result)
+    }) as extra::Probe<'_>).await
+ }
+}
+
 struct ForEach;
 fn foreach_spec()->Value{
     spec_action("For Each Item","repeat","Runs the IF-connected body once per item in a JSON array variable.",vec![
@@ -651,6 +701,7 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
     m.insert("act.csv_write",Box::new(CsvWrite));
     m.insert("act.transform_value",Box::new(TransformValue));
     m.insert("cond.variable_compare",Box::new(VariableCompare));
+    m.insert("cond.switch_case",Box::new(SwitchCase));
     m.insert("act.for_each",Box::new(ForEach));
     m.insert("act.for_each_end",Box::new(ForEachEnd));
     m.insert("act.for_each_continue",Box::new(ForEachContinue));
@@ -705,6 +756,12 @@ mod tests {
         assert!(CallSubflow.validate(&json!({"automationId":"abc","inputMapJson":"{\"param\":\"source\"}","outputMapJson":"{\"result\":\"target\"}","timeoutSec":30,"onFail":"stop"})).is_ok());
         assert!(TryCatch.validate(&json!({"tryAutomationId":"try-id","catchAutomationId":"catch-id","errorVar":"err","timeoutSec":60,"onFail":"stop"})).is_ok());
         assert!(TryCatch.validate(&json!({"tryAutomationId":"same","catchAutomationId":"same","errorVar":"err","timeoutSec":60,"onFail":"stop"})).is_err());
+    }
+    #[test]
+    fn switch_case_accepts_bounded_string_or_numeric_cases(){
+        assert!(SwitchCase.validate(&json!({"sourceVar":"status","operator":"equals","caseValuesJson":"[\"ready\",\"done\"]","behavior":"check","onFail":"stop"})).is_ok());
+        assert!(SwitchCase.validate(&json!({"sourceVar":"status","operator":"equals","caseValuesJson":"{}","behavior":"check","onFail":"stop"})).is_err());
+        assert!(SwitchCase.validate(&json!({"sourceVar":"status","operator":"equals","caseValuesJson":"[\"ok\",true]","behavior":"check","onFail":"stop"})).is_err());
     }
     #[test]
     fn arithmetic_expressions_are_safe_and_follow_precedence(){
