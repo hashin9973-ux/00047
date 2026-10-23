@@ -148,3 +148,12 @@ The vault UI lists names only, uses a password field for entry, and supports rep
 - **Wait for Global Hotkey** registers a system-wide shortcut with Windows `RegisterHotKey` and blocks until it is pressed. Choose a shortcut that is not already reserved. A configured timeout or stopping the automation cancels the wait.
 
 File notification behavior depends on the filesystem and may overflow on very high-volume changes or remote shares. Global shortcuts may fail if another process owns the same combination. These are event-based wait conditions, so their default timeout is 0 (wait indefinitely).
+
+
+## Execution inspection and debugging
+
+The editor dock includes live logs, recent run history, and a **Variables** inspector for the active automation or its last completed run. Variables are isolated per run; inspector keys likely to contain credentials are redacted, and internal loop-control values are hidden.
+
+Use the **Pause** toolbar control to stop scheduling additional blocks after the current operations finish, and **Resume** to continue. From a block's context menu, **Add breakpoint** pauses before that block executes on a subsequent visit; Resume then executes that block once without immediately retriggering the same breakpoint. Breakpoints are held for the current application session and are not exported with the workflow. Long-running actions may finish before a requested pause takes effect; Stop cancels a run.
+
+Debugging remains cooperative rather than instruction-level: the inspector does not single-step inside a running script or guarantee rollback of side effects that have already happened.
