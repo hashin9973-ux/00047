@@ -140,3 +140,11 @@ The **Secret Vault** in application settings stores named secrets separately fro
 Use `{{secret.api_key}}` (replace `api_key` with the exact secret name) in supported fields such as HTTP URLs, headers, body text, file text, or command input. Secret names are case-sensitive and resolve only at runtime. The execution inspector redacts keys containing secret/token/password/credential/cookie/authorization terminology; logs can still contain a secret if an arbitrary command or remote service deliberately echoes it. Do not print credentials from commands.
 
 The vault UI lists names only, uses a password field for entry, and supports replacement/deletion. DPAPI-encrypted values can only be decrypted by the same Windows user profile on that Windows installation. Back up credentials independently and recreate them after profile migration.
+
+
+### Event-driven triggers
+
+- **Wait for File Event** uses Windows `FileSystemWatcher` change notifications for create, modify, delete, rename, or any supported event. Configure a folder, wildcard, and recursive scanning. The watcher is registered when the block starts, so it should run before the expected change.
+- **Wait for Global Hotkey** registers a system-wide shortcut with Windows `RegisterHotKey` and blocks until it is pressed. Choose a shortcut that is not already reserved. A configured timeout or stopping the automation cancels the wait.
+
+File notification behavior depends on the filesystem and may overflow on very high-volume changes or remote shares. Global shortcuts may fail if another process owns the same combination. These are event-based wait conditions, so their default timeout is 0 (wait indefinitely).
