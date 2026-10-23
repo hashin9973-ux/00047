@@ -97,3 +97,44 @@ Use `{{variable_name}}` placeholders in supported text settings, including the R
 ### Wait until satisfied, polling, and timeouts
 
 Where conditions represent a state that can change over time, they support **Check once**, **Wait until satisfied**, and **Wait until state changes** with poll interval, optional stable-duration debounce, and timeout. This applies to network, CPU, disk, battery, file/folder, active-window, device-presence, lock/idle, application-responsiveness, visible-window-count, process-audio, process-count, service-state, clipboard, environment-variable, file-age, directory-count, file-watcher, file-content, HTTP-status, and window-state conditions. The legacy RAM Usage and Process Running conditions, plus Time Window, also expose wait and state-change modes with real polling, stable-duration debounce, and timeout handling. Interval remains a time gate rather than a polled state condition. For existing automations that predate the Behavior field, an absent setting defaults to **Check once** to preserve their previous semantics. Interval remains a time gate rather than a polled state condition.
+
+
+## UI Automation, data pipelines, debugging, events, and credentials
+
+### Accessible desktop control
+
+- **UI Element Condition** locates a uniquely matched accessible Windows control using its Automation ID, exact element name, control type, owning process, and/or containing-window title. It supports polling and state-change waits.
+- **UI Automation Action** invokes or focuses a control, sets a text value, toggles a checkbox, or selects a list item. It requires a unique selector match to prevent accidental interaction with a similarly named control.
+- Use these controls instead of screen coordinates when an application exposes a usable Windows UI Automation tree. Elevated applications, games, remote desktops, and custom-drawn canvases may not expose accessible controls. Coordinate-based mouse actions remain available as a fallback.
+
+### Data preparation and branching
+
+- **Parse JSON** parses JSON text into a structured workflow variable and can select a nested object property or array index.
+- **Get JSON Property** selects a property or array item from a structured variable.
+- **Regex Extract** captures a match group; **Regex Replace** transforms matching text. These use .NET regular expressions with a bounded execution time.
+- **Read CSV into Variable**, **Filter Array Rows**, and **Write CSV from Variable** support bounded CSV-to-array workflows. CSV parser input and row counts are capped; write operations stage the output and preserve an existing file if installation fails.
+- **Transform Value** supports safe string operations, numeric arithmetic, length, splitting, and unit conversion. It does not evaluate user-provided expressions as code; arithmetic expressions use a bounded parser.
+- **Variable Condition** compares run-scoped values. **Switch / Case** routes execution based on configured comparisons.
+- **For Each Item** iterates a JSON array sequentially. Connect each body path to **For Each End**, **For Each Continue**, or **For Each Break**; the body must reach a loop-control marker. Input, item, and index variables must be distinct, and loops are bounded to 100,000 items.
+- **Call Subflow** calls another saved automation with explicit JSON input/output variable mappings. **Try / Catch Subflows** invokes a catch automation when the try automation fails, passing the error text in a named variable. Nested calls have a maximum depth and direct self-calls are rejected.
+
+### Debugging and run history
+
+- **Debugger Breakpoint** pauses when the automation is running in debug mode and the breakpoint is enabled. From the editor, Pause takes effect at a block boundary; Step executes one block before pausing again; Resume continues normal execution. Selected-block breakpoints are stored in editor-local settings.
+- **Variables** shows live values while a run is active, or the last run's snapshot after it ends. Sensitive-looking variable names (such as names containing password, token, secret, or credential) are redacted, and long values are shortened.
+- **History / Trace** displays bounded per-block execution summaries with state, duration, visit count, and a short detail string. A run also retains a bounded copy of the automation graph when it is small enough. **Copy Snapshot** recreates that graph as a separate stopped automation for inspection; it never starts the copy automatically.
+- Existing historical records from before per-node traces and graph snapshots were introduced remain readable; those older records simply have no trace/snapshot data.
+
+### Event-oriented entry conditions and local webhooks
+
+- **Global Hotkey Condition** registers a configured global shortcut using Windows' non-repeating hotkey registration. The chord may fail to register if another application owns it.
+- **File System Event** waits for FileSystemWatcher notifications rather than repeatedly scanning the directory. It can save the triggering path to a variable. High-rate changes, remote shares, access restrictions, or filesystem notification-buffer overflow can affect event delivery.
+- **Process Start / Exit Event** uses the Windows process-event provider to detect a matching executable starting or exiting.
+- **Windows Event Log Condition** filters recent records by selected event log, optional event IDs, provider, and message text. Security-log access may require additional permissions; each poll intentionally scans a bounded number of recent records.
+- **Local Webhook Trigger** binds only to `127.0.0.1`, accepts authenticated POST requests using `X-00047-Token`, caps request-body size, and stores the body and selected safe headers in variables. A local listener is not exposed to other machines without a separately configured relay. Keep token values in the credential vault where practical.
+
+### Credential vault
+
+Use **Secrets vault…** in the application settings to create or delete named credentials. Values are encrypted for the current Windows user using DPAPI and are not saved in workflow definitions. Reference a named credential in supported text fields with `{{secret:name}}`; regular per-run values use `{{variable_name}}`. Secret values can still become visible to a destination application or external service when a workflow intentionally sends or types them, so review destination URLs and target controls and do not log expanded secret values.
+
+All desktop automation and event providers are subject to Windows session, permissions, accessibility, and system-configuration limits. The new blocks execute with the current user's permissions; they do not bypass Windows privilege boundaries or create a sandbox for scripts and commands.
