@@ -131,3 +131,12 @@ These data blocks process configured or variable-expanded text within bounded fi
 - **Continue Loop** jumps directly to the matching iterator to load the next item, skipping the remaining actions in the current body.
 
 Loop names must be unique within an automation. Use a single incoming path to an iterator to avoid concurrent branches competing for the same iteration counter. Internal loop-control values are hidden from the variable inspector.
+
+
+### Secret Vault
+
+The **Secret Vault** in application settings stores named secrets separately from automation definitions. On Windows, secret values are encrypted with DPAPI for the current Windows user and written to the app data directory. Exported automation files contain only ordinary block configuration, not vault values.
+
+Use `{{secret.api_key}}` (replace `api_key` with the exact secret name) in supported fields such as HTTP URLs, headers, body text, file text, or command input. Secret names are case-sensitive and resolve only at runtime. The execution inspector redacts keys containing secret/token/password/credential/cookie/authorization terminology; logs can still contain a secret if an arbitrary command or remote service deliberately echoes it. Do not print credentials from commands.
+
+The vault UI lists names only, uses a password field for entry, and supports replacement/deletion. DPAPI-encrypted values can only be decrypted by the same Windows user profile on that Windows installation. Back up credentials independently and recreate them after profile migration.
