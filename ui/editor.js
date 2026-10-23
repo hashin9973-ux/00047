@@ -1044,7 +1044,7 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
       <div class="mi" data-a="dup"><span><b>Duplicate</b><small>Ctrl+D</small></span></div>
       <div class="mi" data-a="col"><span><b>${n.collapsed ? 'Expand' : 'Collapse'} settings</b></span></div>
       <div class="mi" data-a="del"><span><b>Delete</b><small>Del</small></span></div></div>`;
-    this.placeMenu(cx, cy, 300, 260);
+    this.placeMenu(cx, cy, 300, 310);
     m.onclick = e => {
       const it = e.target.closest('.mi'); if (!it) return;
       this.hideMenu();
