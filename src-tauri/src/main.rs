@@ -227,6 +227,11 @@ fn get_history(eng: State<'_, Arc<Engine>>, id: String) -> Vec<RunRecord> {
 }
 
 #[tauri::command]
+fn get_workflow_variables(eng: State<'_, Arc<Engine>>, id: String) -> serde_json::Value {
+    eng.workflow_variables(&id)
+}
+
+#[tauri::command]
 fn clear_logs(eng: State<'_, Arc<Engine>>) {
     eng.clear_logs();
 }
@@ -633,6 +638,7 @@ fn main() {
             get_runtime,
             get_logs,
             get_history,
+            get_workflow_variables,
             clear_logs,
             app_stats,
             get_autostart,
