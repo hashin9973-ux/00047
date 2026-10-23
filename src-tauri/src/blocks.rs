@@ -447,22 +447,34 @@ fn schedule_spec() -> Value {
 }
 
 struct Schedule;
+fn window_matches(start: u32, end: u32, days: &str, dow: u32, now: u32) -> bool {
+    let time_ok = start == end || if start < end {
+        now >= start && now < end
+    } else {
+        now >= start || now < end
+    };
+    if !time_ok { return false; }
+
+    // The post-midnight part of an overnight window belongs to its start day.
+    let effective_dow = if start > end && now < end { (dow + 6) % 7 } else { dow };
+    match days {
+        "weekdays" => (1..=5).contains(&effective_dow),
+        "weekends" => effective_dow == 0 || effective_dow == 6,
+        _ => true,
+    }
+}
+
 fn in_window(c: &Value) -> Result<bool, String> {
     let get = |k: &str, d: &str| {
         let t = text(c, k);
         if t.is_empty() { d.to_string() } else { t }
     };
-    let s = spec::parse_hhmm(&get("start", "09:00")).ok_or("Start time must look like 09:00")?;
-    let e = spec::parse_hhmm(&get("end", "17:00")).ok_or("End time must look like 17:00")?;
+    let start = spec::parse_hhmm(&get("start", "09:00")).ok_or("Start time must look like 09:00")?;
+    let end = spec::parse_hhmm(&get("end", "17:00")).ok_or("End time must look like 17:00")?;
     let (dow, now) = sys::local_weekday_minutes();
-    let day_ok = match text(c, "days").as_str() {
-        "weekdays" => (1..=5).contains(&dow),
-        "weekends" => dow == 0 || dow == 6,
-        _ => true,
-    };
-    let time_ok = s == e || if s < e { now >= s && now < e } else { now >= s || now < e };
-    Ok(day_ok && time_ok)
+    Ok(window_matches(start, end, &text(c, "days"), dow, now))
 }
+
 #[async_trait]
 impl Block for Schedule {
     fn title(&self) -> &'static str {
@@ -1042,6 +1054,17 @@ mod expanded_blocks_tests {
         assert!(r["cond.workstation_lock"].validate(&json!({"state":"locked","behavior":"check","onFail":"stop"})).is_ok());
         assert!(r["cond.user_idle"].validate(&json!({"state":"idle","seconds":300,"behavior":"check","onFail":"stop"})).is_ok());
         assert!(r["cond.app_responsive"].validate(&json!({"processName":"notepad","state":"responsive","behavior":"check","onFail":"stop"})).is_ok());
+    }
+
+    #[test]
+    fn overnight_time_windows_use_the_start_day_for_day_filters() {
+        // Windows use Sunday=0 through Saturday=6; times are minutes after midnight.
+        assert!(window_matches(22 * 60, 6 * 60, "weekdays", 6, 2 * 60)); // Saturday 02:00, started Friday.
+        assert!(!window_matches(22 * 60, 6 * 60, "weekdays", 6, 12 * 60)); // Outside the window.
+        assert!(window_matches(22 * 60, 6 * 60, "weekends", 1, 2 * 60)); // Monday 02:00, started Sunday.
+        assert!(window_matches(9 * 60, 17 * 60, "weekdays", 1, 10 * 60));
+        assert!(!window_matches(9 * 60, 17 * 60, "weekdays", 6, 10 * 60));
+        assert!(window_matches(9 * 60, 9 * 60, "weekends", 0, 23 * 60));
     }
 
     #[test]
