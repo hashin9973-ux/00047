@@ -23,7 +23,7 @@ const fmtAgo = ts => {
 };
 
 const LABEL = { running: 'Running', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
-const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '', secrets: [] };
+const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], vars: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '', secrets: [] };
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
 const isRun = id => ['running', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
@@ -280,6 +280,9 @@ function renderDock() {
     el.innerHTML = S.hist.length
       ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms"><button class="ib history-replay" data-run-replay="${r.id}" title="Replay if the captured workflow is classified safe">Replay</button>${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
       : '<div class="empty">No finished runs yet.</div>';
+  } else if (S.tab === 'variables') {
+    el.innerHTML = `<div class="variable-toolbar"><span class="mu">Latest in-memory run scope · values are redacted and capped for display.</span><button class="ib" data-vars-refresh>Refresh</button></div>` +
+      (S.vars.length ? `<div class="variable-list">${S.vars.map(v => `<div class="variable-row"><div class="variable-name"><strong>${esc(v.name)}</strong><small>${esc(v.kind)}</small></div><code>${esc(v.preview)}${v.truncated ? ' …' : ''}</code></div>`).join('')}</div>` : '<div class="empty">No variables have been set in this run yet.</div>');
   } else el.innerHTML = HELP;
 }
 
@@ -287,6 +290,13 @@ async function refreshHist() {
   if (!S.editId) return;
   try { S.hist = await invoke('get_history', { id: S.editId }); } catch { S.hist = []; }
   if (S.tab === 'history') renderDock();
+}
+
+async function refreshWorkflowVariables() {
+  if (!S.editId) return;
+  try { S.vars = await invoke('inspect_workflow_variables', { id: S.editId }); }
+  catch (e) { S.vars = []; toast('Could not inspect variables: ' + String(e?.message || e), 'err'); }
+  if (S.view === 'editor' && S.tab === 'variables') renderDock();
 }
 
 function openEditor(id) {
@@ -312,9 +322,10 @@ $('#dock-toggle').addEventListener('click', () => { $('#ed-dock').classList.togg
 $('#dock-tabs').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   S.tab = b.dataset.tab; $('#ed-dock').classList.remove('closed');
-  if (S.tab === 'history') refreshHist(); else renderDock();
+  if (S.tab === 'history') refreshHist(); else if (S.tab === 'variables') refreshWorkflowVariables(); else renderDock();
 });
 $('#dock-body').addEventListener('click', async e => {
+  if (e.target.closest('[data-vars-refresh]')) { await refreshWorkflowVariables(); return; }
   const b = e.target.closest('[data-run-replay]');
   if (!b || !S.editId) return;
   const runId = Number(b.dataset.runReplay);
@@ -515,6 +526,7 @@ setInterval(() => {
   if (tick % 10 === 0) { fillTable(); return; }
   document.querySelectorAll('#ov-rows .rt').forEach(td => { const s = +td.dataset.s; if (s) td.textContent = fmtDur(Date.now() - s); });
 }, 1000);
+setInterval(() => { if (S.view === 'editor' && S.tab === 'variables' && S.editId) refreshWorkflowVariables(); }, 1200);
 setInterval(tickStats, 2000);
 
 // Automations
