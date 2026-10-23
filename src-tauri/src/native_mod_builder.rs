@@ -452,11 +452,17 @@ fn create_package(
         .map_err(|e| format!("Cannot write package manifest entry: {e}"))?;
     archive.write_all(manifest_bytes)
         .map_err(|e| format!("Cannot write package manifest: {e}"))?;
-    let module_name = module_relative
-        .to_str()
+    if module_relative.parent() != Some(Path::new("bin")) {
+        return Err("Manifest module path must be a safe bin/<module-name>.dll path.".into());
+    }
+    let module_file_name = module_relative
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
         .ok_or("Manifest module path is not valid UTF-8.")?;
+    // ZIP paths always use forward slashes, independent of the build host OS.
+    let module_name = format!("bin/{module_file_name}");
     archive
-        .start_file(module_name, FileOptions::default().compression_method(CompressionMethod::Deflated))
+        .start_file(module_name.as_str(), FileOptions::default().compression_method(CompressionMethod::Deflated))
         .map_err(|e| format!("Cannot write package DLL entry: {e}"))?;
     archive.write_all(&dll_bytes)
         .map_err(|e| format!("Cannot write package DLL bytes: {e}"))?;
@@ -561,6 +567,30 @@ WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) {
         let package = manager.package_dir(MOD_ID).unwrap();
         assert!(package.join("manifest.json").is_file());
         assert!(package.join("bin").join(format!("{MODULE_NAME}.dll")).is_file());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn create_package_writes_forward_slash_zip_paths() {
+        let root = std::env::temp_dir().join(format!(
+            "00047-zip-entry-path-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let manifest = root.join("manifest.json");
+        let dll = root.join("test.dll");
+        let package = root.join("out.zip");
+        fs::write(&manifest, b"{}").unwrap();
+        fs::write(&dll, b"MZ").unwrap();
+
+        let module = safe_module_relative_path("bin/test.dll").unwrap();
+        create_package(&package, b"{}", &module, &dll).unwrap();
+        let mut archive = zip::ZipArchive::new(File::open(&package).unwrap()).unwrap();
+        let names: Vec<String> = archive.file_names().map(str::to_owned).collect();
+        assert_eq!(names, vec!["manifest.json", "bin/test.dll"]);
+        assert!(archive.by_name("bin/test.dll").is_ok());
 
         fs::remove_dir_all(root).unwrap();
     }
