@@ -31,10 +31,10 @@ extern "C" int __cdecl wmod_verify_trusted_authenticode(
 
     GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     const LONG verification = WinVerifyTrust(
-        INVALID_HANDLE_VALUE, &policy, &trustData);
+        nullptr, &policy, &trustData);
 
     trustData.dwStateAction = WTD_STATEACTION_CLOSE;
-    (void)WinVerifyTrust(INVALID_HANDLE_VALUE, &policy, &trustData);
+    (void)WinVerifyTrust(nullptr, &policy, &trustData);
 
     return verification == ERROR_SUCCESS ? 1 : 0;
 }
