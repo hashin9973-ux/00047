@@ -940,9 +940,13 @@ this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id
 
   paintState(id, st) {
     const el = this.els.get(id); if (!el) return;
-    for (const s of ['idle', 'running', 'waiting', 'done', 'failed']) el.classList.remove('st-' + s);
+    for (const s of ['idle', 'running', 'waiting', 'paused', 'done', 'failed']) el.classList.remove('st-' + s);
     el.classList.add('st-' + st.state);
-    el.querySelector('.n-detail').textContent = st.detail || '';
+    const detail = st.detail || '';
+    const duration = Number.isFinite(st.durationMs) ? ` · ${st.durationMs} ms` : '';
+    const attempts = st.attempts > 1 ? ` · attempt ${st.attempts}` : '';
+    el.querySelector('.n-detail').textContent = detail + duration + attempts;
+    el.title = [detail, st.durationMs != null ? `Duration: ${st.durationMs} ms` : '', st.attempts ? `Executions: ${st.attempts}` : ''].filter(Boolean).join('\n');
     const pr = el.querySelector('.n-prog');
     if (pr) {
       if (st.progress != null) { pr.hidden = false; pr.querySelector('i').style.width = Math.round(clamp(st.progress, 0, 1) * 100) + '%'; }
