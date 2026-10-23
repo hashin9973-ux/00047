@@ -3,7 +3,8 @@ use super::{extra, rng, spec, text, Block, Cat, NodeCx, Outcome};
 use async_trait::async_trait;
 use regex::{Regex, RegexBuilder};
 use serde_json::{json, Map, Value};
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn raw(c:&Value,k:&str)->String{c.get(k).and_then(Value::as_str).unwrap_or("").to_string()}
 fn tpl(cx:&NodeCx,k:&str)->Result<String,String>{cx.expand_template(&raw(&cx.cfg,k))}
@@ -273,6 +274,106 @@ let script=script.replace("__MODS__",String(mods)).replace("__VK__",String(vk)).
 let out=await extra::powershell(cx,&script).await?;if out.trim()=="1"{Ok(Outcome::Satisfied)}else{Err("Hotkey wait returned without a key press".into())}}
 }
 
+
+async fn read_local_http_request(stream: &mut tokio::net::TcpStream) -> Result<(String,String,Vec<(String,String)>,Vec<u8>),String> {
+    let mut data=Vec::<u8>::with_capacity(4096);
+    let sep=b"\r\n\r\n";
+    let header_end=loop {
+        if let Some(i)=data.windows(4).position(|w|w==sep) { break i; }
+        if data.len()>=16*1024 { return Err("Webhook headers exceed 16 KiB".into()); }
+        let mut chunk=[0u8;4096];
+        let n=stream.read(&mut chunk).await.map_err(|e|format!("Read webhook request: {e}"))?;
+        if n==0 { return Err("Webhook client closed before sending HTTP headers".into()); }
+        data.extend_from_slice(&chunk[..n]);
+    };
+    let head=String::from_utf8(data[..header_end].to_vec()).map_err(|_|"HTTP headers must be ASCII/UTF-8")?;
+    let mut lines=head.split("\r\n");
+    let first=lines.next().ok_or("Missing HTTP request line")?;
+    let mut request=first.split_whitespace();
+    let method=request.next().ok_or("Missing HTTP method")?.to_string();
+    let path=request.next().ok_or("Missing HTTP path")?.to_string();
+    let version=request.next().unwrap_or("");
+    if !version.starts_with("HTTP/1.") || !path.starts_with('/') || method.len()>16 || path.len()>2048 { return Err("Invalid HTTP request line".into()); }
+    let mut headers=Vec::new();
+    let mut content_len=0usize;
+    for line in lines {
+        let Some((k,v))=line.split_once(':') else { return Err("Malformed HTTP header".into()) };
+        let key=k.trim().to_ascii_lowercase();
+        let value=v.trim().to_string();
+        if key=="content-length" { content_len=value.parse::<usize>().map_err(|_|"Invalid Content-Length")?; }
+        if key=="transfer-encoding" && value.to_ascii_lowercase().contains("chunked") { return Err("Chunked transfer encoding is not supported".into()); }
+        headers.push((key,value));
+    }
+    if content_len>64*1024 { return Err("Webhook request body exceeds 64 KiB".into()); }
+    let body_start=header_end+4;
+    let needed=body_start+content_len;
+    while data.len()<needed {
+        let mut chunk=[0u8;4096];
+        let n=stream.read(&mut chunk).await.map_err(|e|format!("Read webhook body: {e}"))?;
+        if n==0 { return Err("Webhook client closed before the body was complete".into()); }
+        data.extend_from_slice(&chunk[..n]);
+        if data.len()>16*1024+64*1024 { return Err("Webhook request exceeds its size cap".into()); }
+    }
+    Ok((method,path,headers,data[body_start..needed].to_vec()))
+}
+fn token_equals(a:&str,b:&str)->bool {
+    let aa=a.as_bytes();let bb=b.as_bytes();
+    if aa.len()!=bb.len(){return false}
+    aa.iter().zip(bb).fold(0u8,|d,(x,y)|d|(x^y))==0
+}
+struct WebhookEvent;
+fn webhook_spec()->Value{cond_spec("Local Webhook Event","globe","Waits for an authenticated HTTP request on a loopback-only endpoint.",vec![
+ json!({"key":"port","label":"Local port","type":"number","min":1024,"max":65535,"step":1,"default":18747}),
+ json!({"key":"path","label":"Route path","type":"text","default":"/trigger","required":true,"maxLen":512}),
+ json!({"key":"method","label":"HTTP method","type":"select","default":"POST","options":[["POST","POST"],["PUT","PUT"],["PATCH","PATCH"],["GET","GET"]]}),
+ json!({"key":"authToken","label":"Bearer token (use {{secret:NAME}})","type":"text","required":true,"maxLen":1000}),
+ json!({"key":"timeoutSec","label":"Wait timeout (seconds; 0 = indefinite)","type":"number","min":0,"max":86400,"step":1,"default":0}),
+ json!({"key":"saveBodyAs","label":"Save request body variable (optional)","type":"text","maxLen":64}),
+ json!({"key":"saveMethodAs","label":"Save method variable (optional)","type":"text","maxLen":64}),onfail()
+],"Local webhook {path}","Binds only to 127.0.0.1, never a public interface. Requires Authorization: Bearer TOKEN; use a DPAPI-backed secret reference. The request body cap is 64 KiB.")}
+#[async_trait]impl Block for WebhookEvent{
+ fn title(&self)-> &'static str{"Local Webhook Event"}fn category(&self)->Cat{Cat::Condition}fn spec(&self)->Option<Value>{Some(webhook_spec())}
+ fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&webhook_spec(),c)?;no_nul(c,&["path","authToken","saveBodyAs","saveMethodAs"])?;let p=text(c,"path");if !p.starts_with('/')||p.contains("..")||p.contains('\r')||p.contains('\n'){return Err("Route path must begin with / and must not contain '..' or line breaks".into())};if text(c,"authToken").is_empty(){return Err("A bearer token is required; use {{secret:NAME}} for a vault value".into())};if !["POST","PUT","PATCH","GET"].contains(&text(c,"method").as_str()){return Err("Unsupported webhook HTTP method".into())};let port=rng(c,"port",18747.0,1024.0,65535.0,"Port")?;if port.fract()!=0.0{return Err("Port must be a whole number".into())};let t=rng(c,"timeoutSec",0.0,0.0,86400.0,"Timeout")?;if t.fract()!=0.0{return Err("Timeout must be a whole number".into())};for k in ["saveBodyAs","saveMethodAs"]{if !text(c,k).is_empty(){vname(c,k)?}}Ok(())}
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+    self.validate(&cx.cfg)?;
+    let port=rng(&cx.cfg,"port",18747.0,1024.0,65535.0,"Port")? as u16;
+    let route=tpl(cx,"path")?;let method= text(&cx.cfg,"method");let token=tpl(cx,"authToken")?;
+    let timeout=rng(&cx.cfg,"timeoutSec",0.0,0.0,86400.0,"Timeout")?;
+    let listener=tokio::net::TcpListener::bind(("127.0.0.1",port)).await.map_err(|e|format!("Cannot bind local webhook to 127.0.0.1:{port}: {e}"))?;
+    (cx.report)("waiting",None,format!("Listening on 127.0.0.1:{port}{route}"));
+    let wait=async {
+        loop {
+            let (mut stream,_)=tokio::select!{
+                r=listener.accept()=>r.map_err(|e|format!("Webhook accept failed: {e}"))?,
+                _=cx.token.cancelled()=>return Err("cancelled".to_string())
+            };
+            let req=tokio::time::timeout(Duration::from_secs(5),read_local_http_request(&mut stream)).await;
+            let (got_method,got_path,headers,body)=match req{
+                Ok(Ok(v))=>v,
+                Ok(Err(_))=>{let _=stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;continue},
+                Err(_)=>{let _=stream.write_all(b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;continue}
+            };
+            let got_path=got_path.split('?').next().unwrap_or("");
+            if got_path!=route {let _=stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;continue}
+            if got_method!=method {let _=stream.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;continue}
+            let auth=headers.iter().find(|(k,_)|k=="authorization").map(|(_,v)|v.as_str()).unwrap_or("");
+            let bearer=auth.strip_prefix("Bearer ").unwrap_or("");
+            if !token_equals(bearer,&token) {let _=stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;continue}
+            let _=stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nOK\n").await;
+            return Ok((got_method,body));
+        }
+    };
+    let (got_method,body)=if timeout>0.0 {
+        tokio::time::timeout(Duration::from_secs_f64(timeout),wait).await.map_err(|_|format!("webhook timed out after {timeout} seconds"))??
+    }else{wait.await?};
+    let body_text=String::from_utf8_lossy(&body).to_string();
+    let save_body=text(&cx.cfg,"saveBodyAs");if !save_body.is_empty(){cx.set_variable(vname(&cx.cfg,"saveBodyAs")?,json!(body_text))?}
+    let save_method=text(&cx.cfg,"saveMethodAs");if !save_method.is_empty(){cx.set_variable(vname(&cx.cfg,"saveMethodAs")?,json!(got_method))?}
+    (cx.log)("info",format!("Authenticated local webhook received ({}, {} bytes)",got_method,body.len()));
+    Ok(Outcome::Satisfied)
+ }
+}
+
 struct Breakpoint;
 fn breakpoint_spec()->Value{action_spec("Breakpoint","pause-circle","Pauses the automation at this point until the debugger resumes it.",vec![],"Breakpoint","When reached, the engine pauses before the next block. Use Resume to continue or Step to execute one block at a time.")}
 #[async_trait]impl Block for Breakpoint{
@@ -300,6 +401,6 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
  m.insert("cond.switch_case",Box::new(SwitchCase));m.insert("act.for_each",Box::new(ForEach));
  m.insert("act.call_subflow",Box::new(CallSubflow));m.insert("flow.return_value",Box::new(ReturnValue));
  m.insert("cond.ui_element",Box::new(UiElement));m.insert("act.ui_click",Box::new(UiClick));m.insert("act.ui_set_value",Box::new(UiSetValue));
- m.insert("cond.file_event",Box::new(FileEvent));m.insert("cond.process_event",Box::new(ProcessEvent));m.insert("flow.breakpoint",Box::new(Breakpoint));m.insert("act.csv_filter",Box::new(CsvFilter));m.insert("act.try_catch",Box::new(TryCatch));m.insert("cond.hotkey_event",Box::new(HotkeyEvent));
+ m.insert("cond.file_event",Box::new(FileEvent));m.insert("cond.process_event",Box::new(ProcessEvent));m.insert("flow.breakpoint",Box::new(Breakpoint));m.insert("act.csv_filter",Box::new(CsvFilter));m.insert("act.try_catch",Box::new(TryCatch));m.insert("cond.hotkey_event",Box::new(HotkeyEvent));m.insert("cond.webhook_event",Box::new(WebhookEvent));
 }
-#[cfg(test)]mod tests{use super::*;#[test]fn csv_quotes_and_escaped_quotes(){let r=csv_parse("a,b\r\nx,\"hello, world\"\r\ny,\"say \"\"yes\"\"\"\r\n",',',10).unwrap();assert_eq!(r[1][1],"hello, world");assert_eq!(r[2][1],"say \"yes\"")}#[test]fn csv_rejects_unclosed_quotes_and_limits(){assert!(csv_parse("a\n\"oops",',',20).is_err());assert!(csv_parse("a\nb\nc\n",',',1).is_err())}#[test]fn json_path_array_indices(){let v=json!({"a":{"items":[{"n":"x"},{"n":"y"}]}});assert_eq!(path_get(&v,"a.items.1.n"),Some(&json!("y")));assert!(path_get(&v,"a.items.9.n").is_none())}#[test]fn regex_capture_replace(){let r=Regex::new(r"([A-Z]+)-(\d+)").unwrap();assert_eq!(r.captures("ID-42").unwrap().get(2).unwrap().as_str(),"42");assert_eq!(r.replace("ID-42","$1:$2"),"ID:42")}#[test]fn nextgen_registry_specs(){let mut m=std::collections::HashMap::new();register_into(&mut m);assert_eq!(m.len(),20);for(k,b)in m{assert!(b.spec().is_some(),"{k} no spec")}}}
+#[cfg(test)]mod tests{use super::*;#[test]fn csv_quotes_and_escaped_quotes(){let r=csv_parse("a,b\r\nx,\"hello, world\"\r\ny,\"say \"\"yes\"\"\"\r\n",',',10).unwrap();assert_eq!(r[1][1],"hello, world");assert_eq!(r[2][1],"say \"yes\"")}#[test]fn csv_rejects_unclosed_quotes_and_limits(){assert!(csv_parse("a\n\"oops",',',20).is_err());assert!(csv_parse("a\nb\nc\n",',',1).is_err())}#[test]fn json_path_array_indices(){let v=json!({"a":{"items":[{"n":"x"},{"n":"y"}]}});assert_eq!(path_get(&v,"a.items.1.n"),Some(&json!("y")));assert!(path_get(&v,"a.items.9.n").is_none())}#[test]fn regex_capture_replace(){let r=Regex::new(r"([A-Z]+)-(\d+)").unwrap();assert_eq!(r.captures("ID-42").unwrap().get(2).unwrap().as_str(),"42");assert_eq!(r.replace("ID-42","$1:$2"),"ID:42")}#[test]fn nextgen_registry_specs(){let mut m=std::collections::HashMap::new();register_into(&mut m);assert_eq!(m.len(),21);for(k,b)in m{assert!(b.spec().is_some(),"{k} no spec")}}}
