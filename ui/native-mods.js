@@ -84,8 +84,12 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       }
       $('#native-targets').innerHTML = targets;
       $('#native-mod-list').innerHTML = '<div class="sec native-section-head"><h3>Installed native mods</h3><span class="mu">' + info.mods.length + ' installed</span></div>' + mods;
-      $('#native-mod-errors').innerHTML = info.errors.length
-        ? '<div class="plugin-errors"><b>Native mod warnings</b><ul>' + info.errors.map((error) => '<li>' + esc(error) + '</li>').join('') + '</ul></div>'
+      const signatureCleanupWarnings = (info.pendingSignatureUnloads || []).map((id) =>
+        'Trusted-signature cleanup for "' + id + '" is still pending. 00047 retries safe unload in the background; do not re-enable or update this package until cleanup completes. If the warning persists, restart the affected shell process.'
+      );
+      const nativeWarnings = (info.errors || []).concat(signatureCleanupWarnings);
+      $('#native-mod-errors').innerHTML = nativeWarnings.length
+        ? '<div class="plugin-errors"><b>Native mod warnings</b><ul>' + nativeWarnings.map((error) => '<li>' + esc(error) + '</li>').join('') + '</ul></div>'
         : '';
       bindActions(host);
     } catch (error) {

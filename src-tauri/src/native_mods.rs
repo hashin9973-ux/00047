@@ -139,6 +139,7 @@ pub struct NativeModList {
     pub targets: Vec<NativeTarget>,
     pub errors: Vec<String>,
     pub require_trusted_signature: bool,
+    pub pending_signature_unloads: Vec<String>,
 }
 
 struct ReadPackage {
@@ -578,6 +579,9 @@ impl NativeModManager {
     pub fn list(&self) -> NativeModList {
         let enabled = self.enabled_snapshot();
         let require_trusted_signature = self.signature_policy_enabled();
+        let mut pending_signature_unloads: Vec<String> =
+            self.pending_signature_unloads_snapshot().into_iter().collect();
+        pending_signature_unloads.sort();
         let statuses = self.statuses.lock().map(|s| s.clone()).unwrap_or_default();
         let mut mods = Vec::new();
         let mut errors = Vec::new();
@@ -659,6 +663,7 @@ impl NativeModManager {
             targets,
             errors,
             require_trusted_signature,
+            pending_signature_unloads,
         }
     }
 
