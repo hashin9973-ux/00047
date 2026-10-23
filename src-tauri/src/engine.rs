@@ -738,6 +738,11 @@ async fn run_try_catch(parent: &Arc<Ctx>, node: &Node) -> Result<(), String> {
     }
 }
 
+struct CancelTokenOnDrop(CancellationToken);
+impl Drop for CancelTokenOnDrop {
+    fn drop(&mut self) { self.0.cancel(); }
+}
+
 async fn run_subflow(parent: &Arc<Ctx>, call_node: &Node) -> Result<(), String> {
     let id = call_node.cfg.get("automationId").and_then(Value::as_str).unwrap_or("").trim();
     let sub = parent.eng.store.get(id).ok_or_else(|| format!("subflow automation '{id}' was not found"))?;
@@ -763,6 +768,7 @@ async fn run_subflow(parent: &Arc<Ctx>, call_node: &Node) -> Result<(), String> 
         single: entries_for_run.len() == 1,
         call_stack: stack,
     });
+    let _cancel_children_on_drop = CancelTokenOnDrop(child.token.clone());
     let mut handles = Vec::new();
     for entry in entries_for_run { handles.push(tokio::spawn(run_entry(child.clone(), entry))); }
     for h in handles { let _ = h.await; }
