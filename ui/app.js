@@ -22,7 +22,7 @@ const fmtAgo = ts => {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`; return new Date(ts).toLocaleDateString();
 };
 
-const LABEL = { running: 'Running', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
+const LABEL = { running: 'Running', paused: 'Paused', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
 const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
 const isRun = id => ['running', 'stopping'].includes(stOf(id));
@@ -260,7 +260,10 @@ function editorStatus() {
   p.className = 'pill ' + st; p.textContent = LABEL[st] || st;
   $('[data-ed=start]').disabled = run;
   $('[data-ed=stop]').disabled = !run;
-  if (!run || (st === 'running' && S.edSt !== 'running')) $('#ed-note').textContent = '';
+  const paused = Object.values(S.rt.nodes[id] || {}).some(node => node.state === 'paused');
+  $('[data-ed=resume]').disabled = !paused;
+  if (paused) $('#ed-note').textContent = 'Debugger paused at a breakpoint. Resume to continue.';
+  else if (!run || (st === 'running' && S.edSt !== 'running')) $('#ed-note').textContent = '';
   S.edSt = st;
 }
 
@@ -277,8 +280,29 @@ function renderDock() {
     el.innerHTML = rows.join('') || '<div class="empty">No events yet. Start the automation to see live logs.</div>';
   } else if (S.tab === 'history') {
     el.innerHTML = S.hist.length
-      ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
+      ? S.hist.map(r => {
+        const cls = r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info';
+        const trace = Array.isArray(r.trace) ? r.trace : [];
+        const rows = trace.map(t => `<div class="trace-row"><span class="trace-state ${t.state === 'failed' ? 'error' : t.state === 'done' ? 'info' : 'warn'}">${esc(t.state)}</span><b>${esc(t.blockTitle || 'Block')}</b><span>${esc(t.automationId && t.automationId !== S.editId ? t.automationId.slice(0, 8) + ' · ' : '')}${esc(t.nodeId || '')}</span><span>${fmtDur(t.durationMs || 0)} · visit ${Number(t.visit || 0)}</span><small>${esc(t.detail || '')}</small></div>`).join('');
+        return `<details class="history-entry ${cls}"><summary><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''} · ${trace.length} steps</span></summary><div class="history-trace">${rows || '<div class="empty">No per-block trace was stored for this older run.</div>'}</div></details>`;
+      }).join('')
       : '<div class="empty">No finished runs yet.</div>';
+  } else if (S.tab === 'variables') {
+    const refresh = async () => {
+      try {
+        const vars = await invoke('get_run_variables', { id: S.editId });
+        if (S.tab !== 'variables' || S.view !== 'editor') return;
+        el.innerHTML = vars.length
+          ? `<div class="variable-grid">${vars.map(v => `<div class="variable-row"><b>${esc(v.name)}</b><span>${esc(v.type)}</span><code>${esc(typeof v.value === 'string' ? v.value : JSON.stringify(v.value))}</code>${v.sensitive ? '<small>protected</small>' : ''}</div>`).join('')}</div><button class="btn" id="vars-refresh">Refresh variables</button>`
+          : '<div class="empty">No live variables. Start an automation and switch here to inspect its per-run data.</div><button class="btn" id="vars-refresh">Refresh variables</button>';
+        $('#vars-refresh')?.addEventListener('click', refresh);
+      } catch (error) {
+        if (S.tab === 'variables') el.innerHTML = `<div class="empty">Could not read variables: ${esc(error)}</div><button class="btn" id="vars-refresh">Retry</button>`;
+        $('#vars-refresh')?.addEventListener('click', refresh);
+      }
+    };
+    el.innerHTML = '<div class="empty">Loading live variables…</div>';
+    refresh();
   } else el.innerHTML = HELP;
 }
 
