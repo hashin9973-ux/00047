@@ -102,8 +102,11 @@ int wmain() {
     lookupHook.pOriginalFunction = &discoveredProbe;
     lookupHook.hookFunction = nullptr;
     lookupHook.optional = false;
+    const auto cacheHitsBeforeLookup =
+        wmod::windhawk_symbol_compat::HookCacheHitCount();
     CHECK(Wh_HookSymbols(GetModuleHandleW(nullptr), &lookupHook, 1, &hookOptions) == TRUE);
     CHECK(discoveredProbe == reinterpret_cast<void*>(&CompatibilityProbeSymbol));
+    CHECK(wmod::windhawk_symbol_compat::HookCacheHitCount() > cacheHitsBeforeLookup);
 
     // Missing required names fail without publishing partial symbol results.
     struct MissingSelector {
