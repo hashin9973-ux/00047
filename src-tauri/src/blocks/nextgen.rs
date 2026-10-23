@@ -424,3 +424,46 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
  m.insert("cond.file_event",Box::new(FileEvent));m.insert("cond.process_event",Box::new(ProcessEvent));m.insert("flow.breakpoint",Box::new(Breakpoint));m.insert("act.csv_filter",Box::new(CsvFilter));m.insert("act.try_catch",Box::new(TryCatch));m.insert("cond.hotkey_event",Box::new(HotkeyEvent));m.insert("cond.webhook_event",Box::new(WebhookEvent));m.insert("cond.session_event",Box::new(SessionEvent));
 }
 #[cfg(test)]mod tests{use super::*;#[test]fn csv_quotes_and_escaped_quotes(){let r=csv_parse("a,b\r\nx,\"hello, world\"\r\ny,\"say \"\"yes\"\"\"\r\n",',',10).unwrap();assert_eq!(r[1][1],"hello, world");assert_eq!(r[2][1],"say \"yes\"")}#[test]fn csv_rejects_unclosed_quotes_and_limits(){assert!(csv_parse("a\n\"oops",',',20).is_err());assert!(csv_parse("a\nb\nc\n",',',1).is_err())}#[test]fn json_path_array_indices(){let v=json!({"a":{"items":[{"n":"x"},{"n":"y"}]}});assert_eq!(path_get(&v,"a.items.1.n"),Some(&json!("y")));assert!(path_get(&v,"a.items.9.n").is_none())}#[test]fn regex_capture_replace(){let r=Regex::new(r"([A-Z]+)-(\d+)").unwrap();assert_eq!(r.captures("ID-42").unwrap().get(2).unwrap().as_str(),"42");assert_eq!(r.replace("ID-42","$1:$2"),"ID:42")}#[test]fn nextgen_registry_specs(){let mut m=std::collections::HashMap::new();register_into(&mut m);assert_eq!(m.len(),22);for(k,b)in m{assert!(b.spec().is_some(),"{k} no spec")}}}
+
+#[cfg(test)]
+mod event_and_ui_tests {
+    use super::*;
+    #[test]
+    fn hotkey_mapping_rejects_unsupported_keys() {
+        assert_eq!(hotkey_vk("A"), Some(65));
+        assert_eq!(hotkey_vk("F12"), Some(0x7b));
+        assert_eq!(hotkey_vk("ESCAPE"), Some(0x1b));
+        assert_eq!(hotkey_vk("INVALID"), None);
+    }
+    #[test]
+    fn webhook_bearer_comparison_requires_exact_match() {
+        assert!(token_equals("short-token", "short-token"));
+        assert!(!token_equals("short-token", "short-token "));
+        assert!(!token_equals("short-token", "short-t0ken"));
+    }
+    #[test]
+    fn ui_element_spec_supports_value_and_existence_states() {
+        let sp = ui_cond_spec();
+        let fields = sp["fields"].as_array().unwrap();
+        let state = fields.iter().find(|f| f["key"] == "state").unwrap();
+        assert!(state["options"].as_array().unwrap().iter().any(|o| o[0] == "value_equals"));
+        assert!(fields.iter().any(|f| f["key"] == "expectedValue" && f["show"]["eq"] == "value_equals"));
+        assert!(UiElement.validate(&json!({"automationId":"SaveButton","elementName":"","state":"exists","behavior":"check","onFail":"stop"})).is_ok());
+    }
+    #[tokio::test]
+    async fn local_http_parser_reads_bounded_body_and_authorization_header() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::spawn(async move {
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            stream.write_all(b"POST /trigger HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer unit-test\r\nContent-Length: 3\r\n\r\nabc").await.unwrap();
+        });
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let (method, path, headers, body) = read_local_http_request(&mut stream).await.unwrap();
+        client.await.unwrap();
+        assert_eq!(method, "POST");
+        assert_eq!(path, "/trigger");
+        assert_eq!(body, b"abc");
+        assert_eq!(headers.iter().find(|(k,_)| k == "authorization").unwrap().1, "Bearer unit-test");
+    }
+}
