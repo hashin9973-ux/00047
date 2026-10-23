@@ -51,6 +51,7 @@ pub struct Engine {
     disk: LogStore,
     debug_paused: Mutex<HashSet<String>>,
     debug_steps: Mutex<HashMap<String, u32>>,
+    snapshots: Mutex<HashMap<String, VecDeque<(u64, Automation)>>>,
 }
 
 impl Engine {
@@ -81,6 +82,7 @@ impl Engine {
             disk,
             debug_paused: Default::default(),
             debug_steps: Default::default(),
+            snapshots: Default::default(),
         }
     }
 
@@ -166,26 +168,50 @@ impl Engine {
     // ----- control -----
     pub fn start(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let auto = self.store.get(id).ok_or_else(|| "automation not found".to_string())?;
+        self.start_snapshot(auto)
+    }
+
+    fn start_snapshot(self: &Arc<Self>, auto: Automation) -> Result<(), String> {
         if let Err(errs) = validate_automation(&auto) {
             for e in &errs {
                 self.log("error", &auto.id, &auto.name, None, format!("Cannot start: {e}"));
             }
             return Err(errs.join("\n"));
         }
+        let id = auto.id.clone();
         let token = CancellationToken::new();
         let run_id = self.run_seq.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut r = self.runs.lock().unwrap();
-            if r.contains_key(id) {
-                return Err("already running".into());
-            }
-            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id });
+            if r.contains_key(&id) { return Err("already running".into()); }
+            r.insert(id, RunHandle { token: token.clone(), run_id });
         }
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
             me.run_automation(auto, token, run_id).await;
         });
         Ok(())
+    }
+
+    /// Replays a session-captured snapshot only when every action has a conservative replay-safe classification.
+    pub fn replay_run(self: &Arc<Self>, id: &str, run_id: u64) -> Result<(), String> {
+        let snapshot = self.snapshots.lock().unwrap().get(id)
+            .and_then(|q| q.iter().find(|(rid, _)| *rid == run_id).map(|(_, a)| a.clone()))
+            .ok_or_else(|| "run snapshot is no longer available in this app session".to_string())?;
+        for n in &snapshot.nodes {
+            let Some(block) = registry().get(n.kind.as_str()) else { return Err("Replay refused: snapshot contains an unknown block".into()); };
+            let unsafe_kind = n.kind.starts_with("user.") || matches!(n.kind.as_str(),
+                "act.command"|"act.retry_command"|"act.delete_file"|"act.power"|"act.power_control"|
+                "act.service_control"|"act.stop_proc"|"act.launch"|"act.keyboard_shortcut"|"act.mouse"|
+                "act.type_text"|"act.ui_click"|"act.ui_set_value"|"act.bulk_files"|"act.copy_move_file"|
+                "act.write_text_file"|"act.csv_write"|"act.capture_screenshot"|"act.extract_zip"|
+                "act.create_shortcut"|"act.set_wallpaper"|"act.ask_user"|"act.set_brightness"|"act.power_plan");
+            if block.risky() || unsafe_kind {
+                return Err(format!("Replay refused because '{}' may have side effects. Review and start the automation manually.", block.title()));
+            }
+        }
+        self.log("info", id, &snapshot.name, None, format!("Replaying safe snapshot from run {run_id}"));
+        self.start_snapshot(snapshot)
     }
 
     /// Pause at the next block boundary. A currently executing block is not forcibly suspended.
@@ -323,6 +349,12 @@ impl Engine {
 
     // ----- run -----
     async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64) {
+        {
+            let mut snapshots = self.snapshots.lock().unwrap();
+            let q = snapshots.entry(auto.id.clone()).or_default();
+            q.push_front((run_id, auto.clone()));
+            q.truncate(HIST_CAP);
+        }
         let started = now_ms();
         self.nodes.lock().unwrap().remove(&auto.id);
         self.set_auto(&auto.id, |r| {
