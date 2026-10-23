@@ -248,6 +248,12 @@ fn get_history(eng: State<'_, Arc<Engine>>, id: String) -> Vec<RunRecord> {
 }
 
 #[tauri::command]
+fn replay_run(eng: State<'_, Arc<Engine>>, id: String, run_id: u64) -> Result<(), String> {
+    let engine = eng.inner().clone();
+    engine.replay_run(&id, run_id)
+}
+
+#[tauri::command]
 fn clear_logs(eng: State<'_, Arc<Engine>>) {
     eng.clear_logs();
 }
@@ -652,6 +658,7 @@ fn main() {
             get_runtime,
             get_logs,
             get_history,
+            replay_run,
             clear_logs,
             app_stats,
             get_autostart,
