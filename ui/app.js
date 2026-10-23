@@ -305,7 +305,14 @@ function renderDock() {
     el.innerHTML = rows.join('') || '<div class="empty">No events yet. Start the automation to see live logs.</div>';
   } else if (S.tab === 'history') {
     el.innerHTML = S.hist.length
-      ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span>${r.snapshot ? `<button class="btn snapshot-run" data-snapshot-run="${r.id}">Copy snapshot</button>` : ''}</div>`).join('')
+      ? S.hist.map(r => {
+        const outcomeClass = r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info';
+        const trace = Array.isArray(r.trace) ? r.trace : [];
+        const traceRows = trace.map(t => `<div class="trace-row"><span class="trace-state ${t.state === 'failed' ? 'error' : t.state === 'done' ? 'info' : 'warn'}">${esc(t.state || 'unknown')}</span><b>${esc(t.blockTitle || 'Block')}</b><span>${esc(t.nodeId || '')}</span><span>${fmtDur(Number(t.durationMs) || 0)} · visit ${Number(t.visit) || 0}</span><small>${esc(t.detail || '')}</small></div>`).join('');
+        const snapshotButton = r.snapshot ? `<button class="btn snapshot-run" data-snapshot-run="${r.id}">Copy snapshot</button>` : '';
+        const traceNotice = r.traceTruncated ? '<div class="mu">Trace reached its limit; older step records were discarded.</div>' : '';
+        return `<details class="history-entry ${outcomeClass}"><summary><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''} · ${trace.length} steps</span></summary><div class="history-trace">${traceNotice}${traceRows || '<div class="empty">No step trace was saved for this run.</div>'}${snapshotButton}</div></details>`;
+      }).join('')
       : '<div class="empty">No finished runs yet.</div>';
     el.querySelectorAll('[data-snapshot-run]').forEach(btn => btn.addEventListener('click', async () => {
       const runId = Number(btn.dataset.snapshotRun), autoId = S.editId;
