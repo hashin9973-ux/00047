@@ -58,19 +58,24 @@ public:
     Watcher(const Watcher&) = delete;
     Watcher& operator=(const Watcher&) = delete;
 
-    ~Watcher() { Stop(); }
+    ~Watcher() { (void)Stop(INFINITE); }
 
     bool Start(Callback callback) noexcept { return StartImpl(callback, nullptr); }
 
     bool Start(ReloadCallback callback) noexcept { return StartImpl(nullptr, callback); }
 
-    void Stop() noexcept {
+    // Returns false if mod callback code does not return promptly. In that
+    // case keep every handle and callback pointer alive so the host can retain
+    // the DLL and retry shutdown later instead of hanging the target process
+    // or unloading code still executing on the worker.
+    bool Stop(DWORD timeoutMs = 250) noexcept {
         std::lock_guard<std::mutex> guard(mutex_);
-        if (!worker_) return;
+        if (!worker_) return true;
 
-        if (stopEvent_) SetEvent(stopEvent_);
-        if (directory_ != INVALID_HANDLE_VALUE) CancelIoEx(directory_, nullptr);
-        WaitForSingleObject(worker_, INFINITE);
+        if (stopEvent_) (void)SetEvent(stopEvent_);
+        if (directory_ != INVALID_HANDLE_VALUE) (void)CancelIoEx(directory_, nullptr);
+        const DWORD wait = WaitForSingleObject(worker_, timeoutMs);
+        if (wait != WAIT_OBJECT_0) return false;
 
         CloseHandle(worker_);
         CloseHandle(readyEvent_);
@@ -82,6 +87,7 @@ public:
         directory_ = INVALID_HANDLE_VALUE;
         callback_ = nullptr;
         reloadCallback_ = nullptr;
+        return true;
     }
 
 private:
@@ -317,10 +323,25 @@ inline Watcher& Instance() {
     WMOD_00047_EXPORT std::uint32_t WINAPI WmodGetApiVersion(void) { \
         return WMOD_00047_ABI_VERSION; \
     } \
+    static BOOL WINAPI WmodTryFinalizeShutdownV1(void) { \
+        auto& state = ::wmod::windhawk_adapter::LifecycleState(); \
+        if (state.load(std::memory_order_acquire) != 3) return state.load() == 0 ? TRUE : FALSE; \
+        static std::mutex finalizerMutex; \
+        std::lock_guard<std::mutex> guard(finalizerMutex); \
+        if (state.load(std::memory_order_acquire) != 3) return state.load() == 0 ? TRUE : FALSE; \
+        if (!::wmod::windhawk_settings_watch::Instance().Stop()) return FALSE; \
+        try { (before_uninit_callback)(); } catch (...) {} \
+        ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
+        try { (uninit_callback)(); } catch (...) {} \
+        state.store(0, std::memory_order_release); \
+        return TRUE; \
+    } \
     WMOD_00047_EXPORT BOOL WINAPI WmodIsInitializedV1(void) { \
         return ::wmod::windhawk_adapter::LifecycleState().load() == 2 ? TRUE : FALSE; \
     } \
     WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) { \
+        auto& state = ::wmod::windhawk_adapter::LifecycleState(); \
+        if (state.load(std::memory_order_acquire) == 3 && !WmodTryFinalizeShutdownV1()) return FALSE; \
         return ::wmod::windhawk_hook_compat::CanUnload(); \
     } \
     WMOD_00047_EXPORT BOOL WINAPI WmodIsReloadRequestedV1(void) { \
@@ -373,15 +394,15 @@ inline Watcher& Instance() {
     WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) { \
         int expected = 2; \
         auto& state = ::wmod::windhawk_adapter::LifecycleState(); \
-        if (!state.compare_exchange_strong(expected, 3)) { \
-            if (expected == 0) ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
+        if (state.compare_exchange_strong(expected, 3)) { \
+            (void)WmodTryFinalizeShutdownV1(); \
             return; \
         } \
-        ::wmod::windhawk_settings_watch::Instance().Stop(); \
-        try { (before_uninit_callback)(); } catch (...) {} \
-        ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
-        try { (uninit_callback)(); } catch (...) {} \
-        state.store(0); \
+        if (expected == 3) { \
+            (void)WmodTryFinalizeShutdownV1(); \
+            return; \
+        } \
+        if (expected == 0) ::wmod::windhawk_hook_compat::ShutdownHookOperations(); \
     }
 
 #endif // WMOD_00047_WINDHAWK_SETTINGS_CHANGED_ADAPTER_H

@@ -14,6 +14,8 @@ using IsInitializedFn = BOOL (WINAPI*)();
 using CanUnloadFn = BOOL (WINAPI*)();
 using CountFn = unsigned long (WINAPI*)();
 using ReloadRequestedFn = BOOL (WINAPI*)();
+using BlockCallbackFn = void (WINAPI*)(BOOL);
+using CallbackEnteredFn = BOOL (WINAPI*)();
 
 bool WriteText(const std::filesystem::path& path, const char* text) {
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
@@ -85,11 +87,18 @@ int wmain(int argc, wchar_t** argv) {
     ReloadRequestedFn isReloadRequested = module
         ? reinterpret_cast<ReloadRequestedFn>(GetProcAddress(module, "WmodIsReloadRequestedV1"))
         : nullptr;
+    BlockCallbackFn blockCallback = module
+        ? reinterpret_cast<BlockCallbackFn>(GetProcAddress(module, "AdapterSettingsChangedBlock"))
+        : nullptr;
+    CallbackEnteredFn callbackEntered = module
+        ? reinterpret_cast<CallbackEnteredFn>(GetProcAddress(module, "AdapterSettingsChangedCallbackEntered"))
+        : nullptr;
     bool initialized = false;
     bool retainPackageDir = false;
 
     auto fail = [&](const wchar_t* message) -> int {
         std::wcerr << message << L"\n";
+        if (blockCallback) blockCallback(FALSE);
         if (initialized && shutdown) {
             shutdown();
             initialized = false;
@@ -109,7 +118,8 @@ int wmain(int argc, wchar_t** argv) {
         return 1;
     };
 
-    if (!module || !initialize || !shutdown || !isInitialized || !canUnload || !getCount || !isReloadRequested) {
+    if (!module || !initialize || !shutdown || !isInitialized || !canUnload ||
+        !getCount || !isReloadRequested || !blockCallback || !callbackEntered) {
         return fail(L"Settings-change smoke DLL is missing required lifecycle/query exports.");
     }
     if (!initialize()) {
@@ -147,10 +157,56 @@ int wmain(int argc, wchar_t** argv) {
         return fail(L"Settings-change callback ran after WmodShutdownV1 returned.");
     }
 
+    // Re-enable and deliberately block the worker inside mod callback code.
+    // Shutdown must return promptly, retain hook/DLL state, and only finish
+    // lifecycle callbacks after the worker eventually exits.
+    if (!initialize() || !isInitialized()) {
+        return fail(L"Settings-change adapter did not restart after a clean shutdown.");
+    }
+    initialized = true;
+    blockCallback(TRUE);
+    if (!WriteText(settings, R"json({"intSetting":104})json")) {
+        return fail(L"Could not trigger the deliberately blocked settings callback.");
+    }
+
+    const auto callbackDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (callbackEntered() != TRUE &&
+           std::chrono::steady_clock::now() < callbackDeadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (callbackEntered() != TRUE) {
+        return fail(L"Settings callback did not enter its blocking test gate.");
+    }
+
+    const auto shutdownStarted = std::chrono::steady_clock::now();
+    shutdown();
+    const auto shutdownElapsed = std::chrono::steady_clock::now() - shutdownStarted;
+    if (shutdownElapsed > std::chrono::seconds(2)) {
+        blockCallback(FALSE);
+        return fail(L"Shutdown blocked on the in-flight settings callback instead of timing out.");
+    }
+    if (canUnload() != FALSE) {
+        blockCallback(FALSE);
+        return fail(L"Unload was incorrectly approved while settings callback code was still executing.");
+    }
+
+    blockCallback(FALSE);
+    const auto finalizeDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    BOOL unloadSafe = FALSE;
+    while (std::chrono::steady_clock::now() < finalizeDeadline) {
+        unloadSafe = canUnload();
+        if (unloadSafe == TRUE) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    if (unloadSafe != TRUE || isInitialized() != FALSE) {
+        return fail(L"Deferred shutdown did not finalize after the settings callback exited.");
+    }
+    initialized = false;
+
     FreeLibrary(module);
     module = nullptr;
     std::filesystem::remove_all(packageDir, ec);
     std::wcout << L"Settings-change adapter runtime test passed (callbacks: "
-               << stoppedCount << L").\n";
+               << stoppedCount << L", deferred shutdown recovered).\n";
     return 0;
 }
