@@ -377,6 +377,8 @@ impl Engine {
                 r.remove(&aid);
             }
         }
+        self.debug_paused.lock().unwrap().remove(&aid);
+        self.debug_steps.lock().unwrap().remove(&aid);
         let label = if errors > 0 { format!("{outcome} ({errors} errors)") } else { outcome.to_string() };
         self.set_auto(&aid, |r| {
             r.status = outcome.into();
@@ -761,6 +763,9 @@ fn branch(ctx: Arc<Ctx>, start: String) -> BoxFuture<'static, ()> {
 }
 
 async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
+    if node.kind == "flow.breakpoint" {
+        ctx.eng.debug_paused.lock().unwrap().insert(ctx.auto.id.clone());
+    }
     if !wait_debug_gate(ctx, node).await { return vec![]; }
     let eng = &ctx.eng;
     let aid = ctx.auto.id.clone();
