@@ -24,6 +24,10 @@ const fmtAgo = ts => {
 
 const LABEL = { running: 'Running', paused: 'Paused', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
 const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '', breakpoints: {} };
+try {
+  const saved = JSON.parse(localStorage.getItem('00047:breakpoints:v1') || '{}');
+  if (saved && typeof saved === 'object' && !Array.isArray(saved)) S.breakpoints = saved;
+} catch { /* breakpoints are optional editor metadata */ }
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
 const isRun = id => ['running', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
@@ -166,7 +170,9 @@ $('#ed-breakpoints').addEventListener('click', async () => {
   const set = new Set(S.breakpoints[id] || []);
   for (const nodeId of selected) { if (set.has(nodeId)) set.delete(nodeId); else set.add(nodeId); }
   S.breakpoints[id] = [...set];
+  editor.setBreakpoints(S.breakpoints[id]);
   try {
+    localStorage.setItem('00047:breakpoints:v1', JSON.stringify(S.breakpoints));
     await invoke('set_breakpoints', { automationId: id, nodeIds: S.breakpoints[id] });
     toast('Breakpoints updated: ' + set.size);
   } catch (e) { toast('Could not update breakpoints: ' + String(e?.message || e), 'err'); }
@@ -338,6 +344,7 @@ function openEditor(id) {
   S.editId = id; S.edSt = '';
   show('editor');
   editor.load(a);
+  editor.setBreakpoints(S.breakpoints[id] || []);
   $('#ed-name').value = a.name;
   $('#ed-auto').checked = !!a.autoStart;
   for (const [nid, st] of Object.entries(S.rt.nodes[id] || {})) editor.setNodeState(nid, st);
