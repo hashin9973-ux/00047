@@ -663,7 +663,7 @@ impl Block for PowerControl {
         if !matches!(op.as_str(), "lock" | "sleep" | "hibernate" | "shutdown" | "restart" | "cancel_shutdown") {
             return Err("Unknown power operation".into());
         }
-        num(c, "delaySec", 60.0, 0.0, 600.0, "Shutdown delay").map(|_| ())
+        Ok(())
     }
     async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
         self.validate(&cx.cfg)?;
