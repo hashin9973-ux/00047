@@ -388,3 +388,11 @@ textarea.glass.liquidglass-variant {
 
 .history-replay{margin-left:8px;padding:3px 8px;font-size:10px;line-height:1.2}
 .lr .ms{display:flex;align-items:center;justify-content:flex-end;gap:4px}
+
+.variable-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-bottom:1px solid var(--line)}
+.variable-list{display:grid;gap:0}
+.variable-row{display:grid;grid-template-columns:minmax(100px,180px) minmax(0,1fr);gap:12px;padding:9px 12px;border-bottom:1px solid var(--line);align-items:start}
+.variable-name{display:grid;gap:3px;min-width:0}
+.variable-name strong{overflow-wrap:anywhere;font-size:12px}
+.variable-name small{font-size:10px;color:var(--mu)}
+.variable-row code{font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:120px;overflow:auto;color:var(--tx)}
