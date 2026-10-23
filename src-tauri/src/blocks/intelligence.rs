@@ -543,6 +543,143 @@ impl Block for ContinueLoop {
     }
 }
 
+
+struct FileEvent;
+fn file_event_spec()->Value{
+    json!({"category":"condition","title":"Wait for File Event","icon":"folder-tree","description":"Uses Windows FileSystemWatcher notifications rather than directory snapshots to wait for a create, change, delete, rename, or any matching filesystem event.","fields":[
+        {"key":"path","label":"Directory to watch","type":"text","required":true,"maxLen":2048},
+        {"key":"pattern","label":"Filename pattern","type":"text","required":true,"maxLen":256,"default":"*"},
+        {"key":"recursive","label":"Include subdirectories","type":"bool","default":false},
+        {"key":"eventType","label":"Event type","type":"select","default":"created","options":[["created","Created"],["changed","Changed / modified"],["deleted","Deleted"],["renamed","Renamed"],["any","Any supported event"]]},
+        {"key":"saveAs","label":"Save event details to variable (optional)","type":"text","maxLen":64,"default":""},
+        {"preset":"timeout","default":0},
+        {"preset":"onFail"}
+    ],"summary":"Wait for file event: {path}","help":"Event notifications are edge-triggered: start this block before the expected change. The watched directory must exist. Network shares, some virtual filesystems, and notification overflow can affect delivery. Stop the automation to cancel an indefinite wait."})
+}
+#[async_trait]
+impl Block for FileEvent{
+    fn title(&self)-> &'static str{"Wait for File Event"}
+    fn category(&self)->Cat{Cat::Condition}
+    fn supports_timeout(&self)->bool{true}
+    fn spec(&self)->Option<Value>{Some(file_event_spec())}
+    fn validate(&self,c:&Value)->Result<(),String>{
+        spec::validate(&file_event_spec(),c)?;
+        for k in ["path","pattern"]{if txt(c,k).contains('\0'){return Err(format!("{k} contains a NUL character"))}}
+        if txt(c,"path").trim().is_empty(){return Err("Directory to watch is required".into())}
+        if txt(c,"pattern").trim().is_empty(){return Err("Filename pattern is required".into())}
+        let save=txt(c,"saveAs");if !save.is_empty()&&!valid_name(&save){return Err("Output variable name is invalid".into())}
+        Ok(())
+    }
+    async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+        self.validate(&cx.cfg)?;
+        let path=templ(cx,&txt(&cx.cfg,"path"))?;
+        let pattern=templ(cx,&txt(&cx.cfg,"pattern"))?;
+        if !std::path::Path::new(&path).is_dir(){return Err(format!("Watch directory does not exist: {path}"))}
+        let recursive=cx.cfg.get("recursive").and_then(Value::as_bool).unwrap_or(false);
+        let event=txt(&cx.cfg,"eventType");
+        let script=format!(r#"
+$ErrorActionPreference='Stop'
+$p={path};$filter={filter};$recursive={recursive};$kind={kind}
+$types=switch($kind){{
+ 'created' {{[IO.WatcherChangeTypes]::Created}}
+ 'changed' {{[IO.WatcherChangeTypes]::Changed}}
+ 'deleted' {{[IO.WatcherChangeTypes]::Deleted}}
+ 'renamed' {{[IO.WatcherChangeTypes]::Renamed}}
+ default {{[IO.WatcherChangeTypes]::Created -bor [IO.WatcherChangeTypes]::Changed -bor [IO.WatcherChangeTypes]::Deleted -bor [IO.WatcherChangeTypes]::Renamed}}
+}}
+$watcher=New-Object System.IO.FileSystemWatcher
+$watcher.Path=$p;$watcher.Filter=$filter;$watcher.IncludeSubdirectories=$recursive
+$watcher.NotifyFilter=[IO.NotifyFilters]::FileName -bor [IO.NotifyFilters]::DirectoryName -bor [IO.NotifyFilters]::LastWrite -bor [IO.NotifyFilters]::Size -bor [IO.NotifyFilters]::CreationTime
+$watcher.EnableRaisingEvents=$true
+try {{
+ $change=$watcher.WaitForChanged($types,0)
+ $matched=(-not $change.TimedOut)
+ [pscustomobject]@{{changed=[bool]$matched;eventType=[string]$change.ChangeType.ToString();name=[string]$change.Name;oldName=[string]$change.OldName;timedOut=[bool]$change.TimedOut}} | ConvertTo-Json -Compress
+}} finally {{$watcher.EnableRaisingEvents=$false;$watcher.Dispose()}}
+"#,path=ps_quote(&path),filter=ps_quote(&pattern),recursive=if recursive{"$true"}else{"$false"},kind=ps_quote(&event));
+        let out=extra::powershell(cx,&script).await?;
+        let result:Value=serde_json::from_str(&out).map_err(|e|format!("Could not parse file event result: {e}"))?;
+        if !result.get("changed").and_then(Value::as_bool).unwrap_or(false){return Ok(Outcome::NotSatisfied)}
+        let save=txt(&cx.cfg,"saveAs");if !save.is_empty(){cx.set_variable(save,result.clone())?;}
+        (cx.log)("info",format!("File event {}: {}",result.get("eventType").and_then(Value::as_str).unwrap_or("changed"),result.get("name").and_then(Value::as_str).unwrap_or("(unknown)")));
+        Ok(Outcome::Satisfied)
+    }
+}
+
+fn hotkey_vk(key:&str)->Option<u32>{
+    match key{
+        "SPACE"=>Some(0x20),"TAB"=>Some(0x09),"ESCAPE"=>Some(0x1B),"ENTER"=>Some(0x0D),"PAUSE"=>Some(0x13),"PRINTSCREEN"=>Some(0x2C),
+        _ if key.len()==1&&key.as_bytes()[0].is_ascii_alphanumeric()=>Some(key.as_bytes()[0].to_ascii_uppercase() as u32),
+        _ if key.starts_with('F')&&key[1..].parse::<u32>().ok().is_some_and(|n|(1..=24).contains(&n))=>key[1..].parse::<u32>().ok().map(|n|0x70+n-1),
+        _=>None
+    }
+}
+struct GlobalHotkey;
+fn hotkey_spec()->Value{
+    let mut keys=vec![["A","A"],["B","B"],["C","C"],["D","D"],["E","E"],["F","F"],["G","G"],["H","H"],["I","I"],["J","J"],["K","K"],["L","L"],["M","M"],["N","N"],["O","O"],["P","P"],["Q","Q"],["R","R"],["S","S"],["T","T"],["U","U"],["V","V"],["W","W"],["X","X"],["Y","Y"],["Z","Z"]];
+    let mut options:Vec<Value>=keys.drain(..).map(|x|json!([x[0],x[1]])).collect();
+    for n in 0..=9{options.push(json!([format!("{n}"),format!("{n}")]));}
+    for n in 1..=24{options.push(json!([format!("F{n}"),format!("F{n}")]));}
+    for k in ["SPACE","TAB","ENTER","ESCAPE","PAUSE","PRINTSCREEN"]{options.push(json!([k,k]));}
+    json!({"category":"condition","title":"Wait for Global Hotkey","icon":"keyboard","description":"Registers a system-wide Windows hotkey and waits for that key combination.","fields":[
+        {"key":"modifier","label":"Modifier combination","type":"select","default":"CTRL+ALT","options":[["CTRL+ALT","Ctrl + Alt"],["CTRL+SHIFT","Ctrl + Shift"],["ALT+SHIFT","Alt + Shift"],["CTRL+ALT+SHIFT","Ctrl + Alt + Shift"],["CTRL","Ctrl"],["ALT","Alt"],["SHIFT","Shift"],["WIN","Windows"]]},
+        {"key":"key","label":"Key","type":"select","default":"F8","options":options},
+        {"preset":"timeout","default":0},
+        {"preset":"onFail"}
+    ],"summary":"Wait for {modifier}+{key}","help":"Uses RegisterHotKey, not key polling. Choose a shortcut not already registered by Windows or another app. When timeout is 0, this block waits indefinitely until the automation is stopped or the hotkey is pressed."})
+}
+#[async_trait]
+impl Block for GlobalHotkey{
+    fn title(&self)-> &'static str{"Wait for Global Hotkey"}
+    fn category(&self)->Cat{Cat::Condition}
+    fn supports_timeout(&self)->bool{true}
+    fn spec(&self)->Option<Value>{Some(hotkey_spec())}
+    fn validate(&self,c:&Value)->Result<(),String>{
+        spec::validate(&hotkey_spec(),c)?;
+        if hotkey_vk(&txt(c,"key")).is_none(){return Err("Unsupported hotkey key".into())}
+        if !["CTRL+ALT","CTRL+SHIFT","ALT+SHIFT","CTRL+ALT+SHIFT","CTRL","ALT","SHIFT","WIN"].contains(&txt(c,"modifier").as_str()){return Err("Unsupported hotkey modifier combination".into())}
+        Ok(())
+    }
+    async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+        self.validate(&cx.cfg)?;
+        let key=hotkey_vk(&txt(&cx.cfg,"key")).ok_or("Unsupported hotkey key")?;
+        let modifier=txt(&cx.cfg,"modifier");
+        let mut bits=0u32;
+        if modifier.contains("CTRL"){bits|=0x0002;}
+        if modifier.contains("ALT"){bits|=0x0001;}
+        if modifier.contains("SHIFT"){bits|=0x0004;}
+        if modifier=="WIN"{bits|=0x0008;}
+        let script=format!(r#"
+$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class Open0047Hotkey {
+ [StructLayout(LayoutKind.Sequential)] public struct MSG { public IntPtr hwnd; public UInt32 message; public UIntPtr wParam; public IntPtr lParam; public UInt32 time; public Int32 x; public Int32 y; }
+ [DllImport("user32.dll", SetLastError=true)] public static extern bool RegisterHotKey(IntPtr hwnd,int id,uint modifiers,uint key);
+ [DllImport("user32.dll", SetLastError=true)] public static extern bool UnregisterHotKey(IntPtr hwnd,int id);
+ [DllImport("user32.dll", SetLastError=true)] public static extern int GetMessage(out MSG msg,IntPtr hwnd,uint min,uint max);
+}
+'@
+$registered=[Open0047Hotkey]::RegisterHotKey([IntPtr]::Zero,1,[uint]{bits},[uint]{key})
+if(-not $registered){{throw "RegisterHotKey failed; shortcut may already be in use (Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"}}
+$pressed=$false
+try {{
+ $msg=New-Object Open0047Hotkey+MSG
+ while($true) {{
+  $result=[Open0047Hotkey]::GetMessage([ref]$msg,[IntPtr]::Zero,0,0)
+  if($result -le 0){{break}}
+  if($msg.message -eq 0x0312){{$pressed=$true;break}}
+ }}
+}} finally {{[void][Open0047Hotkey]::UnregisterHotKey([IntPtr]::Zero,1)}}
+[bool]$pressed | ConvertTo-Json -Compress
+"#);
+        let out=extra::powershell(cx,&script).await?;
+        let pressed:bool=serde_json::from_str(out.trim()).map_err(|e|format!("Could not parse hotkey result: {e}"))?;
+        Ok(if pressed{Outcome::Satisfied}else{Outcome::NotSatisfied})
+    }
+}
+
 pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dyn Block>>){
     m.insert("cond.ui_element",Box::new(UiElementCondition));
     m.insert("act.ui_find",Box::new(UiFind));m.insert("act.ui_click",Box::new(UiClick));
@@ -553,10 +690,21 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
     m.insert("act.for_each_item",Box::new(ForEachItem));
     m.insert("act.break_loop",Box::new(BreakLoop));
     m.insert("act.continue_loop",Box::new(ContinueLoop));
+    m.insert("cond.file_event",Box::new(FileEvent));
+    m.insert("cond.global_hotkey",Box::new(GlobalHotkey));
 }
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn supports_common_global_hotkey_keys() {
+        assert_eq!(hotkey_vk("A"), Some(0x41));
+        assert_eq!(hotkey_vk("F8"), Some(0x77));
+        assert_eq!(hotkey_vk("SPACE"), Some(0x20));
+        assert!(hotkey_vk("F25").is_none());
+        assert!(hotkey_vk("bad key").is_none());
+    }
+
     #[test]
     fn csv_parser_supports_quotes_newlines_and_crlf(){
         assert_eq!(parse_csv("name,value\r\nalice,\"hello, world\"\r\nbob,\"two\nlines\"\r\n").unwrap(),vec![vec!["name","value"],vec!["alice","hello, world"],vec!["bob","two\nlines"]]);
@@ -589,6 +737,8 @@ mod tests{
             ("act.for_each_item", Cat::Action),
             ("act.break_loop", Cat::Action),
             ("act.continue_loop", Cat::Action),
+            ("cond.file_event", Cat::Condition),
+            ("cond.global_hotkey", Cat::Condition),
         ];
         for (id, category) in expected {
             let block = r.get(id).unwrap_or_else(|| panic!("{id} missing"));
