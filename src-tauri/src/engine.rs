@@ -4,6 +4,7 @@ use crate::{
     store::Store,
 };
 use crate::logstore::LogStore;
+use crate::secrets::SecretVault;
 use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -67,6 +68,7 @@ pub struct Runtime {
 pub struct Engine {
     app: AppHandle,
     pub store: Arc<Store>,
+    secrets: Arc<SecretVault>,
     runs: Mutex<HashMap<String, RunHandle>>,
     autos: Mutex<HashMap<String, AutoRuntime>>,
     nodes: Mutex<HashMap<String, HashMap<String, NodeState>>>,
@@ -99,6 +101,7 @@ impl Engine {
         Engine {
             app,
             store,
+            secrets: Arc::new(SecretVault::new(dir.join("secrets.json"))),
             runs: Default::default(),
             autos: Default::default(),
             nodes: Default::default(),
@@ -112,6 +115,10 @@ impl Engine {
             disk,
         }
     }
+
+    pub fn list_secrets(&self) -> Result<Vec<String>, String> { self.secrets.list_names() }
+    pub fn save_secret(&self, name: &str, value: &str) -> Result<(), String> { self.secrets.save(name, value) }
+    pub fn delete_secret(&self, name: &str) -> Result<bool, String> { self.secrets.delete(name) }
 
     // ----- UI visibility (live events are only sent while the window is visible) -----
     pub fn visible(&self) -> bool {
@@ -352,7 +359,16 @@ impl Engine {
         });
         self.log("info", &auto.id, &auto.name, None, "Automation started".into());
         let entries = entry_nodes(&auto);
-        let variables = Arc::new(Mutex::new(HashMap::new()));
+        let mut run_variables = HashMap::new();
+        match self.secrets.load_for_run() {
+            Ok(secrets) => {
+                for (name, value) in secrets {
+                    run_variables.insert(name, Value::String(value));
+                }
+            }
+            Err(error) => self.log("error", &auto.id, &auto.name, None, format!("Secret Vault could not be loaded; secret references will fail closed: {error}")),
+        }
+        let variables = Arc::new(Mutex::new(run_variables));
         self.variable_stores.lock().unwrap().insert(auto.id.clone(), variables.clone());
         self.last_variables.lock().unwrap().remove(&auto.id);
         let ctx = Arc::new(Ctx {
