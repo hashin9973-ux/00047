@@ -200,6 +200,21 @@ fn replace_file(src: &Path, dst: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn dpapi_roundtrip_and_vault_persistence() {
+        let path = std::env::temp_dir().join(format!("00047-secret-test-{}.json", std::process::id()));
+        let _ = fs::remove_file(&path);
+        let vault = SecretVault::new(path.clone());
+        vault.save("integration_key", "test-secret-value").unwrap();
+        assert_eq!(vault.list_names().unwrap(), vec!["integration_key".to_string()]);
+        let loaded = vault.load_for_run().unwrap();
+        assert_eq!(loaded.get("secret.integration_key").unwrap(), "test-secret-value");
+        assert!(vault.delete("integration_key").unwrap());
+        assert!(vault.list_names().unwrap().is_empty());
+        let _ = fs::remove_file(&path);
+    }
+
     #[test]
     fn validates_secret_names_and_hex_roundtrips() {
         assert!(validate_name("my_api_key-1").is_ok());
