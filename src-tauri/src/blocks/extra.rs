@@ -148,32 +148,9 @@ $ErrorActionPreference='Stop'
 $hint={hint}
 $all=@(Get-NetAdapter -ErrorAction SilentlyContinue)
 $wireless=@($all | Where-Object {{ $_.Name -match '(?i)Wi-?Fi|WLAN|Wireless' -or $_.InterfaceDescription -match '(?i)Wireless|802\.11|Wi-?Fi' }})
-if ($hint.Length -gt 0) {{
-  $a=$all | Where-Object {{ $_.Name.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.InterfaceDescription.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 }} | Select-Object -First 1
-}} else {{
-  $a=$wireless | Where-Object {{ $_.Status -eq 'Up' }} | Select-Object -First 1
-  if ($null -eq $a) {{ $a=$wireless | Select-Object -First 1 }}
-}}
-$found=($null -ne $a)
-$connected=$false
-$ssid=''
-$rx=$null
-$tx=$null
-$adapterName=''
-$adapterStatus=''
-if ($found) {{
-  $adapterName=[string]$a.Name
-  $adapterStatus=[string]$a.Status
-  $connected=($a.Status -eq 'Up')
-  try {{
-    $stats=Get-NetAdapterStatistics -Name $a.Name -ErrorAction Stop
-    $rx=[long]$stats.ReceivedBytes
-    $tx=[long]$stats.SentBytes
-  }} catch {{
-    $rx=$null
-    $tx=$null
-  }}
-}}
+$wlanName=''
+$wlanSsid=''
+$wlanConnected=$false
 try {{
   $wlan=(& netsh.exe wlan show interfaces 2>$null | Out-String)
   $blocks=[regex]::Split($wlan,'\r?\n\s*\r?\n')
@@ -181,22 +158,58 @@ try {{
     $n=[regex]::Match($block,'(?im)^\s*Name\s*:\s*(.+?)\s*$')
     $st=[regex]::Match($block,'(?im)^\s*State\s*:\s*(.+?)\s*$')
     $sm=[regex]::Match($block,'(?im)^\s*SSID\s*:\s*(.+?)\s*$')
-    $thisSsid=''
+    $thisName='';$thisSsid=''
+    if ($n.Success) {{ $thisName=$n.Groups[1].Value.Trim() }}
     if ($sm.Success) {{ $thisSsid=$sm.Groups[1].Value.Trim() }}
-    $isConnected=($st.Success -and $st.Groups[1].Value.Trim() -ieq 'connected' -and $thisSsid.Length -gt 0)
-    $isSelected=($found -and $n.Success -and $n.Groups[1].Value.Trim() -ieq $adapterName)
-    if ($isConnected -and (($hint.Length -eq 0) -or $isSelected)) {{
-      $connected=$true
-      if ($thisSsid.Length -gt 0) {{ $ssid=$thisSsid }}
-      if ($hint.Length -eq 0) {{ break }}
-    }} elseif ($isSelected -and $sm.Success) {{
-      $ssid=$thisSsid
+    if ($st.Success -and $st.Groups[1].Value.Trim() -ieq 'connected' -and $thisSsid.Length -gt 0) {{
+      if (($hint.Length -eq 0) -or ($thisName.Length -gt 0 -and $thisName.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0)) {{
+        $wlanConnected=$true;$wlanName=$thisName;$wlanSsid=$thisSsid
+        if ($hint.Length -gt 0) {{ break }}
+      }}
     }}
   }}
 }} catch {{}}
+if ($hint.Length -gt 0) {{
+  $a=$all | Where-Object {{ $_.Name.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.InterfaceDescription.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 }} | Select-Object -First 1
+}} elseif ($wlanName.Length -gt 0) {{
+  $a=$all | Where-Object {{ $_.Name -ieq $wlanName }} | Select-Object -First 1
+  if ($null -eq $a) {{ $a=$wireless | Where-Object {{ $_.Status -eq 'Up' }} | Select-Object -First 1 }}
+}} else {{
+  $a=$wireless | Where-Object {{ $_.Status -eq 'Up' }} | Select-Object -First 1
+  if ($null -eq $a) {{ $a=$wireless | Select-Object -First 1 }}
+}}
+$found=($null -ne $a)
+$connected=$false;$ssid='';$rx=$null;$tx=$null;$adapterName='';$adapterStatus=''
+if ($found) {{
+  $adapterName=[string]$a.Name;$adapterStatus=[string]$a.Status
+  $isWireless=($wireless.Name -contains $a.Name)
+  $connected=($a.Status -eq 'Up')
+  if ($isWireless -and $wlanName.Length -gt 0) {{ $connected=($wlanConnected -and $adapterName -ieq $wlanName) }}
+  elseif ($isWireless -and $wlanSsid.Length -gt 0 -and $hint.Length -eq 0) {{ $connected=$true }}
+  if ($adapterName -ieq $wlanName) {{ $ssid=$wlanSsid }}
+  try {{
+    $stats=Get-NetAdapterStatistics -Name $a.Name -ErrorAction Stop
+    $rx=[long]$stats.ReceivedBytes;$tx=[long]$stats.SentBytes
+  }} catch {{$rx=$null;$tx=$null}}
+}} elseif ($hint.Length -eq 0 -and $wlanConnected) {{
+  $connected=$true;$ssid=$wlanSsid;$adapterName=$wlanName
+}}
 [pscustomobject]@{{connected=[bool]$connected;ssid=[string]$ssid;rx=$rx;tx=$tx;adapter=[string]$adapterName;adapterFound=[bool]$found;adapterStatus=[string]$adapterStatus}} | ConvertTo-Json -Compress
 "#, hint = ps_quote(adapter_hint));
     ps_json(cx, &script).await
+}
+
+fn network_host_target(input: &str) -> String {
+    let mut authority=input.trim();
+    if let Some(rest)=authority.strip_prefix("https://").or_else(||authority.strip_prefix("http://")) { authority=rest; }
+    authority=authority.split(['/', '?', '#']).next().unwrap_or(authority);
+    if authority.starts_with('[') {
+        return authority.split(']').next().unwrap_or(authority).trim_start_matches('[').to_string();
+    }
+    if let Some((host,port))=authority.rsplit_once(':') {
+        if !host.is_empty() && !port.is_empty() && port.chars().all(|c|c.is_ascii_digit()) { return host.to_string(); }
+    }
+    authority.to_string()
 }
 
 fn network_rate(bytes_start: u64, bytes_end: u64, elapsed_seconds: f64, unit: &str) -> Option<f64> {
@@ -260,9 +273,7 @@ impl Block for NetworkCondition {
             let op=op.clone(); let unit=unit.clone();
             Box::pin(async move {
                 if mode == "internet" {
-                    let target = if host.starts_with("http://") || host.starts_with("https://") {
-                        host.split("://").nth(1).unwrap_or(&host).split('/').next().unwrap_or(&host).to_string()
-                    } else { host.clone() };
+                    let target = network_host_target(&host);
                     let q = ps_quote(&target);
                     let script = format!("$ErrorActionPreference='SilentlyContinue'; $ok=$false; $client=$null; try {{$client=New-Object Net.Sockets.TcpClient; $ar=$client.BeginConnect({},443,$null,$null); if($ar.AsyncWaitHandle.WaitOne(2500)){{$client.EndConnect($ar);$ok=$true}}; $client.Close()}}catch{{$ok=$false;if($null -ne $client){{$client.Close()}}}}; [bool]$ok | ConvertTo-Json -Compress", q);
                     let out = powershell(cx, &script).await?;
@@ -690,6 +701,14 @@ pub(super) fn register_into(m:&mut HashMap<&'static str,Box<dyn Block>>){
 #[cfg(test)]
 mod network_condition_tests {
     use super::*;
+
+    #[test]
+    fn network_host_parser_handles_urls_paths_and_ports() {
+        assert_eq!(network_host_target("https://example.com/api?q=1"), "example.com");
+        assert_eq!(network_host_target("example.com:8443"), "example.com");
+        assert_eq!(network_host_target("http://[::1]:8080/path"), "::1");
+        assert_eq!(network_host_target("example.org"), "example.org");
+    }
 
     #[test]
     fn throughput_samples_compute_rates_for_a_single_check() {
