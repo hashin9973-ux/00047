@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
-use tokio::task::JoinHandle;
+use tokio::{sync::Notify, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 pub fn now_ms() -> u64 {
@@ -48,6 +48,11 @@ pub struct Engine {
     seq: AtomicU64,
     run_seq: AtomicU64,
     ui: AtomicBool,
+    debug_paused: Mutex<HashSet<String>>,
+    debug_breakpoints: Mutex<HashMap<String, HashSet<String>>>,
+    debug_step_requests: Mutex<HashSet<String>>,
+    debug_step_next: Mutex<HashSet<String>>,
+    debug_notify: Notify,
     disk: LogStore,
 }
 
@@ -76,6 +81,11 @@ impl Engine {
             seq: AtomicU64::new(seq),
             run_seq: AtomicU64::new(max_run),
             ui: AtomicBool::new(false),
+            debug_paused: Default::default(),
+            debug_breakpoints: Default::default(),
+            debug_step_requests: Default::default(),
+            debug_step_next: Default::default(),
+            debug_notify: Notify::new(),
             disk,
         }
     }
@@ -157,6 +167,72 @@ impl Engine {
     }
     pub fn history(&self, id: &str) -> Vec<RunRecord> {
         self.hist.lock().unwrap().get(id).map(|h| h.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    pub fn set_breakpoints(&self, id: &str, node_ids: Vec<String>) -> Result<(), String> {
+        let auto = self.store.get(id).ok_or_else(|| "automation not found".to_string())?;
+        let available: HashSet<&str> = auto.nodes.iter().map(|n| n.id.as_str()).collect();
+        if let Some(missing) = node_ids.iter().find(|n| !available.contains(n.as_str())) {
+            return Err(format!("breakpoint block {missing} does not exist in this automation"));
+        }
+        self.debug_breakpoints.lock().map_err(|e|e.to_string())?
+            .insert(id.to_string(), node_ids.into_iter().collect());
+        Ok(())
+    }
+
+    pub fn debug_pause(&self, id: &str) -> Result<(), String> {
+        if !self.runs.lock().map_err(|e|e.to_string())?.contains_key(id) {
+            return Err("automation is not running".into());
+        }
+        self.debug_paused.lock().map_err(|e|e.to_string())?.insert(id.to_string());
+        self.debug_notify.notify_waiters();
+        Ok(())
+    }
+
+    pub fn debug_resume(&self, id: &str) {
+        if let Ok(mut p) = self.debug_paused.lock() { p.remove(id); }
+        if let Ok(mut s) = self.debug_step_requests.lock() { s.remove(id); }
+        if let Ok(mut s) = self.debug_step_next.lock() { s.remove(id); }
+        self.debug_notify.notify_waiters();
+    }
+
+    pub fn debug_step(&self, id: &str) -> Result<(), String> {
+        if !self.debug_paused.lock().map_err(|e|e.to_string())?.contains(id) {
+            return Err("pause the automation before stepping".into());
+        }
+        self.debug_step_requests.lock().map_err(|e|e.to_string())?.insert(id.to_string());
+        self.debug_notify.notify_waiters();
+        Ok(())
+    }
+
+    async fn debug_gate(self: &Arc<Self>, ctx: &Arc<Ctx>, node: &Node) -> bool {
+        let aid = ctx.auto.id.as_str();
+        if ctx.token.is_cancelled() { return false; }
+        let breakpoint = self.debug_breakpoints.lock().ok()
+            .and_then(|m|m.get(aid).map(|set|set.contains(&node.id))).unwrap_or(false);
+        let step_gate = self.debug_step_next.lock().ok().map(|mut s|s.remove(aid)).unwrap_or(false);
+        if breakpoint || step_gate {
+            if let Ok(mut p)=self.debug_paused.lock(){p.insert(aid.to_string());}
+            self.set_node(aid,&node.id,"paused",None,if breakpoint{"Paused at breakpoint".into()}else{"Paused after single step".into()});
+            self.log("info",aid,&ctx.auto.name,Some((node.id.clone(),ctx.label(node))),if breakpoint{"Debugger stopped at breakpoint".into()}else{"Debugger paused for single-step".into()});
+        }
+        loop {
+            if ctx.token.is_cancelled(){return false}
+            let paused=self.debug_paused.lock().ok().map(|p|p.contains(aid)).unwrap_or(false);
+            if !paused {return true}
+            tokio::select!{
+                _=self.debug_notify.notified()=>{},
+                _=tokio::time::sleep(Duration::from_millis(150))=>{},
+                _=ctx.token.cancelled()=>return false,
+            }
+            let step=self.debug_step_requests.lock().ok().map(|mut s|s.remove(aid)).unwrap_or(false);
+            if step {
+                if let Ok(mut p)=self.debug_paused.lock(){p.remove(aid);}
+                if let Ok(mut s)=self.debug_step_next.lock(){s.insert(aid.to_string());}
+                self.debug_notify.notify_waiters();
+                return true;
+            }
+        }
     }
 
     // ----- control -----
@@ -313,6 +389,7 @@ impl Engine {
             errors: AtomicU32::new(0),
             aborted: AtomicBool::new(false),
             single: entries.len() == 1,
+            depth: 0,
         });
         let hs: Vec<_> = entries.into_iter().map(|e| tokio::spawn(run_entry(ctx.clone(), e))).collect();
         for h in hs {
@@ -367,6 +444,7 @@ struct Ctx {
     errors: AtomicU32,
     aborted: AtomicBool,
     single: bool,
+    depth: u8,
 }
 
 impl Ctx {
