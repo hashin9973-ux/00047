@@ -22,8 +22,8 @@ const fmtAgo = ts => {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`; return new Date(ts).toLocaleDateString();
 };
 
-const LABEL = { running: 'Running', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
-const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
+const LABEL = { running: 'Running', paused: 'Paused', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
+const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '', breakpoints: {} };
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
 const isRun = id => ['running', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
@@ -149,6 +149,28 @@ if (BLOCKS[n.kind]?.cat === 'act') {
 }
 $('#ed-undo').addEventListener('click', () => editor.doUndo());
 $('#ed-redo').addEventListener('click', () => editor.doRedo());
+
+async function runDebugCommand(command) {
+  const id = S.editId;
+  if (!id) { toast('Open an automation first', 'err'); return; }
+  try { await flushSaves(); await invoke(command, { id }); toast(command === 'debug_step' ? 'Stepped one block' : command === 'debug_pause' ? 'Pause requested' : 'Automation resumed'); }
+  catch (e) { toast('Debugger: ' + String(e?.message || e), 'err'); }
+}
+$('#ed-debug-pause').addEventListener('click', () => runDebugCommand('debug_pause'));
+$('#ed-debug-step').addEventListener('click', () => runDebugCommand('debug_step'));
+$('#ed-debug-resume').addEventListener('click', () => runDebugCommand('debug_resume'));
+$('#ed-breakpoints').addEventListener('click', async () => {
+  const id = S.editId, selected = [...(editor.sel || [])];
+  if (!id) { toast('Open an automation first', 'err'); return; }
+  if (!selected.length) { toast('Select one or more blocks to toggle breakpoints', 'err'); return; }
+  const set = new Set(S.breakpoints[id] || []);
+  for (const nodeId of selected) { if (set.has(nodeId)) set.delete(nodeId); else set.add(nodeId); }
+  S.breakpoints[id] = [...set];
+  try {
+    await invoke('set_breakpoints', { automationId: id, nodeIds: S.breakpoints[id] });
+    toast('Breakpoints updated: ' + set.size);
+  } catch (e) { toast('Could not update breakpoints: ' + String(e?.message || e), 'err'); }
+});
 
 
 // ---------- log filter + CSV export ----------
@@ -674,6 +696,55 @@ async function reloadBlocks() {
   try { await invoke('restart_app'); } catch (e) { toast('Restart failed: ' + e, 'err'); }
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
+$('#btn-secrets').addEventListener('click', () => { $('#pop-settings').hidden = true; openSecretsManager(); });
+
+async function openSecretsManager() {
+  const host = $('#secret-manager');
+  host.innerHTML = `<div class="mbox glass wide secret-box">
+    <h3>Secrets vault</h3>
+    <p class="mu">Named secrets are encrypted for the current Windows user with DPAPI. Store credentials here, then reference them as {{secret:name}} in supported text fields. Values are never listed or written to workflow files.</p>
+    <div class="secret-form">
+      <label>Secret name<input id="secret-name" maxlength="64" placeholder="service-token" autocomplete="off" spellcheck="false"></label>
+      <label>Secret value<input id="secret-value" type="password" maxlength="32768" placeholder="Paste secret value" autocomplete="new-password"></label>
+      <button class="btn primary" id="secret-save">Save encrypted secret</button>
+    </div>
+    <div class="secret-list-head"><strong>Saved names</strong><span class="mu">Values are write-only in this panel</span></div>
+    <div id="secret-list" class="secret-list"></div>
+    <div class="mbtn"><button class="btn" id="secret-close">Close</button></div>
+  </div>`;
+  host.hidden = false;
+  host.addEventListener('click', e => e.stopPropagation(), { once: true });
+  const close = () => { host.hidden = true; host.innerHTML = ''; };
+  $('#secret-close').addEventListener('click', close);
+  const refresh = async () => {
+    const list = $('#secret-list', host);
+    try {
+      const names = await invoke('vault_list_secrets');
+      list.innerHTML = names.length ? names.map(n => `<div class="secret-item"><code>${esc(n)}</code><button class="btn" data-secret-delete="${esc(n)}">Delete</button></div>`).join('') : '<div class="empty">No saved secrets.</div>';
+      list.querySelectorAll('[data-secret-delete]').forEach(btn => btn.addEventListener('click', async () => {
+        const name = btn.dataset.secretDelete;
+        if (!confirm('Delete the saved secret "' + name + '"?')) return;
+        try { await invoke('vault_delete_secret', { name }); toast('Secret deleted'); await refresh(); }
+        catch (e) { toast('Delete failed: ' + String(e?.message || e), 'err'); }
+      }));
+    } catch (e) { list.textContent = 'Could not list secrets: ' + String(e?.message || e); }
+  };
+  $('#secret-save').addEventListener('click', async () => {
+    const name = $('#secret-name', host).value.trim();
+    const value = $('#secret-value', host).value;
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) { toast('Use a safe secret name (letters, digits, _ or -)', 'err'); return; }
+    if (!value) { toast('Enter a secret value', 'err'); return; }
+    try {
+      await invoke('vault_set_secret', { name, value });
+      $('#secret-value', host).value = '';
+      toast('Secret stored encrypted for this Windows user');
+      await refresh();
+    } catch (e) { toast('Could not save secret: ' + String(e?.message || e), 'err'); }
+  });
+  host.addEventListener('click', e => { if (e.target === host) close(); });
+  await refresh();
+}
+
 
 function startWindhawkGlassBridge() {
   const status = $('#glass-refresh-status');
