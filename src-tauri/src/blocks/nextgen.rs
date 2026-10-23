@@ -394,6 +394,23 @@ fn session_event_spec()->Value{cond_spec("Windows Session / Power Event","activi
  }
 }
 
+
+fn loop_control_spec(title:&str,help:&str)->Value{action_spec(title,"repeat","Changes the flow of a For Each Item loop.",vec![
+ json!({"key":"loopNodeId","label":"Target For Each loop","type":"loop","required":true}),onfail()
+],"{title}","Select the For Each Item node in the current automation. "+help)}
+struct BreakLoop;
+#[async_trait]impl Block for BreakLoop{
+ fn title(&self)-> &'static str{"Break Loop"}fn category(&self)->Cat{Cat::Action}fn spec(&self)->Option<Value>{Some(loop_control_spec("Break Loop","Exits the selected loop and follows its ELSE/AFTER wires."))}
+ fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&loop_control_spec("Break Loop","Exits the selected loop."),c)?;no_nul(c,&["loopNodeId"])?;if text(c,"loopNodeId").is_empty(){return Err("Select a For Each loop".into())};Ok(())}
+ async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Ok(Outcome::Satisfied)}
+}
+struct ContinueLoop;
+#[async_trait]impl Block for ContinueLoop{
+ fn title(&self)-> &'static str{"Continue Loop"}fn category(&self)->Cat{Cat::Action}fn spec(&self)->Option<Value>{Some(loop_control_spec("Continue Loop","Skips the remainder of the current iteration and advances to the next item."))}
+ fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&loop_control_spec("Continue Loop","Advances to the next item."),c)?;no_nul(c,&["loopNodeId"])?;if text(c,"loopNodeId").is_empty(){return Err("Select a For Each loop".into())};Ok(())}
+ async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Ok(Outcome::Satisfied)}
+}
+
 struct Breakpoint;
 fn breakpoint_spec()->Value{action_spec("Breakpoint","pause-circle","Pauses the automation at this point until the debugger resumes it.",vec![],"Breakpoint","When reached, the engine pauses before the next block. Use Resume to continue or Step to execute one block at a time.")}
 #[async_trait]impl Block for Breakpoint{
@@ -421,9 +438,9 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
  m.insert("cond.switch_case",Box::new(SwitchCase));m.insert("act.for_each",Box::new(ForEach));
  m.insert("act.call_subflow",Box::new(CallSubflow));m.insert("flow.return_value",Box::new(ReturnValue));
  m.insert("cond.ui_element",Box::new(UiElement));m.insert("act.ui_click",Box::new(UiClick));m.insert("act.ui_set_value",Box::new(UiSetValue));
- m.insert("cond.file_event",Box::new(FileEvent));m.insert("cond.process_event",Box::new(ProcessEvent));m.insert("flow.breakpoint",Box::new(Breakpoint));m.insert("act.csv_filter",Box::new(CsvFilter));m.insert("act.try_catch",Box::new(TryCatch));m.insert("cond.hotkey_event",Box::new(HotkeyEvent));m.insert("cond.webhook_event",Box::new(WebhookEvent));m.insert("cond.session_event",Box::new(SessionEvent));
+ m.insert("cond.file_event",Box::new(FileEvent));m.insert("cond.process_event",Box::new(ProcessEvent));m.insert("flow.breakpoint",Box::new(Breakpoint));m.insert("act.csv_filter",Box::new(CsvFilter));m.insert("act.try_catch",Box::new(TryCatch));m.insert("cond.hotkey_event",Box::new(HotkeyEvent));m.insert("cond.webhook_event",Box::new(WebhookEvent));m.insert("cond.session_event",Box::new(SessionEvent));m.insert("act.break_loop",Box::new(BreakLoop));m.insert("act.continue_loop",Box::new(ContinueLoop));
 }
-#[cfg(test)]mod tests{use super::*;#[test]fn csv_quotes_and_escaped_quotes(){let r=csv_parse("a,b\r\nx,\"hello, world\"\r\ny,\"say \"\"yes\"\"\"\r\n",',',10).unwrap();assert_eq!(r[1][1],"hello, world");assert_eq!(r[2][1],"say \"yes\"")}#[test]fn csv_rejects_unclosed_quotes_and_limits(){assert!(csv_parse("a\n\"oops",',',20).is_err());assert!(csv_parse("a\nb\nc\n",',',1).is_err())}#[test]fn json_path_array_indices(){let v=json!({"a":{"items":[{"n":"x"},{"n":"y"}]}});assert_eq!(path_get(&v,"a.items.1.n"),Some(&json!("y")));assert!(path_get(&v,"a.items.9.n").is_none())}#[test]fn regex_capture_replace(){let r=Regex::new(r"([A-Z]+)-(\d+)").unwrap();assert_eq!(r.captures("ID-42").unwrap().get(2).unwrap().as_str(),"42");assert_eq!(r.replace("ID-42","$1:$2"),"ID:42")}#[test]fn nextgen_registry_specs(){let mut m=std::collections::HashMap::new();register_into(&mut m);assert_eq!(m.len(),22);for(k,b)in m{assert!(b.spec().is_some(),"{k} no spec")}}}
+#[cfg(test)]mod tests{use super::*;#[test]fn csv_quotes_and_escaped_quotes(){let r=csv_parse("a,b\r\nx,\"hello, world\"\r\ny,\"say \"\"yes\"\"\"\r\n",',',10).unwrap();assert_eq!(r[1][1],"hello, world");assert_eq!(r[2][1],"say \"yes\"")}#[test]fn csv_rejects_unclosed_quotes_and_limits(){assert!(csv_parse("a\n\"oops",',',20).is_err());assert!(csv_parse("a\nb\nc\n",',',1).is_err())}#[test]fn json_path_array_indices(){let v=json!({"a":{"items":[{"n":"x"},{"n":"y"}]}});assert_eq!(path_get(&v,"a.items.1.n"),Some(&json!("y")));assert!(path_get(&v,"a.items.9.n").is_none())}#[test]fn regex_capture_replace(){let r=Regex::new(r"([A-Z]+)-(\d+)").unwrap();assert_eq!(r.captures("ID-42").unwrap().get(2).unwrap().as_str(),"42");assert_eq!(r.replace("ID-42","$1:$2"),"ID:42")}#[test]fn nextgen_registry_specs(){let mut m=std::collections::HashMap::new();register_into(&mut m);assert_eq!(m.len(),24);for(k,b)in m{assert!(b.spec().is_some(),"{k} no spec")}}}
 
 #[cfg(test)]
 mod event_and_ui_tests {
