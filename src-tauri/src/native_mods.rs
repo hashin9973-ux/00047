@@ -2722,7 +2722,6 @@ mod win {
         }
     }
 }
-}
 
 #[cfg(test)]
 mod tests {
