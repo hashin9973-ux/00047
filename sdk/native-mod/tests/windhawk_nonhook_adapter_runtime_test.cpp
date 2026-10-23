@@ -16,7 +16,7 @@ using StepFn = int (WINAPI*)();
 
 int wmain(int argc, wchar_t** argv) {
     if (argc != 2) {
-        std::fwprintf(stderr, L"Usage: 00047_windhawk_nonhook_adapter_runtime_test.exe <adapter-smoke-dll>\n");
+        std::fprintf(stderr, "Usage: 00047_windhawk_nonhook_adapter_runtime_test.exe <adapter-smoke-dll>\n");
         return 2;
     }
 
