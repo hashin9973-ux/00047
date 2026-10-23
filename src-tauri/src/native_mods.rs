@@ -729,6 +729,13 @@ impl NativeModManager {
             let _ = fs::remove_dir_all(&stage);
             return Err(e);
         }
+        if self.signature_policy_enabled() && !verify_trusted_authenticode(&staged_module) {
+            let _ = fs::remove_dir_all(&stage);
+            return Err(
+                "Trusted Authenticode signature is required; the package DLL is unsigned, untrusted, revoked, or could not be verified using cached trust data."
+                    .into(),
+            );
+        }
 
         if target.exists() {
             fs::rename(&target, &backup).map_err(|e| format!("stage existing mod: {e}"))?;
