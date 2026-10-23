@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
@@ -49,6 +49,8 @@ pub struct Engine {
     run_seq: AtomicU64,
     ui: AtomicBool,
     disk: LogStore,
+    debug_paused: Mutex<HashSet<String>>,
+    debug_steps: Mutex<HashMap<String, u32>>,
 }
 
 impl Engine {
@@ -77,6 +79,8 @@ impl Engine {
             run_seq: AtomicU64::new(max_run),
             ui: AtomicBool::new(false),
             disk,
+            debug_paused: Default::default(),
+            debug_steps: Default::default(),
         }
     }
 
@@ -184,7 +188,32 @@ impl Engine {
         Ok(())
     }
 
-    pub fn stop(&self, id: &str) {
+    /// Pause at the next block boundary. A currently executing block is not forcibly suspended.
+    pub fn pause(&self, id: &str) -> Result<(), String> {
+        if !self.runs.lock().unwrap().contains_key(id) { return Err("automation is not running".into()); }
+        self.debug_paused.lock().unwrap().insert(id.to_string());
+        self.debug_steps.lock().unwrap().remove(id);
+        self.app_log("info", format!("Pause requested for automation {id}"));
+        Ok(())
+    }
+
+    pub fn resume(&self, id: &str) -> Result<(), String> {
+        self.debug_paused.lock().unwrap().remove(id);
+        self.debug_steps.lock().unwrap().remove(id);
+        self.app_log("info", format!("Resumed automation {id}"));
+        Ok(())
+    }
+
+    /// Permit exactly one block to start, then remain paused at the next boundary.
+    pub fn step(&self, id: &str) -> Result<(), String> {
+        if !self.runs.lock().unwrap().contains_key(id) { return Err("automation is not running".into()); }
+        if !self.debug_paused.lock().unwrap().contains(id) { return Err("pause the automation before stepping".into()); }
+        let mut budgets = self.debug_steps.lock().unwrap();
+        *budgets.entry(id.to_string()).or_insert(0) = budgets.get(id).copied().unwrap_or(0).saturating_add(1);
+        Ok(())
+    }
+
+    pub fn stop(&self, id: &str) -> {
         let t = self.runs.lock().unwrap().get(id).map(|r| r.token.clone());
         if let Some(t) = t {
             t.cancel();
@@ -302,6 +331,7 @@ impl Engine {
         });
         self.log("info", &auto.id, &auto.name, None, "Automation started".into());
         let entries = entry_nodes(&auto);
+        let call_stack = vec![auto.id.clone()];
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
             auto: Arc::new(auto),
@@ -313,6 +343,7 @@ impl Engine {
             errors: AtomicU32::new(0),
             aborted: AtomicBool::new(false),
             single: entries.len() == 1,
+            call_stack,
         });
         let hs: Vec<_> = entries.into_iter().map(|e| tokio::spawn(run_entry(ctx.clone(), e))).collect();
         for h in hs {
@@ -367,6 +398,7 @@ struct Ctx {
     errors: AtomicU32,
     aborted: AtomicBool,
     single: bool,
+    call_stack: Vec<String>,
 }
 
 impl Ctx {
@@ -623,6 +655,64 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
     }
 }
 
+/// Blocks at node boundaries when the editor has paused this automation. Step budget is consumed
+/// once per block, so a single-step operation pauses again before its successor begins.
+async fn wait_debug_gate(ctx: &Arc<Ctx>, node: &Node) -> bool {
+    loop {
+        if ctx.token.is_cancelled() { return false; }
+        let is_paused = ctx.eng.debug_paused.lock().unwrap().contains(&ctx.auto.id);
+        if !is_paused { return true; }
+        let mut budgets = ctx.eng.debug_steps.lock().unwrap();
+        let budget = budgets.entry(ctx.auto.id.clone()).or_insert(0);
+        if *budget > 0 {
+            *budget -= 1;
+            return true;
+        }
+        drop(budgets);
+        ctx.eng.set_node(&ctx.auto.id, &node.id, "paused", None, "Paused at block boundary".into());
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {},
+            _ = ctx.token.cancelled() => return false,
+        }
+    }
+}
+
+/// Runs a saved automation inside the caller's variable scope. A bounded call stack prevents
+/// recursive subflows; nested failures return to the Call Subflow block's configured ELSE route.
+async fn run_subflow(parent: &Arc<Ctx>, call_node: &Node) -> Result<(), String> {
+    let id = call_node.cfg.get("automationId").and_then(Value::as_str).unwrap_or("").trim();
+    let sub = parent.eng.store.get(id).ok_or_else(|| format!("subflow automation '{id}' was not found"))?;
+    if parent.call_stack.contains(&sub.id) { return Err(format!("recursive subflow call rejected: {}", sub.name)); }
+    if parent.call_stack.len() >= 16 { return Err("subflow nesting limit (16) exceeded".into()); }
+    validate_automation(&sub).map_err(|es| format!("subflow '{}' is invalid: {}", sub.name, es.join("; ")))?;
+    let entries = entry_nodes(&sub);
+    if entries.is_empty() { return Err(format!("subflow '{}' has no entry block", sub.name)); }
+    let entries_for_run = entries.clone();
+    let mut stack = parent.call_stack.clone();
+    stack.push(sub.id.clone());
+    let child = Arc::new(Ctx {
+        eng: parent.eng.clone(),
+        auto: Arc::new(sub),
+        token: parent.token.child_token(),
+        visits: Default::default(),
+        variables: parent.variables.clone(),
+        rate: Default::default(),
+        handles: Default::default(),
+        errors: AtomicU32::new(0),
+        aborted: AtomicBool::new(false),
+        single: entries_for_run.len() == 1,
+        call_stack: stack,
+    });
+    let mut handles = Vec::new();
+    for entry in entries_for_run { handles.push(tokio::spawn(run_entry(child.clone(), entry))); }
+    for h in handles { let _ = h.await; }
+    if child.token.is_cancelled() && parent.token.is_cancelled() { return Err("subflow cancelled".into()); }
+    let count = child.errors.load(Ordering::SeqCst);
+    if child.aborted.load(Ordering::SeqCst) || count > 0 {
+        Err(format!("subflow failed ({count} block error(s)); route ELSE to handle it"))
+    } else { Ok(()) }
+}
+
 async fn run_entry(ctx: Arc<Ctx>, id: String) {
     let repeat = ctx
         .node(&id)
@@ -670,6 +760,7 @@ fn branch(ctx: Arc<Ctx>, start: String) -> BoxFuture<'static, ()> {
 }
 
 async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
+    if !wait_debug_gate(ctx, node).await { return vec![]; }
     let eng = &ctx.eng;
     let aid = ctx.auto.id.clone();
     let Some(blk) = registry().get(node.kind.as_str()) else {
@@ -726,14 +817,19 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
 
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
     let t0 = Instant::now();
+    let execute = async {
+        if node.kind == "act.call_subflow" {
+            run_subflow(ctx, node).await.map(|_| Outcome::Satisfied)
+        } else {
+            blk.run(&cx).await
+        }
+    };
     let res = if timeout > 0.0 {
-        match tokio::time::timeout(Duration::from_secs_f64(timeout), blk.run(&cx)).await {
+        match tokio::time::timeout(Duration::from_secs_f64(timeout), execute).await {
             Ok(r) => r,
             Err(_) => Err(format!("timed out after {timeout}s")),
         }
-    } else {
-        blk.run(&cx).await
-    };
+    } else { execute.await };
     if ctx.token.is_cancelled() {
         eng.set_node(&aid, &node.id, "idle", None, String::new());
         return vec![];
@@ -766,6 +862,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             }
             eng.set_node(&aid, &node.id, "done", None, format!("{txt} · {dt:.1}s"));
             ctx.log("info", Some(node), format!("{txt} ({dt:.2}s)"));
+            if node.kind == "flow.return_value" { return vec![]; }
             ctx.out(&node.id, kinds)
         }
         Err(e) => {
