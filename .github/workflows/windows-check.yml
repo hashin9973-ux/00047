@@ -101,27 +101,32 @@ jobs:
           $testExe = Join-Path $build "Release/00047_native_mod_compat_test.exe"
           if (-not (Test-Path $testExe)) { throw "Native SDK compatibility test executable was not created." }
           & $testExe
+          if ($LASTEXITCODE -ne 0) { throw "Native SDK compatibility test failed with exit code $LASTEXITCODE." }
           $hookTestExe = Join-Path $build "Release/00047_windhawk_hook_runtime_test.exe"
           $hookTestDll = Join-Path $build "Release/00047_windhawk_hook_runtime_smoke.dll"
           if (-not (Test-Path $hookTestExe)) { throw "Native hook runtime test executable was not created." }
           if (-not (Test-Path $hookTestDll)) { throw "Native hook runtime smoke DLL was not created." }
           & $hookTestExe $hookTestDll
+          if ($LASTEXITCODE -ne 0) { throw "Native hook runtime test failed with exit code $LASTEXITCODE." }
           cmake --build $build --config Release --target 00047_signature_verifier_smoke
           $signatureTestExe = Join-Path $build "Release/00047_signature_verifier_smoke.exe"
           if (-not (Test-Path $signatureTestExe)) { throw "Authenticode verifier smoke test was not created." }
           $unsignedFixture = Join-Path $env:RUNNER_TEMP "00047-native-mod-build/Release/00047_sample_native_mod.dll"
           if (-not (Test-Path $unsignedFixture)) { throw "Expected unsigned native-mod fixture was not created." }
           & $signatureTestExe $unsignedFixture
+          if ($LASTEXITCODE -ne 0) { throw "Authenticode verifier smoke test failed with exit code $LASTEXITCODE." }
 
           $symbolTestExe = Join-Path $build "Release/00047_windhawk_symbol_compat_test.exe"
           if (-not (Test-Path $symbolTestExe)) { throw "Symbol compatibility test executable was not created." }
           & $symbolTestExe
+          if ($LASTEXITCODE -ne 0) { throw "Windhawk symbol compatibility test failed with exit code $LASTEXITCODE." }
 
           $settingsTestExe = Join-Path $build "Release/00047_windhawk_settings_changed_runtime_test.exe"
           $settingsSmokeDll = Join-Path $build "Release/00047_windhawk_settings_changed_smoke.dll"
           if (-not (Test-Path $settingsTestExe)) { throw "Settings-change runtime test executable was not created." }
           if (-not (Test-Path $settingsSmokeDll)) { throw "Settings-change smoke DLL was not created." }
           & $settingsTestExe $settingsSmokeDll
+          if ($LASTEXITCODE -ne 0) { throw "Settings-change runtime test failed with exit code $LASTEXITCODE." }
 
       - name: Install prebuilt Tauri CLI
         run: npm install --no-save @tauri-apps/cli@^2
