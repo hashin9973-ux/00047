@@ -385,3 +385,6 @@ textarea.glass.liquidglass-variant {
 .secret-row div{display:grid;gap:4px;min-width:0}
 .secret-row small{color:var(--mu);font-size:11px}
 @media(max-width:760px){.secret-form{grid-template-columns:1fr}.secret-form .btn{width:100%}}
+
+.history-replay{margin-left:8px;padding:3px 8px;font-size:10px;line-height:1.2}
+.lr .ms{display:flex;align-items:center;justify-content:flex-end;gap:4px}
