@@ -299,6 +299,7 @@ impl Engine {
             },
             visible: Box::new(|| false),
             variables: Arc::new(Mutex::new(HashMap::new())),
+            secrets_to_redact: Arc::new(Mutex::new(Vec::new())),
         };
         let out = tokio::time::timeout(Duration::from_secs(60), blk.run(&cx))
             .await
@@ -365,12 +366,14 @@ impl Engine {
         self.log("info", &auto.id, &auto.name, None, "Automation started".into());
         let entries = entry_nodes(&auto);
         let call_stack = vec![auto.id.clone()];
+        let secrets_to_redact = Arc::new(Mutex::new(Vec::new()));
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
             auto: Arc::new(auto),
             token: parent.child_token(),
             visits: Default::default(),
             variables: Arc::new(Mutex::new(HashMap::new())),
+            secrets_to_redact,
             rate: Default::default(),
             handles: Default::default(),
             errors: AtomicU32::new(0),
@@ -428,6 +431,7 @@ struct Ctx {
     token: CancellationToken,
     visits: Mutex<HashMap<String, u64>>,
     variables: Arc<Mutex<HashMap<String, Value>>>,
+    secrets_to_redact: Arc<Mutex<Vec<String>>>,
     rate: Mutex<HashMap<String, VecDeque<Instant>>>,
     handles: Mutex<Vec<JoinHandle<()>>>,
     errors: AtomicU32,
@@ -445,6 +449,7 @@ impl Ctx {
         format!("{t} #{}", n.id.chars().take(4).collect::<String>())
     }
     fn log(&self, level: &str, n: Option<&Node>, msg: String) {
+        let msg = crate::blocks::redact_message(&self.secrets_to_redact, &msg);
         self.eng.log(level, &self.auto.id, &self.auto.name, n.map(|n| (n.id.clone(), self.label(n))), msg);
     }
     fn abort(&self) {
@@ -750,6 +755,7 @@ async fn run_subflow(parent: &Arc<Ctx>, call_node: &Node) -> Result<(), String> 
         token: parent.token.child_token(),
         visits: Default::default(),
         variables: parent.variables.clone(),
+        secrets_to_redact: parent.secrets_to_redact.clone(),
         rate: Default::default(),
         handles: Default::default(),
         errors: AtomicU32::new(0),
@@ -853,7 +859,10 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         report: {
             let c = ctx.clone();
             let nid = node.id.clone();
-            Box::new(move |st: &str, p: Option<f64>, d: String| c.eng.set_node(&c.auto.id, &nid, st, p, d))
+            Box::new(move |st: &str, p: Option<f64>, d: String| {
+                let detail = crate::blocks::redact_message(&c.secrets_to_redact, &d);
+                c.eng.set_node(&c.auto.id, &nid, st, p, detail)
+            })
         },
         log: {
             let c = ctx.clone();
@@ -870,6 +879,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             Box::new(move || c.eng.visible())
         },
         variables: ctx.variables.clone(),
+        secrets_to_redact: ctx.secrets_to_redact.clone(),
     };
 
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
@@ -926,8 +936,9 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         }
         Err(e) => {
             ctx.errors.fetch_add(1, Ordering::SeqCst);
-            eng.set_node(&aid, &node.id, "failed", None, e.clone());
-            ctx.log("error", Some(node), format!("failed: {e}"));
+            let safe_error = crate::blocks::redact_message(&ctx.secrets_to_redact, &e);
+            eng.set_node(&aid, &node.id, "failed", None, safe_error.clone());
+            ctx.log("error", Some(node), format!("failed: {safe_error}"));
             match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
                 "else" => ctx.out(&node.id, &["else"]),
                 "after" => ctx.out(&node.id, &["after"]),
