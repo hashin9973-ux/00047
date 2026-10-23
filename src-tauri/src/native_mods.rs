@@ -2682,6 +2682,133 @@ mod win {
             }
         }
 
+        // CI integration test: the fixture process is a test double named
+        // explorer.exe, not the user's real Windows shell. The test drives the
+        // actual remote LoadLibrary/ABI/init/shutdown/FreeLibrary path.
+        #[test]
+        fn native_mod_remote_load_rollback_and_unload_round_trip() {
+            let Some(target_exe) = std::env::var_os("WMOD_NATIVE_INTEGRATION_TARGET_EXE") else {
+                eprintln!("skipping remote native-mod integration: CMake fixtures are not configured");
+                return;
+            };
+            let Some(success_dll) = std::env::var_os("WMOD_NATIVE_INTEGRATION_DLL") else {
+                eprintln!("skipping remote native-mod integration: success DLL fixture is not configured");
+                return;
+            };
+            let Some(failed_init_dll) = std::env::var_os("WMOD_NATIVE_FAILED_INIT_DLL") else {
+                eprintln!("skipping remote native-mod integration: failed-init DLL fixture is not configured");
+                return;
+            };
+
+            let target_exe = std::path::PathBuf::from(target_exe);
+            let success_dll = std::path::PathBuf::from(success_dll);
+            let failed_init_dll = std::path::PathBuf::from(failed_init_dll);
+            assert!(target_exe.is_file(), "test target fixture is missing: {}", target_exe.display());
+            assert!(success_dll.is_file(), "success DLL fixture is missing: {}", success_dll.display());
+            assert!(failed_init_dll.is_file(), "failed-init DLL fixture is missing: {}", failed_init_dll.display());
+
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock must be valid")
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "00047-native-remote-integration-{}-{nonce}",
+                std::process::id()
+            ));
+            let ready_marker = root.join("target.ready");
+            let success_package = root.join("com.example.remote-integration");
+            let failure_package = root.join("com.example.remote-init-failure");
+            std::fs::create_dir_all(success_package.join("bin")).unwrap();
+            std::fs::create_dir_all(failure_package.join("bin")).unwrap();
+
+            let success_manifest = serde_json::json!({
+                "manifestVersion": 1,
+                "id": "com.example.remote-integration",
+                "name": "Remote Native Mod Integration Test",
+                "version": "1.0.0",
+                "description": "CI-only remote injection fixture",
+                "architecture": "x64",
+                "module": "bin/remote_smoke.dll",
+                "targets": ["explorer.exe"]
+            });
+            let failure_manifest = serde_json::json!({
+                "manifestVersion": 1,
+                "id": "com.example.remote-init-failure",
+                "name": "Remote Native Mod Failed Init Test",
+                "version": "1.0.0",
+                "description": "CI-only initialization rollback fixture",
+                "architecture": "x64",
+                "module": "bin/failed_init.dll",
+                "targets": ["explorer.exe"]
+            });
+            std::fs::write(
+                success_package.join("manifest.json"),
+                serde_json::to_vec_pretty(&success_manifest).unwrap(),
+            ).unwrap();
+            std::fs::write(
+                failure_package.join("manifest.json"),
+                serde_json::to_vec_pretty(&failure_manifest).unwrap(),
+            ).unwrap();
+            let success_module = success_package.join("bin/remote_smoke.dll");
+            let failed_module = failure_package.join("bin/failed_init.dll");
+            std::fs::copy(&success_dll, &success_module).unwrap();
+            std::fs::copy(&failed_init_dll, &failed_module).unwrap();
+
+            let child = Command::new(&target_exe)
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .env("WMOD_NATIVE_TARGET_READY_FILE", &ready_marker)
+                .spawn()
+                .expect("start the CI-only explorer.exe test double");
+            let mut child = ChildGuard(child);
+            let pid = child.0.id();
+
+            let mut ready = false;
+            for _ in 0..500 {
+                if ready_marker.is_file() {
+                    ready = true;
+                    break;
+                }
+                if child.0.try_wait().expect("poll target process").is_some() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(ready, "test target did not signal readiness");
+            assert_eq!(process_architecture(pid).unwrap(), "x64");
+
+            // Initialization failure must be rolled back, including remote unload.
+            let error = inject(pid, "explorer.exe", &failed_module, &mut |_, _| {})
+                .expect_err("the failed-init test DLL must be rejected");
+            assert!(error.contains("WmodInitializeV1 failed"), "{error}");
+            assert!(!unload(pid, "explorer.exe", &failed_module)
+                .expect("failed initialization should have unloaded its DLL"));
+
+            // Repeat the successful remote lifecycle to catch stale module and
+            // per-process hook-registry state across enable/disable cycles.
+            for _ in 0..3 {
+                let mut phases = Vec::new();
+                inject(pid, "explorer.exe", &success_module, &mut |state, detail| {
+                    phases.push((state, detail));
+                }).expect("remote ABI validation and initialization should succeed");
+                assert!(phases.iter().any(|(state, _)| *state == NativeModTargetState::Initialized));
+                assert!(unload(pid, "explorer.exe", &success_module)
+                    .expect("remote shutdown and safe unload should succeed"));
+                assert!(!unload(pid, "explorer.exe", &success_module)
+                    .expect("a second unload should report that the DLL is not loaded"));
+            }
+
+            child.0.kill().expect("terminate the test-only target process");
+            let _ = child.0.wait();
+            let exited = inject(pid, "explorer.exe", &success_module, &mut |_, _| {})
+                .expect_err("an exited target PID must not receive another remote operation");
+            assert!(
+                exited.contains("has exited") || exited.contains("no longer the expected shell process"),
+                "{exited}"
+            );
+            drop(child);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
         #[test]
         fn remote_timeout_quarantines_target_until_process_exit() {
             let system_root = std::env::var_os("SystemRoot")

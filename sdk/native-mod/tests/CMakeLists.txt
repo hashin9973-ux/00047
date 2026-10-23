@@ -82,3 +82,17 @@ add_executable(00047_windhawk_settings_changed_runtime_test windhawk_settings_ch
 target_compile_features(00047_windhawk_settings_changed_runtime_test PRIVATE cxx_std_17)
 target_compile_definitions(00047_windhawk_settings_changed_runtime_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 add_dependencies(00047_windhawk_settings_changed_runtime_test 00047_windhawk_settings_changed_smoke)
+
+# CI-only test double: its output basename is explorer.exe so the real
+# allow-list, remote LoadLibrary and unload code paths can be exercised without
+# injecting into the machine's real Explorer process.
+add_executable(00047_native_mod_integration_target native_mod_integration_target.cpp)
+target_compile_features(00047_native_mod_integration_target PRIVATE cxx_std_17)
+target_compile_definitions(00047_native_mod_integration_target PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+set_target_properties(00047_native_mod_integration_target PROPERTIES OUTPUT_NAME "explorer")
+
+# Deliberately rejects initialization to exercise host rollback/unload.
+add_library(00047_native_mod_failed_init_smoke SHARED native_mod_failed_init_smoke.cpp)
+target_compile_features(00047_native_mod_failed_init_smoke PRIVATE cxx_std_17)
+target_compile_definitions(00047_native_mod_failed_init_smoke PRIVATE WMOD_BUILD_DLL WIN32_LEAN_AND_MEAN NOMINMAX)
+target_include_directories(00047_native_mod_failed_init_smoke PRIVATE "${WMOD_SDK_DIR}")
