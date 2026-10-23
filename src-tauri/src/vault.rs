@@ -86,7 +86,7 @@ pub fn get_secret(name:&str)->Result<String,String>{
     let path=file(name)?;
     let enc=fs::read_to_string(&path).map_err(|e|format!("Could not read secret '{name}': {e}"))?;
     let p=path.to_string_lossy().replace("'","''");
-    let script=format!("$ErrorActionPreference='Stop'; $enc=Get-Content -LiteralPath '{}' -Raw; $secure=ConvertTo-SecureString -String $enc; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); try{{$plain=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($b);$bytes=[Text.Encoding]::UTF8.GetBytes($plain);[Console]::Out.Write([BitConverter]::ToString($bytes).Replace('-',''))}}finally{{[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b);$secure.Dispose()}}",$p);
+    let script=format!("$ErrorActionPreference='Stop'; $enc=Get-Content -LiteralPath '{}' -Raw; $secure=ConvertTo-SecureString -String $enc; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); try{{$plain=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($b);$bytes=[Text.Encoding]::UTF8.GetBytes($plain);[Console]::Out.Write([BitConverter]::ToString($bytes).Replace('-',''))}}finally{{[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b);$secure.Dispose()}}",p);
     let plain=String::from_utf8(unhex(&powershell(&script,None)?)?).map_err(|e|format!("Secret is not UTF-8: {e}"))?;
     if let Ok(mut c)=cache().lock(){c.insert(name.to_string(),plain.clone());}
     Ok(plain)
