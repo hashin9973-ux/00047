@@ -68,9 +68,9 @@ jobs:
         run: |
           $build = Join-Path $env:RUNNER_TEMP "00047-nonhook-compat-tests"
           cmake -S sdk/native-mod/tests -B $build -A x64
-          cmake --build $build --config Release --target 00047_windhawk_nonhook_adapter_smoke 00047_native_mod_failed_init_smoke 00047_native_mod_integration_target
+          cmake --build $build --config Release --target 00047_windhawk_nonhook_adapter_smoke 00047_native_mod_hook_integration_smoke 00047_native_mod_failed_init_smoke 00047_native_mod_integration_target
           $targetExe = Join-Path $build "Release/explorer.exe"
-          $successDll = Join-Path $build "Release/00047_windhawk_nonhook_adapter_smoke.dll"
+          $successDll = Join-Path $build "Release/00047_native_mod_hook_integration_smoke.dll"
           $failedInitDll = Join-Path $build "Release/00047_native_mod_failed_init_smoke.dll"
           foreach ($file in @($targetExe, $successDll, $failedInitDll)) {
             if (-not (Test-Path $file)) { throw "Required remote native-mod integration fixture was not created: $file" }

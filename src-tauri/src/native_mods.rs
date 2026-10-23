@@ -2682,6 +2682,30 @@ mod win {
             }
         }
 
+        fn target_probe(root: &std::path::Path, request_id: u64) -> i32 {
+            let request = root.join("probe.request");
+            let request_temporary = root.join(format!("probe.request.{request_id}.tmp"));
+            let response = root.join("probe.response");
+            let _ = std::fs::remove_file(&response);
+            std::fs::write(&request_temporary, format!("{request_id}\\n"))
+                .expect("write remote probe request");
+            std::fs::rename(&request_temporary, &request)
+                .expect("publish remote probe request");
+
+            for _ in 0..500 {
+                if let Ok(value) = std::fs::read_to_string(&response) {
+                    let mut fields = value.split_whitespace();
+                    let observed_id = fields.next().and_then(|field| field.parse::<u64>().ok());
+                    let result = fields.next().and_then(|field| field.parse::<i32>().ok());
+                    if observed_id == Some(request_id) {
+                        return result.expect("matching remote probe response must include a result");
+                    }
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            panic!("test target did not respond to probe request {request_id}");
+        }
+
         // CI integration test: the fixture process is a test double named
         // explorer.exe, not the user's real Windows shell. The test drives the
         // actual remote LoadLibrary/ABI/init/shutdown/FreeLibrary path.
@@ -2757,6 +2781,7 @@ mod win {
             let child = Command::new(&target_exe)
                 .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
                 .env("WMOD_NATIVE_TARGET_READY_FILE", &ready_marker)
+                .env("WMOD_NATIVE_TARGET_ROOT", &root)
                 .spawn()
                 .expect("start the CI-only explorer.exe test double");
             let mut child = ChildGuard(child);
@@ -2780,6 +2805,8 @@ mod win {
             let target_process = HandleGuard(
                 open_modifiable_process(pid).expect("open exact integration target"),
             );
+            assert_eq!(target_probe(&root, 1), 7,
+                "baseline target function should return 7");
 
             // Initialization failure must be rolled back, including remote unload.
             let error = inject(pid, "explorer.exe", &failed_module, &mut |_, _| {})
@@ -2787,17 +2814,24 @@ mod win {
             assert!(error.contains("WmodInitializeV1 failed"), "{error}");
             assert!(!unload(pid, "explorer.exe", &failed_module)
                 .expect("failed initialization should have unloaded its DLL"));
+            assert_eq!(target_probe(&root, 2), 7,
+                "failed init must leave target behavior unchanged");
 
-            // Repeat the successful remote lifecycle to catch stale module and
-            // per-process hook-registry state across enable/disable cycles.
-            for _ in 0..3 {
+            // Repeat actual remote detour installation/removal. The test DLL hooks
+            // the test EXE's exported function, so this verifies a behavioral patch,
+            // not just that LoadLibrary and lifecycle exports are reachable.
+            for iteration in 0..3u64 {
                 let mut phases = Vec::new();
                 inject(pid, "explorer.exe", &success_module, &mut |state, detail| {
                     phases.push((state, detail));
-                }).expect("remote ABI validation and initialization should succeed");
+                }).expect("remote ABI validation and hook initialization should succeed");
                 assert!(phases.iter().any(|(state, _)| *state == NativeModTargetState::Initialized));
+                assert_eq!(target_probe(&root, 10 + iteration * 2), 17,
+                    "hook should change the remote target result from 7 to 17");
                 assert!(unload(pid, "explorer.exe", &success_module)
                     .expect("remote shutdown and safe unload should succeed"));
+                assert_eq!(target_probe(&root, 11 + iteration * 2), 7,
+                    "unload should restore the remote target's original behavior");
                 assert!(!unload(pid, "explorer.exe", &success_module)
                     .expect("a second unload should report that the DLL is not loaded"));
             }
