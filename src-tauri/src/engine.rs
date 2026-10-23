@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
-use tokio::task::JoinHandle;
+use tokio::{sync::Notify, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 fn is_sensitive_variable_name(name: &str) -> bool {
@@ -54,9 +54,29 @@ pub fn now_ms() -> u64 {
 const LOG_CAP: usize = 5000;
 const HIST_CAP: usize = 50;
 
+struct RunPause {
+    paused: AtomicBool,
+    breakpoint_hit: AtomicBool,
+    current_node: Mutex<Option<String>>,
+    skip_once: Mutex<HashSet<String>>,
+    notify: Notify,
+}
+impl RunPause {
+    fn new() -> Self {
+        Self {
+            paused: AtomicBool::new(false),
+            breakpoint_hit: AtomicBool::new(false),
+            current_node: Mutex::new(None),
+            skip_once: Mutex::new(HashSet::new()),
+            notify: Notify::new(),
+        }
+    }
+}
+#[derive(Clone)]
 struct RunHandle {
     token: CancellationToken,
     run_id: u64,
+    pause: Arc<RunPause>,
 }
 
 #[derive(Serialize)]
@@ -70,6 +90,7 @@ pub struct Engine {
     pub store: Arc<Store>,
     secrets: Arc<SecretVault>,
     runs: Mutex<HashMap<String, RunHandle>>,
+    breakpoints: Mutex<HashMap<String, HashSet<String>>>,
     autos: Mutex<HashMap<String, AutoRuntime>>,
     nodes: Mutex<HashMap<String, HashMap<String, NodeState>>>,
     /// Active per-run variable stores, separate from the persisted automation configuration.
@@ -103,6 +124,7 @@ impl Engine {
             store,
             secrets: Arc::new(SecretVault::new(dir.join("secrets.json"))),
             runs: Default::default(),
+            breakpoints: Default::default(),
             autos: Default::default(),
             nodes: Default::default(),
             variable_stores: Default::default(),
@@ -226,27 +248,83 @@ impl Engine {
             return Err(errs.join("\n"));
         }
         let token = CancellationToken::new();
+        let pause = Arc::new(RunPause::new());
         let run_id = self.run_seq.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut r = self.runs.lock().unwrap();
             if r.contains_key(id) {
                 return Err("already running".into());
             }
-            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id });
+            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id, pause: pause.clone() });
         }
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
-            me.run_automation(auto, token, run_id).await;
+            me.run_automation(auto, token, run_id, pause).await;
         });
         Ok(())
     }
 
     pub fn stop(&self, id: &str) {
-        let t = self.runs.lock().unwrap().get(id).map(|r| r.token.clone());
-        if let Some(t) = t {
-            t.cancel();
+        let handle = self.runs.lock().unwrap().get(id).cloned();
+        if let Some(handle) = handle {
+            handle.token.cancel();
+            handle.pause.paused.store(false, Ordering::SeqCst);
+            handle.pause.notify.notify_waiters();
             self.set_auto(id, |r| r.status = "stopping".into());
         }
+    }
+
+    pub fn pause(&self, id: &str) -> Result<(), String> {
+        let handle = self.runs.lock().unwrap().get(id).cloned().ok_or("automation is not running")?;
+        if handle.pause.paused.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        self.set_auto(id, |r| r.status = "paused".into());
+        self.log("info", id, &self.store.get(id).map(|a| a.name).unwrap_or_default(), None, "Pause requested; active blocks finish their current operation, then execution stops before the next block".into());
+        Ok(())
+    }
+
+    pub fn resume(&self, id: &str) -> Result<(), String> {
+        let handle = self.runs.lock().unwrap().get(id).cloned().ok_or("automation is not running")?;
+        if !handle.pause.paused.swap(false, Ordering::SeqCst) {
+            return Ok(());
+        }
+        if handle.pause.breakpoint_hit.swap(false, Ordering::SeqCst) {
+            if let Some(node_id) = handle.pause.current_node.lock().unwrap().clone() {
+                handle.pause.skip_once.lock().unwrap().insert(node_id);
+            }
+        }
+        *handle.pause.current_node.lock().unwrap() = None;
+        handle.pause.notify.notify_waiters();
+        self.set_auto(id, |r| r.status = "running".into());
+        let name = self.store.get(id).map(|a| a.name).unwrap_or_default();
+        self.log("info", id, &name, None, "Automation resumed".into());
+        Ok(())
+    }
+
+    pub fn set_breakpoint(&self, id: &str, node_id: &str, enabled: bool) -> Result<bool, String> {
+        let auto = self.store.get(id).ok_or("automation not found")?;
+        if !auto.nodes.iter().any(|node| node.id == node_id) {
+            return Err("block not found in this automation".into());
+        }
+        let mut all = self.breakpoints.lock().map_err(|_| "breakpoint store unavailable")?;
+        let set = all.entry(id.to_string()).or_default();
+        if enabled { set.insert(node_id.to_string()); } else { set.remove(node_id); }
+        let is_enabled = set.contains(node_id);
+        if set.is_empty() { all.remove(id); }
+        Ok(is_enabled)
+    }
+
+    pub fn get_breakpoints(&self, id: &str) -> Vec<String> {
+        let mut list: Vec<String> = self.breakpoints.lock().ok()
+            .and_then(|all| all.get(id).map(|set| set.iter().cloned().collect()))
+            .unwrap_or_default();
+        list.sort();
+        list
+    }
+
+    fn has_breakpoint(&self, id: &str, node_id: &str) -> bool {
+        self.breakpoints.lock().ok().and_then(|all| all.get(id).map(|set| set.contains(node_id))).unwrap_or(false)
     }
 
     pub async fn stop_and_wait(&self, id: &str) -> Result<(), String> {
@@ -349,7 +427,7 @@ impl Engine {
     }
 
     // ----- run -----
-    async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64) {
+    async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64, pause: Arc<RunPause>) {
         let started = now_ms();
         self.nodes.lock().unwrap().remove(&auto.id);
         self.set_auto(&auto.id, |r| {
@@ -375,6 +453,7 @@ impl Engine {
             eng: self.clone(),
             auto: Arc::new(auto),
             token: parent.child_token(),
+            pause,
             visits: Default::default(),
             variables,
             rate: Default::default(),
@@ -434,6 +513,7 @@ struct Ctx {
     eng: Arc<Engine>,
     auto: Arc<Automation>,
     token: CancellationToken,
+    pause: Arc<RunPause>,
     visits: Mutex<HashMap<String, u64>>,
     variables: Arc<Mutex<HashMap<String, Value>>>,
     rate: Mutex<HashMap<String, VecDeque<Instant>>>,
@@ -444,6 +524,36 @@ struct Ctx {
 }
 
 impl Ctx {
+    async fn wait_before_node(&self, node: &Node) -> bool {
+        loop {
+            if self.token.is_cancelled() { return false; }
+            if !self.pause.paused.load(Ordering::SeqCst) {
+                let skip = self.pause.skip_once.lock().unwrap().remove(&node.id);
+                if !skip && self.eng.has_breakpoint(&self.auto.id, &node.id) {
+                    *self.pause.current_node.lock().unwrap() = Some(node.id.clone());
+                    self.pause.breakpoint_hit.store(true, Ordering::SeqCst);
+                    self.pause.paused.store(true, Ordering::SeqCst);
+                    self.eng.set_auto(&self.auto.id, |r| r.status = "paused".into());
+                    self.eng.set_node(&self.auto.id, &node.id, "paused", None, "Breakpoint · paused before execution".into());
+                    self.log("info", Some(node), "Breakpoint reached; resume to execute this block".into());
+                    continue;
+                }
+                return true;
+            }
+            {
+                let mut current = self.pause.current_node.lock().unwrap();
+                if current.is_none() { *current = Some(node.id.clone()); }
+            }
+            self.eng.set_node(&self.auto.id, &node.id, "paused", None, "Paused before execution".into());
+            let notified = self.pause.notify.notified();
+            if !self.pause.paused.load(Ordering::SeqCst) { continue; }
+            tokio::select! {
+                _ = notified => {},
+                _ = self.token.cancelled() => return false,
+            }
+        }
+    }
+
     fn node(&self, id: &str) -> Option<Node> {
         self.auto.nodes.iter().find(|n| n.id == id).cloned()
     }
@@ -760,6 +870,7 @@ fn branch(ctx: Arc<Ctx>, start: String) -> BoxFuture<'static, ()> {
 }
 
 async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
+    if !ctx.wait_before_node(node).await { return vec![]; }
     let eng = &ctx.eng;
     let aid = ctx.auto.id.clone();
     let Some(blk) = registry().get(node.kind.as_str()) else {
