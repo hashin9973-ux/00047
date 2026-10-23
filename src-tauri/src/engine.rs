@@ -714,6 +714,25 @@ async fn wait_debug_gate(ctx: &Arc<Ctx>, node: &Node) -> bool {
 
 /// Runs a saved automation inside the caller's variable scope. A bounded call stack prevents
 /// recursive subflows; nested failures return to the Call Subflow block's configured ELSE route.
+async fn run_try_catch(parent: &Arc<Ctx>, node: &Node) -> Result<(), String> {
+    let try_id = node.cfg.get("tryAutomationId").and_then(Value::as_str).unwrap_or("").trim();
+    let catch_id = node.cfg.get("catchAutomationId").and_then(Value::as_str).unwrap_or("").trim();
+    let mut try_node = node.clone();
+    try_node.cfg["automationId"] = json!(try_id);
+    match run_subflow(parent, &try_node).await {
+        Ok(()) => Ok(()),
+        Err(cause) => {
+            let variable = node.cfg.get("errorVariable").and_then(Value::as_str).unwrap_or("workflow_error").trim();
+            if !variable.is_empty() {
+                parent.variables.lock().map_err(|e|e.to_string())?.insert(variable.to_string(), json!(cause));
+            }
+            let mut catch_node = node.clone();
+            catch_node.cfg["automationId"] = json!(catch_id);
+            run_subflow(parent, &catch_node).await.map_err(|e|format!("Try failed and Catch failed: {e}"))
+        }
+    }
+}
+
 async fn run_subflow(parent: &Arc<Ctx>, call_node: &Node) -> Result<(), String> {
     let id = call_node.cfg.get("automationId").and_then(Value::as_str).unwrap_or("").trim();
     let sub = parent.eng.store.get(id).ok_or_else(|| format!("subflow automation '{id}' was not found"))?;
@@ -858,6 +877,8 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     let execute = async {
         if node.kind == "act.call_subflow" {
             run_subflow(ctx, node).await.map(|_| Outcome::Satisfied)
+        } else if node.kind == "act.try_catch" {
+            run_try_catch(ctx, node).await.map(|_| Outcome::Satisfied)
         } else {
             blk.run(&cx).await
         }
@@ -952,6 +973,14 @@ mod loop_semantics_tests {
             viewport: Viewport { x: 0.0, y: 0.0, k: 1.0 },
             auto_start: false,
         }
+    }
+
+    #[test]
+    fn replay_safety_is_conservative_for_shell_and_side_effect_blocks() {
+        assert!(registry().get("act.command").unwrap().risky());
+        assert!(registry().get("act.ui_click").unwrap().risky());
+        assert_eq!(registry().get("cond.hotkey_event").unwrap().category(), Cat::Condition);
+        assert_eq!(registry().get("act.try_catch").unwrap().category(), Cat::Action);
     }
 
     #[test]
