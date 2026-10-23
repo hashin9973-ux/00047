@@ -441,6 +441,108 @@ impl Block for TransformValue{
     }
 }
 
+
+fn loop_control_key(kind: &str, loop_name: &str) -> String {
+    format!("__00047.{kind}.{loop_name}")
+}
+fn loop_name(c: &Value) -> String { txt(c, "loopName").trim().to_string() }
+fn loop_name_valid(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 64
+        && name.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+        && name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+}
+fn foreach_spec()->Value{
+    action_spec("For Each Item","repeat","Iterates a typed array stored in a workflow variable. Wire the loop body back to this block; ELSE runs after the final item.",vec![
+        json!({"key":"loopName","label":"Loop name (unique)","type":"text","required":true,"maxLen":64}),
+        json!({"key":"arrayVariable","label":"Array variable","type":"text","required":true,"maxLen":64}),
+        json!({"key":"itemVariable","label":"Current item variable","type":"text","required":true,"maxLen":64,"default":"item"}),
+        json!({"key":"indexVariable","label":"Index variable (optional, zero-based)","type":"text","maxLen":64,"default":""}),
+        json!({"preset":"onFail"})
+    ],"For each item in {arrayVariable}","The array must be a typed JSON array produced by Extract JSON Value, CSV to JSON, Split, or another data block. On every visit the current item and zero-based index are written to variables. Connect IF to the body, wire the end of the body back to this block, and use ELSE for the exit path. Break/Continue Loop use the same Loop name.");
+}
+struct ForEachItem;
+#[async_trait]
+impl Block for ForEachItem {
+    fn title(&self)-> &'static str {"For Each Item"}
+    fn category(&self)->Cat {Cat::Action}
+    fn spec(&self)->Option<Value>{Some(foreach_spec())}
+    fn validate(&self,c:&Value)->Result<(),String>{
+        spec::validate(&foreach_spec(),c)?;
+        for key in ["loopName","arrayVariable","itemVariable","indexVariable"] {
+            let name=txt(c,key);
+            if !name.is_empty()&&!loop_name_valid(&name){return Err(format!("{key} must be a bounded variable-style name"))}
+        }
+        if loop_name(c).is_empty(){return Err("Loop name is required".into())}
+        if txt(c,"arrayVariable").is_empty(){return Err("Array variable is required".into())}
+        if txt(c,"itemVariable").is_empty(){return Err("Current item variable is required".into())}
+        if txt(c,"arrayVariable")==txt(c,"itemVariable"){return Err("Array and current-item variables must be different".into())}
+        if !txt(c,"indexVariable").is_empty()&&[txt(c,"arrayVariable"),txt(c,"itemVariable")].contains(&txt(c,"indexVariable")){return Err("Index variable must differ from the array and current-item variables".into())}
+        Ok(())
+    }
+    async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+        self.validate(&cx.cfg)?;
+        let name=loop_name(&cx.cfg);
+        let active_key=loop_control_key("active",&name);
+        let break_key=loop_control_key("break",&name);
+        if cx.get_variable(&break_key).and_then(|v|v.as_bool())==Some(true){
+            let _=cx.remove_variable(&break_key)?;
+            let _=cx.remove_variable(&active_key)?;
+            (cx.log)("info",format!("For Each '{name}' exited by Break Loop"));
+            return Ok(Outcome::NotSatisfied)
+        }
+        let array_name=txt(&cx.cfg,"arrayVariable");
+        let array=cx.get_variable(&array_name).ok_or_else(||format!("Array variable '{array_name}' is not set"))?;
+        let items=array.as_array().ok_or_else(||format!("Variable '{array_name}' must contain a JSON array; its current value is not an array"))?;
+        let index=cx.visit.saturating_sub(1) as usize;
+        if index>=items.len(){
+            let _=cx.remove_variable(&active_key)?;
+            (cx.log)("info",format!("For Each '{name}' completed {} item(s)",items.len()));
+            return Ok(Outcome::NotSatisfied)
+        }
+        cx.set_variable(active_key,Value::Bool(true))?;
+        cx.set_variable(txt(&cx.cfg,"itemVariable"),items[index].clone())?;
+        let index_name=txt(&cx.cfg,"indexVariable");
+        if !index_name.is_empty(){cx.set_variable(index_name,Value::from(index as u64))?;}
+        (cx.report)("running",Some((index+1) as f64 / items.len().max(1) as f64),format!("Loop '{name}': item {} of {}",index+1,items.len()));
+        Ok(Outcome::Satisfied)
+    }
+}
+struct BreakLoop;
+#[async_trait]
+impl Block for BreakLoop {
+    fn title(&self)-> &'static str {"Break Loop"}
+    fn category(&self)->Cat {Cat::Action}
+    fn spec(&self)->Option<Value>{Some(action_spec("Break Loop","square","Exits the named For Each Item loop and routes through that iterator's ELSE wire.",vec![
+        json!({"key":"loopName","label":"Loop name","type":"text","required":true,"maxLen":64}),json!({"preset":"onFail"})
+    ],"Break {loopName}","Use the exact Loop name from For Each Item. The action jumps to that iterator; it then follows ELSE and cleans up loop control state."))}
+    fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&self.spec().unwrap(),c)?;if !loop_name_valid(&loop_name(c)){return Err("Loop name is invalid".into())}Ok(())}
+    async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+        self.validate(&cx.cfg)?;
+        let name=loop_name(&cx.cfg);
+        let active=loop_control_key("active",&name);
+        if cx.get_variable(&active).and_then(|v|v.as_bool())!=Some(true){return Err(format!("For Each loop '{name}' is not active"))}
+        cx.set_variable(loop_control_key("break",&name),Value::Bool(true))?;
+        Ok(Outcome::Satisfied)
+    }
+}
+struct ContinueLoop;
+#[async_trait]
+impl Block for ContinueLoop {
+    fn title(&self)-> &'static str {"Continue Loop"}
+    fn category(&self)->Cat {Cat::Action}
+    fn spec(&self)->Option<Value>{Some(action_spec("Continue Loop","skip-forward","Skips the rest of the current For Each body and advances to the next item.",vec![
+        json!({"key":"loopName","label":"Loop name","type":"text","required":true,"maxLen":64}),json!({"preset":"onFail"})
+    ],"Continue {loopName}","Use the exact Loop name from For Each Item. The action jumps straight back to that iterator to load the next item; ELSE runs once the array is exhausted."))}
+    fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&self.spec().unwrap(),c)?;if !loop_name_valid(&loop_name(c)){return Err("Loop name is invalid".into())}Ok(())}
+    async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+        self.validate(&cx.cfg)?;
+        let name=loop_name(&cx.cfg);
+        let active=loop_control_key("active",&name);
+        if cx.get_variable(&active).and_then(|v|v.as_bool())!=Some(true){return Err(format!("For Each loop '{name}' is not active"))}
+        Ok(Outcome::Satisfied)
+    }
+}
+
 pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dyn Block>>){
     m.insert("cond.ui_element",Box::new(UiElementCondition));
     m.insert("act.ui_find",Box::new(UiFind));m.insert("act.ui_click",Box::new(UiClick));
@@ -448,6 +550,9 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
     m.insert("act.json_extract",Box::new(JsonExtract));m.insert("act.regex_extract",Box::new(RegexExtract));
     m.insert("act.csv_to_json",Box::new(CsvToJson));m.insert("act.json_to_csv",Box::new(JsonToCsv));
     m.insert("act.transform_value",Box::new(TransformValue));
+    m.insert("act.for_each_item",Box::new(ForEachItem));
+    m.insert("act.break_loop",Box::new(BreakLoop));
+    m.insert("act.continue_loop",Box::new(ContinueLoop));
 }
 #[cfg(test)]
 mod tests{
@@ -481,6 +586,9 @@ mod tests{
             ("act.csv_to_json", Cat::Action),
             ("act.json_to_csv", Cat::Action),
             ("act.transform_value", Cat::Action),
+            ("act.for_each_item", Cat::Action),
+            ("act.break_loop", Cat::Action),
+            ("act.continue_loop", Cat::Action),
         ];
         for (id, category) in expected {
             let block = r.get(id).unwrap_or_else(|| panic!("{id} missing"));
