@@ -25,6 +25,7 @@ pub fn now_ms() -> u64 {
 
 const LOG_CAP: usize = 5000;
 const HIST_CAP: usize = 50;
+const TRACE_CAP: usize = 500;
 
 struct RunHandle {
     token: CancellationToken,
@@ -452,6 +453,8 @@ impl Engine {
         self.log("info", &auto.id, &auto.name, None, "Automation started".into());
         let entries = entry_nodes(&auto);
         let variables = Arc::new(Mutex::new(HashMap::new()));
+        let trace = Arc::new(Mutex::new(Vec::<NodeTrace>::new()));
+        let trace_truncated = Arc::new(AtomicBool::new(false));
         self.run_variables.lock().unwrap().insert(auto.id.clone(), variables.clone());
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
@@ -465,6 +468,8 @@ impl Engine {
             aborted: AtomicBool::new(false),
             single: entries.len() == 1,
             depth: 0,
+            trace: trace.clone(),
+            trace_truncated: trace_truncated.clone(),
         });
         let hs: Vec<_> = entries.into_iter().map(|e| tokio::spawn(run_entry(ctx.clone(), e))).collect();
         for h in hs {
@@ -491,7 +496,17 @@ impl Engine {
         {
             let mut h = self.hist.lock().unwrap();
             let q = h.entry(aid.clone()).or_default();
-            q.push_front(RunRecord { id: run_id, started_at: started, ended_at: ended, outcome: outcome.into(), errors, snapshot: run_snapshot });
+            let trace_records = ctx.trace.lock().map(|items| items.clone()).unwrap_or_default();
+            q.push_front(RunRecord {
+                id: run_id,
+                started_at: started,
+                ended_at: ended,
+                outcome: outcome.into(),
+                errors,
+                snapshot: run_snapshot,
+                trace: trace_records,
+                trace_truncated: ctx.trace_truncated.load(Ordering::SeqCst),
+            });
             q.truncate(HIST_CAP);
             self.disk.save_history(&h);
         }
@@ -540,6 +555,8 @@ struct Ctx {
     aborted: AtomicBool,
     single: bool,
     depth: u8,
+    trace: Arc<Mutex<Vec<NodeTrace>>>,
+    trace_truncated: Arc<AtomicBool>,
 }
 
 impl Ctx {
@@ -556,6 +573,36 @@ impl Ctx {
     fn abort(&self) {
         self.aborted.store(true, Ordering::SeqCst);
         self.token.cancel();
+    }
+
+    fn next_visit(&self, node_id: &str) -> u64 {
+        let mut visits = self.visits.lock().unwrap();
+        let count = visits.entry(node_id.to_string()).or_insert(0);
+        *count += 1;
+        *count
+    }
+
+    fn visit_count(&self, node_id: &str) -> u64 {
+        self.visits.lock().ok().and_then(|visits| visits.get(node_id).copied()).unwrap_or(0)
+    }
+
+    fn trace_node(&self, node: &Node, visit: u64, state: &str, detail: &str, duration_ms: u64) {
+        let title = registry().get(node.kind.as_str()).map(|block| block.title()).unwrap_or("Unknown block");
+        if let Ok(mut trace) = self.trace.lock() {
+            if trace.len() >= TRACE_CAP {
+                trace.remove(0);
+                self.trace_truncated.store(true, Ordering::SeqCst);
+            }
+            trace.push(NodeTrace {
+                automation_id: self.auto.id.clone(),
+                node_id: node.id.clone(),
+                block_title: title.to_string(),
+                state: state.to_string(),
+                detail: detail.chars().take(240).collect(),
+                visit,
+                duration_ms,
+            });
+        }
     }
     fn out(&self, from: &str, kinds: &[&str]) -> Vec<String> {
         let mut v: Vec<String> = vec![];
@@ -867,12 +914,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         ctx.log("info", Some(node), "skipped (block is disabled); following AFTER wires only".into());
         return ctx.out(&node.id, &["after"]);
     }
-    let visit = {
-        let mut v = ctx.visits.lock().unwrap();
-        let c = v.entry(node.id.clone()).or_insert(0);
-        *c += 1;
-        *c
-    };
+    let visit = ctx.next_visit(&node.id);
     eng.set_node(&aid, &node.id, "running", None, String::new());
 
     let cx = NodeCx {
@@ -1167,6 +1209,7 @@ async fn execute_subflow(ctx: Arc<Ctx>, node: &Node) -> Result<(),String> {
         visits:Default::default(),variables:Arc::new(Mutex::new(values)),rate:Default::default(),
         handles:Default::default(),errors:AtomicU32::new(0),aborted:AtomicBool::new(false),
         single:entries.len()==1,depth:ctx.depth+1,
+        trace:ctx.trace.clone(),trace_truncated:ctx.trace_truncated.clone(),
     });
     let tasks:Vec<_>=entries.into_iter().map(|entry|tokio::spawn(run_entry(child_ctx.clone(),entry))).collect();
     for task in tasks { task.await.map_err(|e|format!("Subflow task failed: {e}"))?; }
