@@ -151,8 +151,27 @@ impl Engine {
 
     // ----- state -----
     fn set_node(&self, auto_id: &str, node_id: &str, state: &str, progress: Option<f64>, detail: String) {
-        let st = NodeState { state: state.into(), progress, detail };
-        self.nodes.lock().unwrap().entry(auto_id.into()).or_default().insert(node_id.into(), st.clone());
+        let at = now_ms();
+        let st = {
+            let mut nodes = self.nodes.lock().unwrap();
+            let map = nodes.entry(auto_id.into()).or_default();
+            let previous = map.get(node_id).cloned();
+            let attempts = if state == "running" {
+                previous.as_ref().map(|p|p.attempts.saturating_add(1)).unwrap_or(1)
+            } else { previous.as_ref().map(|p|p.attempts).unwrap_or(0) };
+            let started_at = if state == "running" {
+                Some(at)
+            } else if matches!(state,"waiting"|"paused") {
+                previous.as_ref().and_then(|p|p.started_at).or(Some(at))
+            } else { None };
+            let duration_ms = if matches!(state,"done"|"failed"|"idle") {
+                previous.as_ref().and_then(|p|p.started_at).map(|start|at.saturating_sub(start))
+                    .or_else(||previous.as_ref().and_then(|p|p.duration_ms))
+            } else { previous.as_ref().and_then(|p|p.duration_ms) };
+            let st = NodeState { state: state.into(), progress, detail, started_at, duration_ms, attempts };
+            map.insert(node_id.into(),st.clone());
+            st
+        };
         if self.visible() {
             let _ = self.app.emit("node-state", json!({"autoId": auto_id, "nodeId": node_id, "state": st}));
         }
@@ -419,7 +438,9 @@ impl Engine {
         self.debug_resume(&auto.id);
         let started = now_ms();
         // Avoid unbounded history growth: exceptionally large graphs keep normal run history without a graph snapshot.
-        let run_snapshot = if auto.nodes.len() <= 500 && auto.edges.len() <= 1200 { Some(auto.clone()) } else { None };
+        let run_snapshot = if auto.nodes.len() <= 250 && auto.edges.len() <= 600
+            && serde_json::to_vec(&auto).map(|bytes|bytes.len() <= 512 * 1024).unwrap_or(false)
+        { Some(auto.clone()) } else { None };
         self.nodes.lock().unwrap().remove(&auto.id);
         self.set_auto(&auto.id, |r| {
             r.status = "running".into();
