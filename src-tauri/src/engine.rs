@@ -53,6 +53,8 @@ pub struct Engine {
     debug_step_requests: Mutex<HashSet<String>>,
     debug_step_next: Mutex<HashSet<String>>,
     debug_notify: Notify,
+    run_variables: Mutex<HashMap<String, Arc<Mutex<HashMap<String, Value>>>>>,
+    last_variables: Mutex<HashMap<String, HashMap<String, Value>>>,
     disk: LogStore,
 }
 
@@ -86,6 +88,8 @@ impl Engine {
             debug_step_requests: Default::default(),
             debug_step_next: Default::default(),
             debug_notify: Notify::new(),
+            run_variables: Default::default(),
+            last_variables: Default::default(),
             disk,
         }
     }
@@ -167,6 +171,24 @@ impl Engine {
     }
     pub fn history(&self, id: &str) -> Vec<RunRecord> {
         self.hist.lock().unwrap().get(id).map(|h| h.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Returns current or last-run variable diagnostics, suppressing likely credentials and never reading secrets from the vault.
+    pub fn workflow_variables(&self, id: &str) -> Value {
+        let current = self.run_variables.lock().ok().and_then(|m|m.get(id).cloned());
+        let values = current.as_ref().and_then(|v|v.lock().ok().map(|x|x.clone()))
+            .or_else(||self.last_variables.lock().ok().and_then(|m|m.get(id).cloned()))
+            .unwrap_or_default();
+        let variables: Vec<Value> = values.into_iter().map(|(name,value)| {
+            let suspicious = {
+                let low=name.to_ascii_lowercase();
+                ["password","passwd","secret","token","credential","api_key","apikey","private_key"].iter().any(|needle|low.contains(needle))
+            };
+            let kind=match &value {Value::Null=>"null",Value::Bool(_)=>"boolean",Value::Number(_)=>"number",Value::String(_)=>"text",Value::Array(_)=>"array",Value::Object(_)=>"object"};
+            let rendered=match value {Value::String(s)=>s,other=>other.to_string()};
+            json!({"name":name,"type":kind,"value":if suspicious{"[redacted]".to_string()}else if rendered.chars().count()>2048{format!("{}…",rendered.chars().take(2048).collect::<String>())}else{rendered},"redacted":suspicious})
+        }).collect();
+        json!({"running":current.is_some(),"variables":variables})
     }
 
     pub fn set_breakpoints(&self, id: &str, node_ids: Vec<String>) -> Result<(), String> {
@@ -354,6 +376,8 @@ impl Engine {
     pub fn remove(&self, id: &str) -> Result<(), String> {
         self.debug_resume(id);
         self.debug_breakpoints.lock().map_err(|e|e.to_string())?.remove(id);
+        self.run_variables.lock().map_err(|e|e.to_string())?.remove(id);
+        self.last_variables.lock().map_err(|e|e.to_string())?.remove(id);
         self.store.remove(id)?;
         self.autos.lock().unwrap().remove(id);
         self.nodes.lock().unwrap().remove(id);
@@ -385,12 +409,14 @@ impl Engine {
         });
         self.log("info", &auto.id, &auto.name, None, "Automation started".into());
         let entries = entry_nodes(&auto);
+        let variables = Arc::new(Mutex::new(HashMap::new()));
+        self.run_variables.lock().unwrap().insert(auto.id.clone(), variables.clone());
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
             auto: Arc::new(auto),
             token: parent.child_token(),
             visits: Default::default(),
-            variables: Arc::new(Mutex::new(HashMap::new())),
+            variables,
             rate: Default::default(),
             handles: Default::default(),
             errors: AtomicU32::new(0),
@@ -409,6 +435,9 @@ impl Engine {
         let outcome = if stopped { "stopped" } else if aborted { "failed" } else { "completed" };
         let ended = now_ms();
         let aid = ctx.auto.id.clone();
+        let variable_snapshot = ctx.variables.lock().map(|v|v.clone()).unwrap_or_default();
+        self.last_variables.lock().unwrap().insert(aid.clone(), variable_snapshot);
+        self.run_variables.lock().unwrap().remove(&aid);
         if let Some(m) = self.nodes.lock().unwrap().get_mut(&aid) {
             for s in m.values_mut() {
                 if s.state == "running" || s.state == "waiting" {
