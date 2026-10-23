@@ -269,6 +269,11 @@ fn get_workflow_variables(eng: State<'_, Arc<Engine>>, id: String) -> serde_json
 }
 
 #[tauri::command]
+fn recreate_run_snapshot(eng: State<'_, Arc<Engine>>, id: String, run_id: u64) -> Result<Automation, String> {
+    eng.recreate_run_snapshot(&id, run_id)
+}
+
+#[tauri::command]
 fn clear_logs(eng: State<'_, Arc<Engine>>) {
     eng.clear_logs();
 }
@@ -675,6 +680,7 @@ fn main() {
             get_logs,
             get_history,
             get_workflow_variables,
+            recreate_run_snapshot,
             clear_logs,
             app_stats,
             get_autostart,
