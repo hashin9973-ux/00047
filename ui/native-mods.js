@@ -13,7 +13,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
 
   async function renderNativeMods() {
     const host = $('#view-native-mods');
-    host.innerHTML = '<div class="plugins-head"><div><h2>Native Windows Mods</h2><p class="mu">Manage native x64 DLL modules for supported Windows shell processes.</p></div><div class="plugins-actions"><button class="btn" data-native-action="folder">Open native mods folder</button><button class="btn" data-native-action="refresh">Refresh targets</button><button class="btn primary" data-native-action="install">+ Install native mod ZIP...</button></div></div>' +
+    host.innerHTML = '<div class="plugins-head"><div><h2>Native Windows Mods</h2><p class="mu">Manage native x64 DLL modules for supported Windows shell processes.</p></div><div class="plugins-actions"><button class="btn" data-native-action="folder">Open native mods folder</button><button class="btn" data-native-action="refresh">Refresh targets</button><button class="btn" data-native-action="build">Build from source...</button><button class="btn primary" data-native-action="install">+ Install native mod ZIP...</button></div></div>' +
       '<div class="native-warning card glass"><b>High-impact native code</b><p class="mu">A native mod runs inside Explorer or another listed shell process with that process permissions. A faulty or hostile DLL can hang or crash it. Only enable source you trust. The loader accepts x64 DLLs and a fixed allow-list of Windows shell processes, not arbitrary targets.</p></div>' +
       '<div id="native-signature-policy" class="card glass native-signature-policy"><div><b>Trusted Authenticode signatures</b><p class="mu">Loading signature policy...</p></div></div>' +
       '<div id="native-targets"><p class="mu">Discovering supported shell processes...</p></div>' +
@@ -130,6 +130,8 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         if (answer !== 'go') return;
         const status = await invoke('native_mod_signature_policy_set', { required });
         toast(String(status));
+      } else if (action === 'build') {
+        await buildSourceProject();
       } else if (action === 'install') {
         await installPackage();
       } else if (action === 'enable') {
@@ -321,6 +323,28 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       toast('Native mod package installed (disabled by default)');
     } catch (error) {
       toast('Native mod install failed: ' + error, 'err');
+    }
+  }
+
+  async function buildSourceProject() {
+    const answer = await modal({
+      title: 'Build and install from source?',
+      body: 'Choose a native-mod project folder containing manifest.json and CMakeLists.txt. 00047 will run CMake configure/build with the bundled SDK and your installed Visual Studio C++ x64 toolchain. CMakeLists.txt and build scripts execute with your Windows user permissions, so only build source you trust. The package is validated and installed disabled by default. When trusted-signature enforcement is enabled, the resulting DLL must also have a valid trusted Authenticode signature.',
+      buttons: [['cancel', 'Cancel'], ['go', 'Choose source folder', 'primary']]
+    });
+    if (answer !== 'go') return;
+    try {
+      const result = await invoke('native_mod_build_source_and_install');
+      if (!result) return;
+      toast(result.message || ('Built and installed ' + result.id + ' (disabled by default)'));
+      const log = String(result.buildOutput || '').slice(-40000);
+      await htmlModal('Native mod build complete',
+        '<p>Installed <code>' + esc(result.id) + '</code>. It is disabled until you explicitly enable it.</p>' +
+        '<p class="mu">Build log (last 40 KB):</p><pre class="native-build-log">' + esc(log) + '</pre>',
+        [['close', 'Close', 'primary']]);
+      await refreshData();
+    } catch (error) {
+      toast('Native mod build failed: ' + error, 'err');
     }
   }
 

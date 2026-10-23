@@ -1,0 +1,431 @@
+//! Build and install a user-selected 00047 native-mod CMake project.
+//!
+//! The build runs only after an explicit UI action. A CMake project can execute
+//! arbitrary commands as the current user, so the frontend warns users to build
+//! only source they trust. The resulting ZIP is still passed through the normal
+//! native-mod package validator and installed disabled by default.
+
+use serde::Serialize;
+use serde_json::Value;
+use std::{
+    fs::{self, File},
+    io::Write,
+    path::{Component, Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use zip::{write::FileOptions, CompressionMethod, ZipWriter};
+
+use crate::native_mods::NativeModManager;
+
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_SOURCE_CMAKE_BYTES: u64 = 1024 * 1024;
+const MAX_BUILT_DLL_BYTES: u64 = 50 * 1024 * 1024;
+const MAX_CAPTURE_BYTES: usize = 256 * 1024;
+const BUILD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+static WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInstallReport {
+    pub id: String,
+    pub message: String,
+    pub build_output: String,
+}
+
+struct BuildWorkspace {
+    path: PathBuf,
+}
+
+impl BuildWorkspace {
+    fn create() -> Result<Self, String> {
+        let temp = std::env::temp_dir();
+        for _ in 0..16 {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| format!("Cannot read system clock: {e}"))?
+                .as_nanos();
+            let sequence = WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = temp.join(format!(
+                "00047-native-mod-build-{}-{nanos}-{sequence}",
+                std::process::id()
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(format!("Cannot create temporary build workspace: {error}")),
+            }
+        }
+        Err("Could not allocate a unique temporary build workspace.".into())
+    }
+}
+
+impl Drop for BuildWorkspace {
+    fn drop(&mut self) {
+        // remove_dir_all does not follow symlinks inside the workspace.
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(not(windows))]
+pub async fn build_and_install(
+    project_dir: PathBuf,
+    sdk_dir: PathBuf,
+    manager: Arc<NativeModManager>,
+) -> Result<BuildInstallReport, String> {
+    let _ = (project_dir, sdk_dir, manager);
+    Err("Building native Windows mods is supported only on Windows.".into())
+}
+
+#[cfg(windows)]
+pub async fn build_and_install(
+    project_dir: PathBuf,
+    sdk_dir: PathBuf,
+    manager: Arc<NativeModManager>,
+) -> Result<BuildInstallReport, String> {
+    let (project_root, manifest_bytes, module_relative) = inspect_project(&project_dir)?;
+    let sdk_root = checked_sdk_directory(&sdk_dir)?;
+    let module_name = module_relative
+        .file_name()
+        .ok_or("Manifest module path has no DLL filename.")?
+        .to_owned();
+
+    let workspace = BuildWorkspace::create()?;
+    let build_dir = workspace.path.join("build");
+    let sdk_argument = format!("-DWMOD_SDK_DIR={}", sdk_root.display());
+
+    let configure_args = vec![
+        "-S".into(),
+        project_root.as_os_str().to_os_string(),
+        "-B".into(),
+        build_dir.as_os_str().to_os_string(),
+        "-A".into(),
+        "x64".into(),
+        sdk_argument.into(),
+    ];
+    let configure_output = run_command(
+        "cmake",
+        configure_args,
+        &project_root,
+        BUILD_TIMEOUT,
+        "CMake configure",
+    )
+    .await?;
+
+    let build_args = vec![
+        "--build".into(),
+        build_dir.as_os_str().to_os_string(),
+        "--config".into(),
+        "Release".into(),
+        "--parallel".into(),
+        "2".into(),
+    ];
+    let build_output = run_command(
+        "cmake",
+        build_args,
+        &project_root,
+        BUILD_TIMEOUT,
+        "CMake build",
+    )
+    .await?;
+
+    let dll = locate_built_dll(&build_dir, &module_name)?;
+    let dll_metadata = fs::symlink_metadata(&dll)
+        .map_err(|e| format!("Cannot inspect compiled DLL: {e}"))?;
+    if dll_metadata.file_type().is_symlink()
+        || !dll_metadata.is_file()
+        || dll_metadata.len() == 0
+        || dll_metadata.len() > MAX_BUILT_DLL_BYTES
+    {
+        return Err(format!(
+            "Compiled DLL must be a regular, non-empty file no larger than {} MB.",
+            MAX_BUILT_DLL_BYTES / (1024 * 1024)
+        ));
+    }
+
+    let package_path = workspace.path.join("built-native-mod.zip");
+    create_package(&package_path, &manifest_bytes, &module_relative, &dll)?;
+    let package_preview = manager.preview(&package_path)?;
+    let build_log = format!(
+        "=== Configure ===\n{}\n=== Build ===\n{}",
+        configure_output, build_output
+    );
+
+    let installed_id = manager.install(&package_path).map_err(|error| {
+        format!(
+            "Build succeeded, but package installation failed: {error}\n\nBuild output:\n{build_log}"
+        )
+    })?;
+
+    Ok(BuildInstallReport {
+        id: installed_id,
+        message: format!(
+            "Built and installed {} ({}). It remains disabled until you explicitly enable it.",
+            package_preview.name, package_preview.version
+        ),
+        build_output: build_log,
+    })
+}
+
+fn checked_regular_file(path: &Path, label: &str, max_bytes: u64) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|e| format!("Cannot inspect {label} '{}': {e}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() > max_bytes {
+        return Err(format!(
+            "{label} must be a regular, non-symlink file no larger than {} MB: {}",
+            max_bytes / (1024 * 1024),
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn inspect_project(project_dir: &Path) -> Result<(PathBuf, Vec<u8>, PathBuf), String> {
+    let root_metadata = fs::symlink_metadata(project_dir)
+        .map_err(|e| format!("Cannot inspect source project directory: {e}"))?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err("Choose a real source project directory, not a symlink.".into());
+    }
+    let root = project_dir
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve source project directory: {e}"))?;
+    checked_regular_file(&root.join("CMakeLists.txt"), "CMakeLists.txt", MAX_SOURCE_CMAKE_BYTES)?;
+    let manifest_path = root.join("manifest.json");
+    checked_regular_file(&manifest_path, "manifest.json", MAX_MANIFEST_BYTES)?;
+    let manifest_bytes = fs::read(&manifest_path)
+        .map_err(|e| format!("Cannot read source manifest.json: {e}"))?;
+    let value: Value = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| format!("Source manifest.json is invalid: {e}"))?;
+    if !value.is_object() {
+        return Err("Source manifest.json must contain a JSON object.".into());
+    }
+    let module = value
+        .get("module")
+        .and_then(Value::as_str)
+        .ok_or("Source manifest.json must declare a relative module DLL path.")?;
+    let relative = safe_module_relative_path(module)?;
+    Ok((root, manifest_bytes, relative))
+}
+
+fn safe_module_relative_path(module: &str) -> Result<PathBuf, String> {
+    if module.is_empty()
+        || module.contains('\\')
+        || module.contains(':')
+        || module.starts_with('/')
+        || module.chars().any(char::is_control)
+    {
+        return Err("Manifest module path must be a safe relative ZIP path using forward slashes.".into());
+    }
+    let components: Vec<&str> = module.split('/').collect();
+    if components.len() != 2
+        || components[0] != "bin"
+        || components[1].is_empty()
+        || components[1] == "."
+        || components[1] == ".."
+        || !components[1].to_ascii_lowercase().ends_with(".dll")
+        || Path::new(module).components().any(|c| !matches!(c, Component::Normal(_)))
+    {
+        return Err(
+            "The in-app builder expects manifest.module to be bin/<module-name>.dll.".into()
+        );
+    }
+    Ok(PathBuf::from("bin").join(components[1]))
+}
+
+fn checked_sdk_directory(sdk_dir: &Path) -> Result<PathBuf, String> {
+    let root = sdk_dir
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve the bundled native-mod SDK: {e}"))?;
+    for relative in [
+        "00047_mod_api.h",
+        "windhawk_hook_compat.cpp",
+        "third_party/minhook/src/hook.c",
+        "third_party/distorm/src/decoder.c",
+    ] {
+        let path = root.join(relative);
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|e| format!("The bundled native-mod SDK is incomplete ({relative}): {e}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!("The bundled native-mod SDK is missing a regular {relative} file."));
+        }
+    }
+    Ok(root)
+}
+
+fn locate_built_dll(build_dir: &Path, module_name: &std::ffi::OsStr) -> Result<PathBuf, String> {
+    let candidates = [
+        build_dir.join("bin").join("Release").join(module_name),
+        build_dir.join("bin").join(module_name),
+        build_dir.join("Release").join(module_name),
+        build_dir.join(module_name),
+    ];
+    for candidate in candidates {
+        if let Ok(metadata) = fs::symlink_metadata(&candidate) {
+            if !metadata.file_type().is_symlink() && metadata.is_file() {
+                return candidate
+                    .canonicalize()
+                    .map_err(|e| format!("Cannot resolve compiled DLL path: {e}"));
+            }
+        }
+    }
+    Err(format!(
+        "CMake completed, but the DLL named '{}' was not found in the expected Release output folders. Check manifest.module and RUNTIME_OUTPUT_DIRECTORY in CMakeLists.txt.",
+        module_name.to_string_lossy()
+    ))
+}
+
+async fn run_command(
+    program: &str,
+    arguments: Vec<std::ffi::OsString>,
+    current_dir: &Path,
+    timeout: Duration,
+    stage: &str,
+) -> Result<String, String> {
+    use tokio::{
+        io::{AsyncRead, AsyncReadExt},
+        process::Command,
+    };
+    use std::process::Stdio;
+
+    async fn capture<R>(mut reader: R) -> std::io::Result<(Vec<u8>, bool)>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut stored = Vec::new();
+        let mut truncated = false;
+        let mut chunk = [0u8; 8192];
+        loop {
+            let read = reader.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            let remaining = MAX_CAPTURE_BYTES.saturating_sub(stored.len());
+            let keep = remaining.min(read);
+            stored.extend_from_slice(&chunk[..keep]);
+            if keep < read {
+                truncated = true;
+            }
+        }
+        Ok((stored, truncated))
+    }
+
+    let mut child = Command::new(program)
+        .args(&arguments)
+        .current_dir(current_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| format!(
+            "Could not start {stage}; install CMake and the Visual Studio C++ x64 build tools. Details: {e}"
+        ))?;
+    let stdout = child.stdout.take().ok_or_else(|| format!("{stage}: stdout pipe is unavailable"))?;
+    let stderr = child.stderr.take().ok_or_else(|| format!("{stage}: stderr pipe is unavailable"))?;
+    let stdout_task = tokio::spawn(capture(stdout));
+    let stderr_task = tokio::spawn(capture(stderr));
+
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!("{stage} could not be completed: {error}"));
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(format!(
+                "{stage} exceeded the {}-second timeout. The build was terminated.",
+                timeout.as_secs()
+            ));
+        }
+    };
+
+    let read_result = |result: Result<
+        Result<(Vec<u8>, bool), std::io::Error>,
+        tokio::task::JoinError
+    >, label: &str| -> Result<(String, bool), String> {
+        let (bytes, truncated) = result
+            .map_err(|e| format!("{stage}: could not collect {label}: {e}"))?
+            .map_err(|e| format!("{stage}: error reading {label}: {e}"))?;
+        let mut text = String::from_utf8_lossy(&bytes).into_owned();
+        if truncated {
+            text.push_str("\n[output truncated at 256 KiB; remaining output was drained]\n");
+        }
+        Ok((text, truncated))
+    };
+    let (stdout_text, _) = read_result(stdout_task.await, "stdout")?;
+    let (stderr_text, _) = read_result(stderr_task.await, "stderr")?;
+    let combined = format!("{}\n{}", stdout_text.trim(), stderr_text.trim());
+
+    if !status.success() {
+        return Err(format!(
+            "{stage} failed with exit code {}.\n{combined}",
+            status.code().map(|c| c.to_string()).unwrap_or_else(|| "unknown".into())
+        ));
+    }
+    Ok(combined)
+}
+
+fn create_package(
+    output_path: &Path,
+    manifest_bytes: &[u8],
+    module_relative: &Path,
+    dll_path: &Path,
+) -> Result<(), String> {
+    let dll_bytes = fs::read(dll_path).map_err(|e| format!("Cannot read compiled DLL: {e}"))?;
+    if dll_bytes.is_empty() || dll_bytes.len() as u64 > MAX_BUILT_DLL_BYTES {
+        return Err("Compiled DLL size is outside the accepted limit.".into());
+    }
+    let output = File::create(output_path)
+        .map_err(|e| format!("Cannot create temporary native-mod ZIP: {e}"))?;
+    let mut archive = ZipWriter::new(output);
+    archive
+        .start_file("manifest.json", FileOptions::default().compression_method(CompressionMethod::Deflated))
+        .map_err(|e| format!("Cannot write package manifest entry: {e}"))?;
+    archive.write_all(manifest_bytes)
+        .map_err(|e| format!("Cannot write package manifest: {e}"))?;
+    let module_name = module_relative
+        .to_str()
+        .ok_or("Manifest module path is not valid UTF-8.")?;
+    archive
+        .start_file(module_name, FileOptions::default().compression_method(CompressionMethod::Deflated))
+        .map_err(|e| format!("Cannot write package DLL entry: {e}"))?;
+    archive.write_all(&dll_bytes)
+        .map_err(|e| format!("Cannot write package DLL bytes: {e}"))?;
+    archive.finish()
+        .map_err(|e| format!("Cannot finalize native-mod ZIP: {e}"))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_path_is_limited_to_the_expected_bin_dll_shape() {
+        assert_eq!(
+            safe_module_relative_path("bin/com_example_mod.dll").unwrap(),
+            PathBuf::from("bin/com_example_mod.dll")
+        );
+        for rejected in [
+            "",
+            "../mod.dll",
+            "bin/../mod.dll",
+            "bin\\mod.dll",
+            "C:/mod.dll",
+            "/bin/mod.dll",
+            "lib/mod.dll",
+            "bin/not-a-dll.txt",
+            "bin/a/b.dll",
+        ] {
+            assert!(safe_module_relative_path(rejected).is_err(), "{rejected}");
+        }
+    }
+}

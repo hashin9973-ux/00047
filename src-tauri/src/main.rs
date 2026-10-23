@@ -6,6 +6,7 @@ mod spec;
 mod engine;
 mod extensions;
 mod native_mods;
+mod native_mod_builder;
 mod native_mod_config;
 mod logstore;
 mod model;
@@ -14,7 +15,7 @@ mod sys;
 
 use engine::{Engine, Runtime};
 use model::{Automation, LogEntry, RunRecord};
-use std::{sync::{Arc, Mutex}, time::Duration};
+use std::{path::PathBuf, sync::{Arc, Mutex}, time::Duration};
 use store::Store;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -486,6 +487,36 @@ fn native_mod_pack_install(
 }
 
 #[tauri::command]
+async fn native_mod_build_source_and_install(
+    app: AppHandle,
+    mods: State<'_, Arc<native_mods::NativeModManager>>,
+) -> Result<Option<native_mod_builder::BuildInstallReport>, String> {
+    let manager = mods.inner().clone();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+    let Some(picked) = rx.await.map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let project_dir = picked.into_path().map_err(|e| e.to_string())?;
+
+    // Release installers bundle the SDK at resources/sdk/native-mod. When
+    // developing from a repository checkout, use the working-tree SDK instead.
+    let resource_sdk = app.path().resource_dir().ok()
+        .map(|root| root.join("sdk").join("native-mod"));
+    let development_sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../sdk/native-mod");
+    let sdk_dir = resource_sdk
+        .filter(|candidate| candidate.join("00047_mod_api.h").is_file())
+        .unwrap_or(development_sdk);
+
+    native_mod_builder::build_and_install(project_dir, sdk_dir, manager)
+        .await
+        .map(Some)
+}
+
+#[tauri::command]
 fn native_mod_enable(mods: State<'_, Arc<native_mods::NativeModManager>>, id: String) -> Result<String, String> {
     mods.enable(&id)
 }
@@ -660,6 +691,7 @@ fn main() {
             list_native_mods,
             native_mod_pack_preview,
             native_mod_pack_install,
+            native_mod_build_source_and_install,
             native_mod_enable,
             native_mod_disable,
             native_mod_uninstall,

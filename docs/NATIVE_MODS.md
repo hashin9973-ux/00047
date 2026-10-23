@@ -83,6 +83,14 @@ The author tools do not replace the application's independent validation at inst
 
 Windows CI runs those tests and builds/validates the real no-op sample package.
 
+## Build and install from source in the app
+
+The Native Mods view has a **Build from source...** action for CMake projects created by `tools/new_native_mod.py` or equivalent projects that follow the same SDK layout. Choose the project folder containing `manifest.json` and `CMakeLists.txt`. The project manifest must point to `bin/<module-name>.dll`.
+
+On Windows, the app invokes CMake with an x64 Visual Studio generator, points `WMOD_SDK_DIR` at the bundled `sdk/native-mod` resources, and builds the Release configuration. CMake and the Visual Studio C++ x64 build tools must already be installed and available to the current user. Each configure/build stage has a five-minute timeout and captured console output is bounded. The temporary build workspace is deleted after the package is installed.
+
+**Security:** CMake files and build scripts can run arbitrary commands with your Windows user permissions. Only build source you trust. After compilation, 00047 creates a package and passes it through the normal native-mod package validator and installer. The mod is installed **disabled by default**; it does not execute in Explorer until you explicitly enable it. If trusted Authenticode enforcement is on, the build will be rejected at installation unless the resulting DLL has a signature trusted by Windows under the configured local policy. The in-app builder currently packages the manifest and the primary DLL only; projects that require additional runtime files should be packaged using the ZIP authoring workflow instead.
+
 ## Settings and logs
 
 A mod may declare an optional `settings` array in `manifest.json`. Each setting has a unique `id`, a `label`, a `type`, and a `default`. Supported types are `boolean`, `string`, `stringArray`, `integer`, `number`, and `select`. Numeric settings can declare `min`, `max`, and `step`; string settings can declare `maxLength`; select and string-array settings can declare `options` with unique `value` and `label` properties. A string-array setting stores a JSON array of strings; without `options` it is edited as a list of text values, and with `dynamicSelect: true` each element uses the same runtime option list.
