@@ -684,7 +684,16 @@ async fn execute_subflow(parent: &Arc<Ctx>, automation_id: &str) -> Result<(), S
     if automation_id == parent.auto.id {
         return Err("An automation cannot call itself as a subflow".into());
     }
-    let auto = parent.eng.store.get(automation_id).ok_or_else(|| format!("Subflow automation '{automation_id}' was not found"))?;
+    let auto = if let Some(auto) = parent.eng.store.get(automation_id) {
+        auto
+    } else {
+        let matches: Vec<_> = parent.eng.store.all().into_iter().filter(|a| a.name == automation_id).collect();
+        match matches.as_slice() {
+            [auto] => (*auto).clone(),
+            [] => return Err(format!("Subflow automation '{automation_id}' was not found by ID or exact name")),
+            _ => return Err(format!("Several automations are named '{automation_id}'; use the unique automation ID")),
+        }
+    };
     validate_automation(&auto).map_err(|errors| format!("Subflow validation failed: {}", errors.join("; ")))?;
     let entries = entry_nodes(&auto);
     if entries.is_empty() {
