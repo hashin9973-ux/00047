@@ -92,4 +92,7 @@ pub struct RunRecord {
     pub ended_at: u64,
     pub outcome: String,
     pub errors: u32,
+    /// Bounded graph snapshot for inspection/recreation only. Older history records omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Automation>,
 }
