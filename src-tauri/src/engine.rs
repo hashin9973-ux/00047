@@ -1,5 +1,5 @@
 use crate::{
-    blocks::{registry, Cat, NodeCx, Outcome, Target},
+    blocks::{call_subflow_id, is_call_subflow_block, is_debug_breakpoint, registry, Cat, NodeCx, Outcome, Target},
     model::*,
     store::Store,
 };
@@ -658,6 +658,46 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
     }
 }
 
+async fn execute_subflow(parent: &Arc<Ctx>, automation_id: &str) -> Result<(), String> {
+    if parent.depth >= 8 {
+        return Err("Subflow nesting exceeded the safety limit of 8 levels".into());
+    }
+    if automation_id == parent.auto.id {
+        return Err("An automation cannot call itself as a subflow".into());
+    }
+    let auto = parent.eng.store.get(automation_id).ok_or_else(|| format!("Subflow automation '{automation_id}' was not found"))?;
+    validate_automation(&auto).map_err(|errors| format!("Subflow validation failed: {}", errors.join("; ")))?;
+    let entries = entry_nodes(&auto);
+    if entries.is_empty() {
+        return Err("Subflow has no executable entry block".into());
+    }
+    let child = Arc::new(Ctx {
+        eng: parent.eng.clone(),
+        auto: Arc::new(auto),
+        token: parent.token.child_token(),
+        visits: Default::default(),
+        variables: parent.variables.clone(),
+        rate: Default::default(),
+        handles: Default::default(),
+        errors: AtomicU32::new(0),
+        aborted: AtomicBool::new(false),
+        single: entries.len() == 1,
+        step_gate: parent.step_gate.clone(),
+        depth: parent.depth + 1,
+        trace: parent.trace.clone(),
+    });
+    parent.log("info", None, format!("Entering subflow '{}'", child.auto.name));
+    let tasks: Vec<_> = entries.into_iter().map(|entry| tokio::spawn(run_entry(child.clone(), entry))).collect();
+    for task in tasks { task.await.map_err(|e| format!("Subflow task failed: {e}"))?; }
+    if parent.token.is_cancelled() { return Err("cancelled".into()); }
+    let errors = child.errors.load(Ordering::SeqCst);
+    if child.aborted.load(Ordering::SeqCst) || errors > 0 {
+        return Err(format!("Subflow '{}' failed with {errors} error(s)", child.auto.name));
+    }
+    parent.log("info", None, format!("Subflow '{}' completed", child.auto.name));
+    Ok(())
+}
+
 async fn run_entry(ctx: Arc<Ctx>, id: String) {
     let repeat = ctx
         .node(&id)
@@ -709,6 +749,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     let aid = ctx.auto.id.clone();
     let Some(blk) = registry().get(node.kind.as_str()) else {
         ctx.errors.fetch_add(1, Ordering::SeqCst);
+        ctx.trace_node(node, 0, "failed", "unknown block type", 0);
         ctx.log("error", Some(node), format!("unknown block type '{}'", node.kind));
         ctx.abort();
         return vec![];
@@ -716,12 +757,14 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     if !ctx.rate_ok(node) {
         ctx.errors.fetch_add(1, Ordering::SeqCst);
         eng.set_node(&aid, &node.id, "failed", None, "runaway guard".into());
+        ctx.trace_node(node, 0, "failed", "runaway guard", 0);
         ctx.log("error", Some(node), "Runaway guard tripped: this block ran too often in a short time. Automation aborted. Add a Wait or raise the loop delay / interval.".into());
         ctx.abort();
         return vec![];
     }
     if node.disabled {
         eng.set_node(&aid, &node.id, "done", None, "disabled: skipped".into());
+        ctx.trace_node(node, 0, "done", "disabled: skipped", 0);
         ctx.log("info", Some(node), "skipped (block is disabled); following AFTER wires only".into());
         return ctx.out(&node.id, &["after"]);
     }
@@ -759,9 +802,37 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         variables: ctx.variables.clone(),
     };
 
+    if is_debug_breakpoint(&node.kind, &node.cfg) {
+        eng.set_node(&aid, &node.id, "paused", None, "Paused at debugger breakpoint · Resume to continue".into());
+        ctx.log("info", Some(node), "Debugger breakpoint reached; waiting for Resume".into());
+        tokio::select! {
+            result = ctx.step_gate.clone().acquire_owned() => {
+                match result {
+                    Ok(permit) => permit.forget(),
+                    Err(_) => {
+                        eng.set_node(&aid, &node.id, "failed", None, "debugger step gate closed".into());
+                        ctx.trace_node(node, visit, "failed", "debugger step gate closed", 0);
+                        return vec![];
+                    }
+                }
+            },
+            _ = ctx.token.cancelled() => {
+                eng.set_node(&aid, &node.id, "idle", None, "cancelled while paused".into());
+                ctx.trace_node(node, visit, "cancelled", "cancelled while paused", 0);
+                return vec![];
+            }
+        }
+        if ctx.token.is_cancelled() {
+            eng.set_node(&aid, &node.id, "idle", None, "cancelled while paused".into());
+            ctx.trace_node(node, visit, "cancelled", "cancelled while paused", 0);
+            return vec![];
+        }
+        eng.set_node(&aid, &node.id, "running", None, "Resumed from debugger breakpoint".into());
+    }
+
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
     let t0 = Instant::now();
-    let res = if timeout > 0.0 {
+    let mut res = if timeout > 0.0 {
         match tokio::time::timeout(Duration::from_secs_f64(timeout), blk.run(&cx)).await {
             Ok(r) => r,
             Err(_) => Err(format!("timed out after {timeout}s")),
@@ -769,8 +840,12 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     } else {
         blk.run(&cx).await
     };
+    if res.is_ok() && is_call_subflow_block(&node.kind) {
+        res = execute_subflow(ctx, &call_subflow_id(&node.cfg)).await.map(|_| Outcome::Satisfied);
+    }
     if ctx.token.is_cancelled() {
         eng.set_node(&aid, &node.id, "idle", None, String::new());
+        ctx.trace_node(node, visit, "cancelled", "cancelled", t0.elapsed().as_millis() as u64);
         return vec![];
     }
     let dt = t0.elapsed().as_secs_f64();
@@ -783,6 +858,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             } else {
                 ("not satisfied", &["else", "after"])
             };
+            ctx.trace_node(node, visit, "done", txt, (dt * 1000.0) as u64);
             if node.kind == "act.loop" {
                 match loop_start_id(&ctx.auto) {
                     Ok(start_id) => {
@@ -793,6 +869,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
                     Err(message) => {
                         ctx.errors.fetch_add(1, Ordering::SeqCst);
                         eng.set_node(&aid, &node.id, "failed", None, message.clone());
+                        ctx.trace_node(node, visit, "failed", &message, (dt * 1000.0) as u64);
                         ctx.log("error", Some(node), message);
                         ctx.abort();
                         return vec![];
@@ -805,6 +882,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         }
         Err(e) => {
             ctx.errors.fetch_add(1, Ordering::SeqCst);
+            ctx.trace_node(node, visit, "failed", "Block failed; see execution log for details", (dt * 1000.0) as u64);
             eng.set_node(&aid, &node.id, "failed", None, e.clone());
             ctx.log("error", Some(node), format!("failed: {e}"));
             match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
