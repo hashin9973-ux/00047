@@ -25,6 +25,27 @@ fn is_sensitive_variable_name(name: &str) -> bool {
         .iter().any(|needle| lower.contains(needle))
 }
 
+#[cfg(test)]
+mod workflow_variable_inspector_tests {
+    use super::*;
+
+    #[test]
+    fn redacts_sensitive_variable_names() {
+        for name in ["api_token", "refreshToken", "password", "my_secret", "authorization", "session_cookie", "credential"] {
+            assert!(is_sensitive_variable_name(name), "{name} should be redacted");
+        }
+        assert!(!is_sensitive_variable_name("result_count"));
+    }
+
+    #[test]
+    fn internal_loop_state_is_separate_from_user_inspector_keys() {
+        assert!(is_internal_variable_name("__00047.break.items"));
+        assert!(!is_internal_variable_name("items"));
+    }
+}
+
+fn is_internal_variable_name(name: &str) -> bool { name.starts_with("__00047.") }
+
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -176,7 +197,7 @@ impl Engine {
     pub fn workflow_variables(&self, id: &str) -> Value {
         let active = self.variable_stores.lock().ok().and_then(|stores| stores.get(id).cloned());
         let values = if let Some(store) = active {
-            store.lock().ok().map(|map| Value::Object(map.iter().map(|(key, value)| {
+            store.lock().ok().map(|map| Value::Object(map.iter().filter(|(key, _)| !key.starts_with("__00047.")).map(|(key, value)| {
                 (key.clone(), if is_sensitive_variable_name(key) { Value::String("[REDACTED]".into()) } else { value.clone() })
             }).collect())).unwrap_or_else(|| json!({}))
         } else {
@@ -378,7 +399,7 @@ impl Engine {
             }
         }
         let label = if errors > 0 { format!("{outcome} ({errors} errors)") } else { outcome.to_string() };
-        let snapshot = ctx.variables.lock().ok().map(|values| Value::Object(values.iter().map(|(key, value)| {
+        let snapshot = ctx.variables.lock().ok().map(|values| Value::Object(values.iter().filter(|(key, _)| !key.starts_with("__00047.")).map(|(key, value)| {
             (key.clone(), if is_sensitive_variable_name(key) { Value::String("[REDACTED]".into()) } else { value.clone() })
         }).collect())).unwrap_or_else(|| json!({}));
         self.last_variables.lock().unwrap().insert(aid.clone(), snapshot);
