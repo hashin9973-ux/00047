@@ -287,11 +287,110 @@ if($match.Count -gt 0){{[pscustomobject]@{{matched=$true;id=$match[0].Id;provide
  }
 }
 
+struct SystemLifecycleEvent;
+fn system_lifecycle_spec()->Value{
+ json!({"category":"condition","title":"System Session / Power Event","icon":"activity","description":"Waits for Windows session changes or suspend/resume notifications using native WMI indications.","fields":[
+  {"key":"event","label":"Event","type":"select","default":"unlock","options":[["logon","User logon"],["logoff","User logoff"],["lock","Workstation locked"],["unlock","Workstation unlocked"],["console_connect","Console session connected"],["console_disconnect","Console session disconnected"],["remote_connect","Remote session connected"],["remote_disconnect","Remote session disconnected"],["suspend","System entering sleep/suspend"],["resume","System resumed"],["any","Any session or power event"]]},
+  {"key":"saveEventAs","label":"Save event details to variable (optional)","type":"text","default":"","maxLen":64},
+  {"preset":"timeout"},{"preset":"onFail"}],
+  "summary":"Wait for system event: {event}",
+  "help":"Uses Windows session-change and power-management event subscriptions. Sleep/resume notifications vary by hardware and Windows build. The block waits for one matching event; timeout 0 means wait without a time limit."})
+}
+fn lifecycle_event_key(value:&str)->Option<&'static str>{
+ match value{
+  "logon"|"logoff"|"lock"|"unlock"|"console_connect"|"console_disconnect"|"remote_connect"|"remote_disconnect"|"suspend"|"resume"|"any"=>Some(value),
+  _=>None
+ }
+}
+#[async_trait]
+impl Block for SystemLifecycleEvent{
+ fn title(&self)->&'static str{"System Session / Power Event"}
+ fn category(&self)->Cat{Cat::Condition}
+ fn supports_timeout(&self)->bool{true}
+ fn spec(&self)->Option<Value>{Some(system_lifecycle_spec())}
+ fn validate(&self,c:&Value)->Result<(),String>{
+  spec::validate(&system_lifecycle_spec(),c)?;
+  no_nul(c,&["saveEventAs"])?;
+  if lifecycle_event_key(&text(c,"event")).is_none(){return Err("Unknown system event".into())}
+  if !text(c,"saveEventAs").is_empty()&&!name_ok(&text(c,"saveEventAs")){return Err("Event output variable name is invalid".into())}
+  let timeout=c.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
+  if !timeout.is_finite()||!(0.0..=86400.0).contains(&timeout){return Err("Timeout must be between 0 and 86400 seconds".into())}
+  Ok(())
+ }
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
+  self.validate(&cx.cfg)?;
+  let wanted=text(&cx.cfg,"event");
+  let script=r#"
+$ErrorActionPreference='Stop'
+$wanted=__WANTED__
+$prefix='00047-'+[guid]::NewGuid().ToString('N')
+$sessionSource=$prefix+'-session'
+$powerSource=$prefix+'-power'
+$sessionQuery='SELECT * FROM Win32_SessionChangeEvent'
+$powerQuery='SELECT * FROM Win32_PowerManagementEvent'
+try {
+  Register-CimIndicationEvent -Namespace root/cimv2 -Query $sessionQuery -SourceIdentifier $sessionSource -ErrorAction Stop | Out-Null
+  Register-CimIndicationEvent -Namespace root/cimv2 -Query $powerQuery -SourceIdentifier $powerSource -ErrorAction Stop | Out-Null
+  while($true) {
+    $ev=Wait-Event -Timeout 1 -ErrorAction SilentlyContinue
+    if($null -eq $ev) { continue }
+    $record=$ev.SourceEventArgs.NewEvent
+    $type=[int]$record.EventType
+    $key=''
+    if($ev.SourceIdentifier -eq $sessionSource) {
+      switch($type) {
+        1 {$key='console_connect'}
+        2 {$key='console_disconnect'}
+        3 {$key='remote_connect'}
+        4 {$key='remote_disconnect'}
+        5 {$key='logon'}
+        6 {$key='logoff'}
+        7 {$key='lock'}
+        8 {$key='unlock'}
+      }
+    } elseif($ev.SourceIdentifier -eq $powerSource) {
+      switch($type) {
+        4 {$key='suspend'}
+        7 {$key='resume'}
+      }
+    }
+    $eventId=$ev.EventIdentifier
+    if($eventId) {Remove-Event -EventIdentifier $eventId -ErrorAction SilentlyContinue}
+    if($key -and ($wanted -eq 'any' -or $key -eq $wanted)) {
+      [pscustomobject]@{
+        event=$key
+        eventType=$type
+        sessionId=if($null -ne $record.SessionId){[int]$record.SessionId}else{0}
+        userName=if($null -ne $record.UserName){[string]$record.UserName}else{''}
+        observedAt=[DateTimeOffset]::Now.ToString('o')
+      } | ConvertTo-Json -Compress
+      break
+    }
+  }
+} finally {
+  Unregister-Event -SourceIdentifier $sessionSource -ErrorAction SilentlyContinue
+  Unregister-Event -SourceIdentifier $powerSource -ErrorAction SilentlyContinue
+  Get-Event -SourceIdentifier $sessionSource -ErrorAction SilentlyContinue | Remove-Event -ErrorAction SilentlyContinue
+  Get-Event -SourceIdentifier $powerSource -ErrorAction SilentlyContinue | Remove-Event -ErrorAction SilentlyContinue
+}
+"#.replace("__WANTED__",&extra::ps_quote(&wanted));
+  (cx.report)("waiting",None,format!("Waiting for Windows system event: {wanted}"));
+  let out=extra::powershell(cx,&script).await?;
+  let value:Value=serde_json::from_str(out.trim()).map_err(|e|format!("Could not parse Windows session/power event: {e}"))?;
+  if let Some(variable)=value.get("event").and_then(Value::as_str){
+   if !text(&cx.cfg,"saveEventAs").is_empty(){cx.set_variable(text(&cx.cfg,"saveEventAs"),value.clone())?}
+   (cx.log)("info",format!("System event received: {variable}"));
+   Ok(Outcome::Satisfied)
+  }else{Err("System event listener ended without a matching event".into())}
+ }
+}
+
 pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dyn Block>>){
  m.insert("cond.hotkey",Box::new(Hotkey));
  m.insert("act.webhook_trigger",Box::new(Webhook));
  m.insert("cond.process_event",Box::new(ProcessEvent));
  m.insert("cond.windows_event",Box::new(WindowsEvent));
+ m.insert("cond.system_lifecycle_event",Box::new(SystemLifecycleEvent));
  m.insert("cond.file_event",Box::new(FileEvent));
 }
 #[cfg(test)]
@@ -307,6 +406,12 @@ mod tests{
   assert!(FileEvent.validate(&json!({"path":"C:\\\\Temp","pattern":"*.log","recursive":true,"event":"created","savePathAs":"changedPath","timeoutSec":30,"onFail":"stop"})).is_ok());
   assert!(FileEvent.validate(&json!({"path":"","pattern":"*","event":"any","timeoutSec":0,"onFail":"stop"})).is_err());
   assert!(FileEvent.validate(&json!({"path":"C:\\\\Temp","pattern":"*","event":"wrong","timeoutSec":0,"onFail":"stop"})).is_err());
+ }
+ #[test]fn lifecycle_events_are_validated_and_bounded(){
+  assert!(SystemLifecycleEvent.validate(&json!({"event":"unlock","saveEventAs":"eventData","timeoutSec":30,"onFail":"stop"})).is_ok());
+  assert!(SystemLifecycleEvent.validate(&json!({"event":"resume","timeoutSec":0,"onFail":"stop"})).is_ok());
+  assert!(SystemLifecycleEvent.validate(&json!({"event":"power_lost","timeoutSec":0,"onFail":"stop"})).is_err());
+  assert!(SystemLifecycleEvent.validate(&json!({"event":"logon","saveEventAs":"bad name","timeoutSec":0,"onFail":"stop"})).is_err());
  }
  #[test]fn windows_event_ids_are_validated(){assert!(WindowsEvent.validate(&json!({"logName":"System","eventIds":"4801,1074","provider":"","messageContains":"","behavior":"check","pollSec":2,"stableForSec":0,"timeoutSec":0,"onFail":"stop"})).is_ok());assert!(WindowsEvent.validate(&json!({"logName":"System","eventIds":"bad","behavior":"check","onFail":"stop"})).is_err());}
  #[test]fn process_event_requires_executable_name(){assert!(ProcessEvent.validate(&json!({"event":"started","processName":"notepad.exe","timeoutSec":30,"onFail":"stop"})).is_ok());assert!(ProcessEvent.validate(&json!({"event":"started","processName":"C:\\\\Windows\\\\notepad.exe","timeoutSec":30,"onFail":"stop"})).is_err());}
