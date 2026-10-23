@@ -400,6 +400,22 @@ bool StackReferencesModule(HANDLE thread, const CONTEXT& context,
         return true;
     }
 
+    // A mod-owned worker can be blocked inside kernel32/ntdll while its
+    // instruction pointer and current stack no longer visibly reference the
+    // mod. Query the original Win32 thread entry point as an additional guard.
+    // ThreadQuerySetWin32StartAddress is information class 9 in ntdll.
+    PVOID win32StartAddress = nullptr;
+    constexpr ULONG kThreadQuerySetWin32StartAddress = 9;
+    if (!queryThread ||
+        queryThread(thread, kThreadQuerySetWin32StartAddress,
+            &win32StartAddress, sizeof(win32StartAddress), nullptr) < 0) {
+        return true; // Fail closed if a thread's module entry point is unknown.
+    }
+    if (IsModuleAddress(reinterpret_cast<std::uintptr_t>(win32StartAddress),
+            moduleStart, moduleEnd)) {
+        return true;
+    }
+
     ThreadBasicInformationCompat information{};
     if (!queryThread ||
         queryThread(thread, 0, &information, sizeof(information), nullptr) < 0 ||

@@ -45,8 +45,13 @@ int wmain(int argc, wchar_t** argv) {
     auto holdDetour = reinterpret_cast<HoldFn>(GetProcAddress(module, "HookRuntimeHoldDetour"));
     auto insideDetour = reinterpret_cast<InsideFn>(GetProcAddress(module, "HookRuntimeInsideDetour"));
     auto targetAddress = reinterpret_cast<AddressFn>(GetProcAddress(module, "HookRuntimeTargetAddress"));
+    auto startPersistentWorker = reinterpret_cast<SimpleBoolFn>(
+        GetProcAddress(module, "HookRuntimeStartPersistentWorker"));
+    auto stopPersistentWorker = reinterpret_cast<SimpleBoolFn>(
+        GetProcAddress(module, "HookRuntimeStopPersistentWorker"));
     CHECK(target && disasm && disasmAddress && begin && install && apply && remove &&
-          shutdown && canUnload && holdDetour && insideDetour && targetAddress);
+          shutdown && canUnload && holdDetour && insideDetour && targetAddress &&
+          startPersistentWorker && stopPersistentWorker);
 
     // Load a second copy of the same test DLL under a different path to model
     // two independently linked mod DLLs in one shell process.
@@ -192,6 +197,13 @@ int wmain(int argc, wchar_t** argv) {
         std::fprintf(stderr, "quiescence check did not recover after detour thread exited\n");
         return 33;
     }
+
+    // Even after every hook is removed, refuse to unload while a mod-owned
+    // worker thread remains alive in an idle wait.
+    CHECK(startPersistentWorker() == TRUE);
+    CHECK(canUnload() == FALSE);
+    CHECK(stopPersistentWorker() == TRUE);
+    CHECK(canUnload() == TRUE);
 
     CHECK(FreeLibrary(module) != FALSE);
     return 0;

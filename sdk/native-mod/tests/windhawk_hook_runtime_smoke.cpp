@@ -7,6 +7,17 @@ using TestFunction = int(__cdecl*)(int);
 static void* g_originalAddress = nullptr;
 static std::atomic<bool> g_holdDetour{false};
 static std::atomic<bool> g_insideDetour{false};
+static HANDLE g_persistentWorkerStopEvent = nullptr;
+static HANDLE g_persistentWorkerThread = nullptr;
+
+static DWORD WINAPI PersistentWorkerThreadProc(LPVOID parameter) noexcept {
+    const HANDLE stopEvent = static_cast<HANDLE>(parameter);
+    // Kept running but idle inside a Windows wait to model a mod-owned worker
+    // whose current IP alone may not indicate the DLL that owns its entrypoint.
+    while (WaitForSingleObject(stopEvent, 100) == WAIT_TIMEOUT) {
+    }
+    return 0;
+}
 
 extern "C" __declspec(noinline) int __cdecl HookTestTarget(int value) {
     volatile int result = value + 2;
@@ -103,4 +114,30 @@ extern "C" __declspec(dllexport) void WINAPI HookRuntimeHoldDetour(BOOL hold) {
 
 extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeInsideDetour(void) {
     return g_insideDetour.load(std::memory_order_acquire) ? TRUE : FALSE;
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeStartPersistentWorker(void) {
+    if (g_persistentWorkerThread || g_persistentWorkerStopEvent) return FALSE;
+    HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!stopEvent) return FALSE;
+    HANDLE thread = CreateThread(nullptr, 0, &PersistentWorkerThreadProc, stopEvent, 0, nullptr);
+    if (!thread) {
+        CloseHandle(stopEvent);
+        return FALSE;
+    }
+    g_persistentWorkerStopEvent = stopEvent;
+    g_persistentWorkerThread = thread;
+    return TRUE;
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeStopPersistentWorker(void) {
+    if (!g_persistentWorkerThread || !g_persistentWorkerStopEvent) return FALSE;
+    if (!SetEvent(g_persistentWorkerStopEvent)) return FALSE;
+    const DWORD wait = WaitForSingleObject(g_persistentWorkerThread, 5000);
+    if (wait != WAIT_OBJECT_0) return FALSE;
+    CloseHandle(g_persistentWorkerThread);
+    CloseHandle(g_persistentWorkerStopEvent);
+    g_persistentWorkerThread = nullptr;
+    g_persistentWorkerStopEvent = nullptr;
+    return TRUE;
 }
