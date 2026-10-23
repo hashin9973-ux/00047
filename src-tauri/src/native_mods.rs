@@ -2775,6 +2775,11 @@ mod win {
             }
             assert!(ready, "test target did not signal readiness");
             assert_eq!(process_architecture(pid).unwrap(), "x64");
+            // Hold a handle to this exact process object, so the exit assertion
+            // cannot be confused by a later reuse of the numeric PID.
+            let target_process = HandleGuard(
+                open_modifiable_process(pid).expect("open exact integration target"),
+            );
 
             // Initialization failure must be rolled back, including remote unload.
             let error = inject(pid, "explorer.exe", &failed_module, &mut |_, _| {})
@@ -2799,12 +2804,12 @@ mod win {
 
             child.0.kill().expect("terminate the test-only target process");
             let _ = child.0.wait();
-            let exited = inject(pid, "explorer.exe", &success_module, &mut |_, _| {})
-                .expect_err("an exited target PID must not receive another remote operation");
-            assert!(
-                exited.contains("has exited") || exited.contains("no longer the expected shell process"),
-                "{exited}"
+            assert_eq!(
+                unsafe { WaitForSingleObject(target_process.0, 0) },
+                WAIT_OBJECT_0,
+                "the exact target process object should be signaled after exit",
             );
+            drop(target_process);
             drop(child);
             std::fs::remove_dir_all(root).unwrap();
         }
