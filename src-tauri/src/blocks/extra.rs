@@ -160,6 +160,7 @@ pub(super) fn wait_settings(c: &Value) -> Result<(String, f64, f64, f64), String
 #[derive(Deserialize, Clone, Default)]
 struct NetSample {
     connected: bool,
+    network_connected: bool,
     ssid: String,
     rx: u64,
     tx: u64,
@@ -241,12 +242,17 @@ try {{$wlanText=(& netsh.exe wlan show interfaces 2>$null | Out-String)}} catch 
     let (wlan_connected, ssid) = parse_wlan_status(&sample.wlan_text);
     sample.connected |= wlan_connected;
     sample.ssid = ssid;
+    // Any active Windows connection profile counts for the generic network mode;
+    // this includes Ethernet and other non-WLAN interfaces.
+    let generic_script = r#"$ErrorActionPreference='Stop'; $profiles=@(Get-NetConnectionProfile -ErrorAction SilentlyContinue); $connected=@($profiles | Where-Object { $_.IPv4Connectivity -ne 'Disconnected' -or $_.IPv6Connectivity -ne 'Disconnected' }).Count -gt 0; [bool]$connected | ConvertTo-Json -Compress"#;
+    let generic_out = powershell(cx, generic_script).await?;
+    sample.network_connected = generic_out.trim().eq_ignore_ascii_case("true");
     Ok(sample)
 }
 
 fn network_spec() -> Value {
     let mut fields = vec![
-        json!({"key":"mode","label":"Measure","type":"select","default":"wifi_connected","options":[["wifi_connected","Wi-Fi connected"],["wifi_disconnected","Wi-Fi disconnected"],["ssid","Connected to specific SSID"],["download","Download throughput"],["upload","Upload throughput"],["internet","Internet/host reachable"]]}),
+        json!({"key":"mode","label":"Measure","type":"select","default":"network_connected","options":[["network_connected","Any network connected (Wi-Fi/Ethernet)"],["network_disconnected","No network connected"],["wifi_connected","Wi-Fi connected"],["wifi_disconnected","Wi-Fi disconnected"],["ssid","Connected to specific SSID"],["download","Download throughput"],["upload","Upload throughput"],["internet","Internet/host reachable"]]}),
         json!({"key":"adapter","label":"Adapter name (optional)","type":"text","maxLen":128,"default":""}),
         json!({"key":"ssid","label":"SSID","type":"text","required":true,"maxLen":256,"show":{"key":"mode","eq":"ssid"}}),
         json!({"key":"host","label":"Host or URL","type":"text","maxLen":2048,"default":"www.msftconnecttest.com","show":{"key":"mode","eq":"internet"}}),
@@ -255,7 +261,7 @@ fn network_spec() -> Value {
         json!({"key":"unit","label":"Rate unit","type":"select","default":"Mbps","options":[["Mbps","Mbps"],["MiB/s","MiB/s"]],"show":{"key":"mode","in":["download","upload"]}}),
     ];
     fields.extend(behavior_fields());
-    json!({"category":"condition","title":"Network Condition","icon":"wifi","description":"Checks Wi-Fi connectivity, SSID, internet reachability, or measured adapter throughput. Supports polling and stable-state debounce.","fields":fields,"summary":"Network: {mode}","help":"Wi-Fi status is read independently from adapter-counter selection, using Windows WLAN state plus active wireless network profiles. Throughput is estimated from byte-counter deltas between samples; a one-shot throughput check samples for one second. Mbps is megabits/second; MiB/s is mebibytes/second. The default counter adapter prefers an active physical wireless adapter; enter an adapter name to measure another interface. Internet reachability probes a host/URL and may take several seconds."})
+    json!({"category":"condition","title":"Network Condition","icon":"wifi","description":"Checks any active network connection (Wi-Fi or Ethernet), Wi-Fi/SSID state, internet reachability, or measured adapter throughput. Supports polling and stable-state debounce.","fields":fields,"summary":"Network: {mode}","help":"Any network status uses active Windows connection profiles, including Ethernet. Wi-Fi status is read independently from adapter-counter selection, using Windows WLAN state plus wireless network profiles. Use Any network connected when the requirement is connection to any network, not specifically Wi-Fi. Throughput is estimated from byte-counter deltas between samples; a one-shot throughput check samples for one second. Mbps is megabits/second; MiB/s is mebibytes/second. The default counter adapter prefers an active physical wireless adapter; enter an adapter name to measure another interface. Internet reachability probes a host/URL and may take several seconds."})
 }
 
 struct NetworkCondition;
@@ -268,7 +274,7 @@ impl Block for NetworkCondition {
     fn validate(&self, c: &Value) -> Result<(), String> {
         spec::validate(&network_spec(), c)?;
         let mode = text(c, "mode");
-        if !matches!(mode.as_str(), "wifi_connected"|"wifi_disconnected"|"ssid"|"download"|"upload"|"internet") { return Err("Unknown network condition".into()); }
+        if !matches!(mode.as_str(), "network_connected"|"network_disconnected"|"wifi_connected"|"wifi_disconnected"|"ssid"|"download"|"upload"|"internet") { return Err("Unknown network condition".into()); }
         if text(c,"adapter").contains('\0') || text(c,"ssid").contains('\0') || text(c,"host").contains('\0') { return Err("Network fields must not contain NUL characters".into()); }
         if mode == "internet" && text(c,"host").is_empty() { return Err("Host or URL is required".into()); }
         wait_settings(c).map(|_| ())
@@ -317,6 +323,8 @@ impl Block for NetworkCondition {
                 }
                 let sample = net_sample(cx, &adapter).await?;
                 match mode.as_str() {
+                    "network_connected" => Ok(sample.network_connected),
+                    "network_disconnected" => Ok(!sample.network_connected),
                     "wifi_connected" => Ok(sample.connected),
                     "wifi_disconnected" => Ok(!sample.connected),
                     "ssid" => Ok(sample.connected && sample.ssid.eq_ignore_ascii_case(&ssid)),
@@ -735,5 +743,25 @@ mod network_condition_regression_tests {
         assert_eq!(network_rate(1_000_000, 1.0, "Mbps"), Some(8.0));
         assert_eq!(network_rate(1, 0.0, "MiB/s"), None);
         assert_eq!(network_rate(1, f64::NAN, "Mbps"), None);
+    }
+}
+
+
+#[cfg(test)]
+mod generic_network_condition_tests {
+    use super::*;
+
+    #[test]
+    fn any_network_mode_is_distinct_from_wifi_mode() {
+        let spec = network_spec();
+        let options = spec["fields"][0]["options"].as_array().unwrap();
+        assert!(options.iter().any(|option| option[0] == "network_connected"));
+        assert!(options.iter().any(|option| option[0] == "wifi_connected"));
+    }
+
+    #[test]
+    fn localized_wlan_state_label_uses_ssid_fallback() {
+        let output = "Nom : Wi-Fi\nÉtat : connecté\nSSID : OfficeNet\n";
+        assert_eq!(parse_wlan_status(output), (true, "OfficeNet".into()));
     }
 }
