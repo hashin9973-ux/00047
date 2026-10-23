@@ -48,6 +48,7 @@
         <div class="ed-ctl">
           <button class="btn" data-ed="start">▶ Start</button>
           <button class="btn" data-ed="stop">■ Stop</button>
+          <button class="btn" data-ed="resume" disabled>▶ Resume / Step</button>
           <button class="btn" data-ed="restart">↻ Restart</button>
         </div>
         <label class="chk"><input type="checkbox" id="ed-auto"> Run at app launch</label>
@@ -63,7 +64,8 @@
         <div class="dock-h">
           <div id="dock-tabs">
             <button data-tab="log" class="on">Live log</button>
-            <button data-tab="history">History</button>
+            <button data-tab="history">History / Trace</button>
+            <button data-tab="variables">Variables</button>
             <button data-tab="help">Help</button>
           </div>
           <button id="dock-toggle" class="ib" title="Collapse / expand">▾</button>
