@@ -173,6 +173,30 @@ impl Engine {
         self.hist.lock().unwrap().get(id).map(|h| h.iter().cloned().collect()).unwrap_or_default()
     }
 
+    /// Recreates a read-only run snapshot as a separate automation. This never starts the workflow.
+    pub fn recreate_run_snapshot(&self, id: &str, run_id: u64) -> Result<Automation, String> {
+        let record = self.hist.lock().map_err(|e|e.to_string())?.get(id)
+            .and_then(|h|h.iter().find(|r|r.id==run_id)).cloned()
+            .ok_or_else(||format!("Run history entry {run_id} was not found"))?;
+        let mut snapshot = record.snapshot.ok_or_else(||"This history entry predates run snapshots or was too large to retain".to_string())?;
+        let original_id = snapshot.id.clone();
+        let base = format!("snapshot-{run_id}-{}", now_ms());
+        let mut new_id = base.clone();
+        let mut suffix = 1u32;
+        while self.store.get(&new_id).is_some() {
+            new_id = format!("{base}-{suffix}");
+            suffix = suffix.saturating_add(1);
+        }
+        snapshot.id = new_id;
+        let suffix = format!("(snapshot run {run_id})");
+        let base_name: String = snapshot.name.chars().take(80usize.saturating_sub(suffix.chars().count()+1)).collect();
+        snapshot.name = format!("{base_name} {suffix}");
+        snapshot.auto_start = false;
+        self.store.upsert(snapshot.clone()).map_err(|e|format!("Could not save recreated snapshot: {e}"))?;
+        self.app_log("info",format!("Recreated run {run_id} of '{original_id}' as '{}' for inspection. It was not started.",snapshot.id));
+        Ok(snapshot)
+    }
+
     /// Returns current or last-run variable diagnostics, suppressing likely credentials and never reading secrets from the vault.
     pub fn workflow_variables(&self, id: &str) -> Value {
         let current = self.run_variables.lock().ok().and_then(|m|m.get(id).cloned());
@@ -401,6 +425,8 @@ impl Engine {
         // A new run starts from a clean debug state even when the previous run was stopped while paused.
         self.debug_resume(&auto.id);
         let started = now_ms();
+        // Avoid unbounded history growth: exceptionally large graphs keep normal run history without a graph snapshot.
+        let run_snapshot = if auto.nodes.len() <= 500 && auto.edges.len() <= 1200 { Some(auto.clone()) } else { None };
         self.nodes.lock().unwrap().remove(&auto.id);
         self.set_auto(&auto.id, |r| {
             r.status = "running".into();
@@ -449,7 +475,7 @@ impl Engine {
         {
             let mut h = self.hist.lock().unwrap();
             let q = h.entry(aid.clone()).or_default();
-            q.push_front(RunRecord { id: run_id, started_at: started, ended_at: ended, outcome: outcome.into(), errors });
+            q.push_front(RunRecord { id: run_id, started_at: started, ended_at: ended, outcome: outcome.into(), errors, snapshot: run_snapshot });
             q.truncate(HIST_CAP);
             self.disk.save_history(&h);
         }
