@@ -77,6 +77,7 @@ export class Editor {
     this.wires = new Map();
     this.states = {};
     this.sel = new Set();
+    this.breakpoints = new Set();
     this.selEdge = null;
     this.clip = null;
     this.space = false;
@@ -154,6 +155,11 @@ export class Editor {
     for (const n of auto.nodes) this.addEl(n);
     this.refreshAll(); this.applyVp(); this.scheduleWires();
     this.uStack = []; this.rStack = []; this.last = this.snap(); this.lastTag = null;
+  }
+
+  setBreakpoints(ids) {
+    this.breakpoints = new Set(Array.isArray(ids) ? ids : []);
+    for (const [id, el] of this.els) el.classList.toggle('breakpoint', this.breakpoints.has(id));
   }
 
   setNodeState(id, st) { this.states[id] = st; this.paintState(id, st); }
@@ -776,6 +782,7 @@ if (A.kind === 'act.loop') {
     }
     n.cfg = { ...structuredClone(def.defaults), ...(n.cfg || {}) };
     el.className = `node cat-${def.cat}${n.collapsed ? ' collapsed' : ''}`;
+    el.classList.toggle('breakpoint', this.breakpoints.has(n.id));
     el.style.setProperty('--c', CATS[def.cat].color);
     const isT = def.cat === 'tgt';
     const isStart = n.kind === 'act.start';
