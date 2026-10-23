@@ -153,7 +153,7 @@ fn foreach_spec()->Value{action_spec("For Each Item","repeat","Iterates a JSON a
 
 struct CallSubflow;
 fn call_spec()->Value{action_spec("Call Subflow","workflow","Runs a saved automation as a reusable subflow using the current run's variable store.",vec![
- json!({"key":"automationId","label":"Saved automation ID","type":"text","required":true,"maxLen":100}),
+ json!({"key":"automationId","label":"Saved automation","type":"automation","required":true,"maxLen":100}),
  json!({"key":"timeoutSec","label":"Timeout (seconds; 0 = none)","type":"number","min":0,"max":86400,"step":1,"default":0}),onfail()
 ],"Call subflow {automationId}","Nested workflows share variables. Recursive calls are rejected and nesting is capped at 16 levels. Route ELSE to a handler to catch subflow failures.")}
 #[async_trait]impl Block for CallSubflow{
@@ -244,8 +244,8 @@ fn csv_filter_spec()->Value{action_spec("Filter Rows","file-spreadsheet","Filter
 
 struct TryCatch;
 fn try_catch_spec()->Value{action_spec("Try / Catch","workflow","Runs one subflow and, on failure, runs a handler subflow with the error stored in a variable.",vec![
- json!({"key":"tryAutomationId","label":"Try subflow automation ID","type":"text","required":true,"maxLen":100}),
- json!({"key":"catchAutomationId","label":"Catch subflow automation ID","type":"text","required":true,"maxLen":100}),
+ json!({"key":"tryAutomationId","label":"Try subflow","type":"automation","required":true,"maxLen":100}),
+ json!({"key":"catchAutomationId","label":"Catch subflow","type":"automation","required":true,"maxLen":100}),
  json!({"key":"errorVariable","label":"Error variable","type":"text","default":"workflow_error","maxLen":64}),
  json!({"key":"timeoutSec","label":"Total timeout (seconds; 0 = none)","type":"number","min":0,"max":86400,"step":1,"default":0}),onfail()
 ],"Try {tryAutomationId} / Catch {catchAutomationId}","The error variable contains the handled subflow failure. If the catch subflow also fails, the block fails and follows On failure. Recursive nesting is blocked.")}
