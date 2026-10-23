@@ -266,9 +266,9 @@ fn cmake_tool_path(path: &Path) -> Result<PathBuf, String> {
     use std::os::windows::ffi::OsStrExt;
 
     let value = path.to_string_lossy();
-    let ordinary = if let Some(rest) = value.strip_prefix(r"\\?\UNC\\") {
-        format!(r"\\{rest}")
-    } else if let Some(rest) = value.strip_prefix(r"\\?\\") {
+    let ordinary = if let Some(rest) = value.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{rest}")
+    } else if let Some(rest) = value.strip_prefix("\\\\?\\") {
         rest.to_string()
     } else {
         value.into_owned()
