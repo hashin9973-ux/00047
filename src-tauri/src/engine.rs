@@ -30,6 +30,7 @@ struct RunHandle {
     token: CancellationToken,
     run_id: u64,
     step_gate: Arc<Semaphore>,
+    variables: Arc<Mutex<HashMap<String, Value>>>,
 }
 
 #[derive(Serialize)]
@@ -171,17 +172,18 @@ impl Engine {
         }
         let token = CancellationToken::new();
         let step_gate = Arc::new(Semaphore::new(0));
+        let variables = Arc::new(Mutex::new(HashMap::new()));
         let run_id = self.run_seq.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut r = self.runs.lock().unwrap();
             if r.contains_key(id) {
                 return Err("already running".into());
             }
-            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id, step_gate: step_gate.clone() });
+            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id, step_gate: step_gate.clone(), variables: variables.clone() });
         }
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
-            me.run_automation(auto, token, run_id, step_gate).await;
+            me.run_automation(auto, token, run_id, step_gate, variables).await;
         });
         Ok(())
     }
@@ -192,6 +194,23 @@ impl Engine {
             t.cancel();
             self.set_auto(id, |r| r.status = "stopping".into());
         }
+    }
+
+    pub fn run_variables(&self, id: &str) -> Vec<Value> {
+        let vars = self.runs.lock().unwrap().get(id).map(|r| r.variables.clone());
+        let Some(vars) = vars else { return Vec::new() };
+        let Ok(values) = vars.lock() else { return Vec::new() };
+        let mut rows: Vec<Value> = values.iter().map(|(name, value)| {
+            let secret = name.starts_with("secret.");
+            json!({
+                "name": name,
+                "value": if secret { Value::String("••••••".into()) } else { value.clone() },
+                "type": match value { Value::Null => "null", Value::Bool(_) => "boolean", Value::Number(_) => "number", Value::String(_) => "string", Value::Array(_) => "array", Value::Object(_) => "object" },
+                "sensitive": secret
+            })
+        }).collect();
+        rows.sort_by(|a,b| a["name"].as_str().cmp(&b["name"].as_str()));
+        rows
     }
 
     pub fn resume_step(&self, id: &str) -> Result<(), String> {
@@ -303,7 +322,7 @@ impl Engine {
     }
 
     // ----- run -----
-    async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64, step_gate: Arc<Semaphore>) {
+    async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64, step_gate: Arc<Semaphore>, variables: Arc<Mutex<HashMap<String, Value>>>) {
         let started = now_ms();
         self.nodes.lock().unwrap().remove(&auto.id);
         self.set_auto(&auto.id, |r| {
@@ -318,7 +337,7 @@ impl Engine {
             auto: Arc::new(auto),
             token: parent.child_token(),
             visits: Default::default(),
-            variables: Arc::new(Mutex::new(HashMap::new())),
+            variables,
             rate: Default::default(),
             handles: Default::default(),
             errors: AtomicU32::new(0),
