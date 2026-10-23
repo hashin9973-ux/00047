@@ -2098,7 +2098,22 @@ mod win {
         }
     }
 
+    const REMOTE_CALL_TIMEOUT_MS: u32 = 10_000;
+
     fn remote_call(pid: u32, process: Handle, start: *mut c_void, parameter: *mut c_void) -> Result<u32, String> {
+        remote_call_with_timeout(pid, process, start, parameter, REMOTE_CALL_TIMEOUT_MS)
+    }
+
+    // Separate the wait interval from the safety behavior so Windows integration
+    // tests can exercise the real timeout/quarantine path without sleeping for
+    // the production ten-second deadline.
+    fn remote_call_with_timeout(
+        pid: u32,
+        process: Handle,
+        start: *mut c_void,
+        parameter: *mut c_void,
+        timeout_ms: u32,
+    ) -> Result<u32, String> {
         if target_operation_is_indeterminate(pid) {
             return Err(format!(
                 "PID {pid} is quarantined after an earlier remote-operation timeout; restart the target process before retrying."
@@ -2107,14 +2122,18 @@ mod win {
         unsafe {
             let thread = CreateRemoteThread(process, ptr::null_mut(), 0, start, parameter, 0, ptr::null_mut());
             if is_invalid(thread) { return Err(last_error("CreateRemoteThread")); }
-            let wait = WaitForSingleObject(thread, 10_000);
+            let wait = WaitForSingleObject(thread, timeout_ms);
             if wait != WAIT_OBJECT_0 {
                 // A timeout or wait failure does not prove that the remote thread
                 // stopped. Do not issue rollback calls against a possibly active
                 // initializer/unloader. Quarantine this target until its process
                 // exits; process exit also reclaims any remote path buffer.
                 let wait_error = if wait == WAIT_TIMEOUT {
-                    "remote thread exceeded the 10-second wait limit".to_string()
+                    if timeout_ms % 1000 == 0 {
+                        format!("remote thread exceeded the {}-second wait limit", timeout_ms / 1000)
+                    } else {
+                        format!("remote thread exceeded the {timeout_ms}-millisecond wait limit")
+                    }
                 } else {
                     last_error("WaitForSingleObject(remote thread)")
                 };
@@ -2625,6 +2644,84 @@ mod win {
             }
         }
     }
+
+    #[cfg(test)]
+    mod runtime_tests {
+        use super::*;
+        use std::{process::{Child, Command}, thread, time::Duration};
+        use std::os::windows::process::CommandExt;
+
+        struct ChildGuard(Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        struct HandleGuard(Handle);
+        impl Drop for HandleGuard {
+            fn drop(&mut self) {
+                unsafe { CloseHandle(self.0); }
+            }
+        }
+
+        #[test]
+        fn remote_timeout_quarantines_target_until_process_exit() {
+            let system_root = std::env::var_os("SystemRoot")
+                .expect("Windows SystemRoot environment variable is set");
+            let command_exe = std::path::PathBuf::from(system_root)
+                .join("System32")
+                .join("cmd.exe");
+            let child = Command::new(command_exe)
+                .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                .args(["/C", "ping -n 30 127.0.0.1 > nul"])
+                .spawn()
+                .expect("start a disposable target process");
+            let mut child = ChildGuard(child);
+            let pid = child.0.id();
+
+            let process = open_modifiable_process(pid)
+                .expect("open the disposable process for the remote-thread test");
+            let process = HandleGuard(process);
+
+            let mut sleep_proc = None;
+            for _ in 0..200 {
+                if let Ok(address) = remote_system_proc(pid, b"Sleep\0") {
+                    sleep_proc = Some(address);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            let sleep_proc = sleep_proc.expect("resolve Sleep in the target process");
+
+            // Sleep outlives this deliberately short wait. The remote thread must
+            // not be treated as stopped: the target is quarantined before return.
+            let error = remote_call_with_timeout(
+                pid,
+                process.0,
+                sleep_proc,
+                2_000usize as *mut c_void,
+                50,
+            ).expect_err("the remote Sleep call must time out");
+            assert!(error.contains("quarantined"), "{error}");
+            assert!(target_operation_is_indeterminate(pid));
+
+            child.0.kill().expect("terminate the disposable target");
+            let _ = child.0.wait();
+            for _ in 0..200 {
+                if !target_operation_is_indeterminate(pid) {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                !target_operation_is_indeterminate(pid),
+                "quarantine should clear after the exact target process exits"
+            );
+        }
+    }
+}
 }
 
 #[cfg(test)]
