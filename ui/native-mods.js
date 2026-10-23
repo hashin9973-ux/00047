@@ -15,6 +15,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     const host = $('#view-native-mods');
     host.innerHTML = '<div class="plugins-head"><div><h2>Native Windows Mods</h2><p class="mu">Manage native x64 DLL modules for supported Windows shell processes.</p></div><div class="plugins-actions"><button class="btn" data-native-action="folder">Open native mods folder</button><button class="btn" data-native-action="refresh">Refresh targets</button><button class="btn primary" data-native-action="install">+ Install native mod ZIP...</button></div></div>' +
       '<div class="native-warning card glass"><b>High-impact native code</b><p class="mu">A native mod runs inside Explorer or another listed shell process with that process permissions. A faulty or hostile DLL can hang or crash it. Only enable source you trust. The loader accepts x64 DLLs and a fixed allow-list of Windows shell processes, not arbitrary targets.</p></div>' +
+      '<div id="native-signature-policy" class="card glass native-signature-policy"><div><b>Trusted Authenticode signatures</b><p class="mu">Loading signature policy...</p></div></div>' +
       '<div id="native-targets"><p class="mu">Discovering supported shell processes...</p></div>' +
       '<div id="native-mod-list"><p class="mu">Loading native mods...</p></div><div id="native-mod-errors"></div>';
     bindActions(host);
@@ -32,6 +33,19 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     try {
       const info = await invoke('native_mod_refresh');
       if (getView() !== 'native-mods') return;
+      const signatureRequired = info.requireTrustedSignature === true;
+      $('#native-signature-policy').innerHTML =
+        '<div class="native-signature-policy-copy"><div><b>Trusted Authenticode signatures</b><span class="native-signature-status ' +
+        (signatureRequired ? 'is-required' : 'is-optional') + '">' +
+        (signatureRequired ? 'Enforced' : 'Optional') +
+        '</span></div><p class="mu">' +
+        (signatureRequired
+          ? 'Only DLLs trusted by Windows Authenticode validation are eligible to load. Verification uses cached trust and revocation data; missing or invalid trust data fails closed. Unsigned and untrusted enabled mods are disabled, and unload is attempted without forcing unsafe unmapping.'
+          : 'Off by default for backwards compatibility. Turning this on blocks unsigned, untrusted, revoked, or unverifiable DLLs. Verification uses cached Windows trust and revocation data only and does not contact a network service.') +
+        '</p><small class="mu">Signatures do not sandbox native code or guarantee that a signed DLL is safe.</small></div>' +
+        '<button class="btn ' + (signatureRequired ? '' : 'primary') +
+        '" data-native-action="signature-policy" data-signature-required="' + String(!signatureRequired) + '">' +
+        (signatureRequired ? 'Disable enforcement' : 'Require trusted signatures') + '</button>';
       let targets = '';
       if (info.targets.length) {
         targets = '<div class="card glass native-target-card"><div class="sec"><h3>Supported target processes</h3><span class="mu">' + info.targets.length + ' found</span></div><div class="native-target-list">' +
@@ -100,6 +114,18 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       } else if (action === 'refresh') {
         await refreshData();
         return;
+      } else if (action === 'signature-policy') {
+        const required = button.dataset.signatureRequired === 'true';
+        const answer = await modal({
+          title: required ? 'Require trusted signatures?' : 'Disable signature enforcement?',
+          body: required
+            ? '00047 will validate the Authenticode signature and cached certificate trust/revocation status before loading native DLLs. Enabled mods that do not pass will be disabled and safe unload will be attempted. If the host cannot confirm unload safety, it keeps the DLL mapped and reports the affected target; restart that shell process rather than forcing an unload. No network retrieval is used for verification.'
+            : 'This allows unsigned or untrusted native DLLs to be enabled again. Native DLLs remain unsandboxed and can crash or hang Explorer, Start, or search. Only disable enforcement when you understand and accept that risk.',
+          buttons: [['cancel', 'Cancel'], ['go', required ? 'Enable enforcement' : 'Disable enforcement', 'danger']]
+        });
+        if (answer !== 'go') return;
+        const status = await invoke('native_mod_signature_policy_set', { required });
+        toast(String(status));
       } else if (action === 'install') {
         await installPackage();
       } else if (action === 'enable') {

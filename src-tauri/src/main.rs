@@ -508,6 +508,14 @@ fn native_mod_refresh(mods: State<'_, Arc<native_mods::NativeModManager>>) -> na
 }
 
 #[tauri::command]
+fn native_mod_signature_policy_set(
+    mods: State<'_, Arc<native_mods::NativeModManager>>,
+    required: bool,
+) -> Result<String, String> {
+    mods.set_require_trusted_signature(required)
+}
+
+#[tauri::command]
 fn open_native_mods_folder(mods: State<'_, Arc<native_mods::NativeModManager>>) -> Result<(), String> {
     let dir = mods.root_path();
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -656,6 +664,7 @@ fn main() {
             native_mod_disable,
             native_mod_uninstall,
             native_mod_refresh,
+            native_mod_signature_policy_set,
             open_native_mods_folder,
             native_mod_settings_read,
             native_mod_settings_write,

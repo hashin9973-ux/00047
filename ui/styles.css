@@ -373,3 +373,12 @@ textarea.glass.liquidglass-variant {
 .native-settings-actions{display:flex;gap:8px;flex-wrap:wrap}
 .native-log-panel pre{box-sizing:border-box;max-height:320px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:10px;border-radius:8px;background:var(--bg);font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
 @media(max-width:760px){.native-setting-field{grid-template-columns:1fr;gap:6px}}
+
+.native-signature-policy{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:16px 18px;margin:12px 0}
+.native-signature-policy-copy{min-width:0;flex:1}
+.native-signature-policy-copy>div{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.native-signature-policy-copy p{margin:6px 0;max-width:1050px}
+.native-signature-policy-copy>small{display:block;color:var(--mu)}
+.native-signature-status{font-size:11px;border:1px solid var(--line);border-radius:99px;padding:4px 8px;color:var(--mu)}
+.native-signature-status.is-required{color:var(--tx);border-color:rgba(255,255,255,.3)}
+@media(max-width:760px){.native-signature-policy{align-items:stretch;flex-direction:column}}

@@ -43,6 +43,10 @@ The adapter guards repeated initialization and shutdown, applies queued hooks af
 
 Mods using either `void Wh_ModSettingsChanged(void)` or `BOOL Wh_ModSettingsChanged(BOOL* bReload)` can use `sdk/native-mod/windhawk_settings_changed_adapter.h` and `WMOD_DEFINE_WINDHAWK_LIFECYCLE_WITH_SETTINGS_CHANGED` instead of the basic lifecycle macro. It watches the mod package directory for changes to `settings.json` and invokes the callback on a dedicated worker thread, then stops and joins that thread before shutdown callbacks. Thread affinity differs from Windhawk: the callback must be thread-safe, brief, and not assume UI/shell-thread affinity. Initialization fails if the directory cannot be watched. For the `BOOL(BOOL* bReload)` variant, the callback's return value indicates whether settings handling succeeded; only a successful callback with `*bReload = TRUE` requests reload. The host polls that request during its next enabled-mod scan (normally within the five-second scan interval), then shuts down the module, verifies quiescence, unloads it, and maps a fresh image. The request remains set while a DLL is retained for safety so a later scan can retry. The static auditor marks this callback as adapter-available, not fully Windhawk-identical; callback thread affinity and timing still differ. Review the mod's assumptions about callback timing, exceptions, threading, and cleanup before enabling it in a shell process.
 
+## Native DLL publisher trust
+
+The 00047 application can optionally require Trusted Authenticode signatures for native mods. This policy is OFF by default. When enabled, load-time verification calls Windows `WinVerifyTrust` using cached certificate/revocation data only; missing or invalid trust data fails closed, and verification does not perform network retrieval. The UI exposes the policy switch, persists it, disables enabled packages that do not verify, and never forces unload when hook quiescence is uncertain. Signed code is still native unsandboxed code and should be reviewed.
+
 ## CI
 
 Run the audit-tool unit tests with the rest of the developer-tool tests:

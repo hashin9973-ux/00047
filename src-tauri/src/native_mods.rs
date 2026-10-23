@@ -57,6 +57,8 @@ struct ModManifest {
 struct PersistedState {
     #[serde(default)]
     enabled: HashSet<String>,
+    #[serde(default)]
+    require_trusted_signature: bool,
 }
 
 #[derive(Serialize)]
@@ -134,6 +136,7 @@ pub struct NativeModList {
     pub mods: Vec<NativeModRecord>,
     pub targets: Vec<NativeTarget>,
     pub errors: Vec<String>,
+    pub require_trusted_signature: bool,
 }
 
 struct ReadPackage {
@@ -217,6 +220,91 @@ impl NativeModManager {
 
     pub fn root_path(&self) -> &Path {
         &self.root
+    }
+
+    fn signature_policy_enabled(&self) -> bool {
+        // A poisoned security-state mutex must not silently disable enforcement.
+        self.state
+            .lock()
+            .map(|state| state.require_trusted_signature)
+            .unwrap_or(true)
+    }
+
+    pub fn set_require_trusted_signature(&self, required: bool) -> Result<String, String> {
+        let _transition = self.lifecycle_gate
+            .lock()
+            .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
+
+        // Enabling policy removes untrusted mod IDs from persisted enable intent
+        // before attempting remote unload. If an unload is uncertain, the app
+        // will not retry loading the untrusted DLL; it reports the retained image.
+        let enabled = self.enabled_snapshot();
+        let untrusted: Vec<String> = if required {
+            enabled
+                .iter()
+                .filter(|id| !self.package_has_trusted_signature(id))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        {
+            let mut state = self.state.lock()
+                .map_err(|_| "Native mod state is unavailable.".to_string())?;
+            let previous = state.clone();
+            state.require_trusted_signature = required;
+            for id in &untrusted {
+                state.enabled.remove(id);
+            }
+            if let Err(error) = self.persist_state(&state) {
+                *state = previous;
+                return Err(error);
+            }
+        }
+
+        let mut unload_warnings = Vec::new();
+        if required {
+            for id in &untrusted {
+                match self.disable_inner(id) {
+                    Ok(status) => {
+                        self.set_status(id, format!(
+                            "Signature policy enabled; untrusted mod disabled. {status}"
+                        ));
+                    }
+                    Err(error) => {
+                        self.mark_running_targets_indeterminate(id, &error);
+                        self.set_status(id, format!(
+                            "Signature policy enabled; untrusted mod is disabled but unload is uncertain: {error}"
+                        ));
+                        unload_warnings.push(format!("{id}: {error}"));
+                    }
+                }
+            }
+        }
+
+        if !unload_warnings.is_empty() {
+            Ok(format!(
+                "Trusted Authenticode enforcement is ON. The following disabled mod(s) could not be confirmed unloaded; restart the affected shell process before relying on the policy: {}",
+                unload_warnings.join("; ")
+            ))
+        } else if required && !untrusted.is_empty() {
+            Ok(format!(
+                "Trusted Authenticode enforcement is ON. Disabled {} untrusted native mod(s).",
+                untrusted.len()
+            ))
+        } else if required {
+            Ok("Trusted Authenticode signature enforcement is ON.".into())
+        } else {
+            Ok("Trusted Authenticode signature enforcement is OFF.".into())
+        }
+    }
+
+    fn package_has_trusted_signature(&self, id: &str) -> bool {
+        let Ok(folder) = self.package_dir(id) else { return false; };
+        let Ok(manifest) = load_manifest(&folder) else { return false; };
+        let Ok(module) = module_file_path(&folder, &manifest.module) else { return false; };
+        verify_trusted_authenticode(&module)
     }
 
     fn packages_dir(&self) -> PathBuf {
@@ -367,6 +455,7 @@ impl NativeModManager {
 
     pub fn list(&self) -> NativeModList {
         let enabled = self.enabled_snapshot();
+        let require_trusted_signature = self.signature_policy_enabled();
         let statuses = self.statuses.lock().map(|s| s.clone()).unwrap_or_default();
         let mut mods = Vec::new();
         let mut errors = Vec::new();
@@ -447,6 +536,7 @@ impl NativeModManager {
             mods,
             targets,
             errors,
+            require_trusted_signature,
         }
     }
 
@@ -532,6 +622,12 @@ impl NativeModManager {
         }
         let module = module_file_path(&folder, &manifest.module)?;
         validate_pe_file(&module)?;
+        if self.signature_policy_enabled() && !verify_trusted_authenticode(&module) {
+            return Err(
+                "Trusted Authenticode signature is required, but this DLL is unsigned, untrusted, revoked, or could not be verified using cached trust data."
+                    .into(),
+            );
+        }
 
         {
             let mut state = self.state.lock().map_err(|_| "Native mod state is unavailable.")?;
@@ -710,6 +806,12 @@ impl NativeModManager {
         let manifest = load_manifest(&folder)?;
         let dll = module_file_path(&folder, &manifest.module)?;
         validate_pe_file(&dll)?;
+        if self.signature_policy_enabled() && !verify_trusted_authenticode(&dll) {
+            return Err(
+                "Trusted Authenticode signature is required, but the installed DLL no longer verifies against the system trust store."
+                    .into(),
+            );
+        }
         let previous_target_statuses = self.target_status_snapshot(id);
         let targets = discover_targets()?;
         let matching: Vec<NativeTarget> = targets.into_iter()
@@ -834,7 +936,29 @@ fn load_persisted_state(path: &Path) -> PersistedState {
         .unwrap_or_default();
     PersistedState {
         enabled: state.enabled.into_iter().filter(|id| valid_id(id)).collect(),
+        require_trusted_signature: state.require_trusted_signature,
     }
+}
+
+#[cfg(windows)]
+unsafe extern "C" {
+    fn wmod_verify_trusted_authenticode(path: *const u16) -> i32;
+}
+
+#[cfg(windows)]
+fn verify_trusted_authenticode(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return false;
+    }
+    wide.push(0);
+    unsafe { wmod_verify_trusted_authenticode(wide.as_ptr()) == 1 }
+}
+
+#[cfg(not(windows))]
+fn verify_trusted_authenticode(_path: &Path) -> bool {
+    false
 }
 
 fn checked_enabled_state_path(root: &Path) -> Result<PathBuf, String> {
@@ -2541,10 +2665,13 @@ mod tests {
         let manager = NativeModManager::new(root.clone());
         let mut state = PersistedState::default();
         state.enabled.insert("com.example.first".into());
+        state.require_trusted_signature = true;
         manager.persist_state(&state).unwrap();
 
         let path = root.join("enabled.json");
-        assert!(load_persisted_state(&path).enabled.contains("com.example.first"));
+        let first_load = load_persisted_state(&path);
+        assert!(first_load.enabled.contains("com.example.first"));
+        assert!(first_load.require_trusted_signature);
 
         state.enabled.clear();
         state.enabled.insert("com.example.second".into());
@@ -2553,6 +2680,39 @@ mod tests {
         assert_eq!(reloaded.enabled, HashSet::from(["com.example.second".to_string()]));
         assert!(!fs::read_dir(&root).unwrap().filter_map(Result::ok)
             .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp")));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_mod_signature_policy_defaults_off_for_legacy_state_files() {
+        let root = state_test_root("legacy-signature-policy");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("enabled.json");
+        fs::write(&path, r#"{"enabled":["com.example.valid"]}"#).unwrap();
+
+        let state = load_persisted_state(&path);
+        assert!(state.enabled.contains("com.example.valid"));
+        assert!(!state.require_trusted_signature);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_mod_signature_policy_persists_without_installed_mods() {
+        let root = state_test_root("signature-policy-toggle");
+        let manager = NativeModManager::new(root.clone());
+        assert!(!manager.list().require_trusted_signature);
+
+        let enabled = manager.set_require_trusted_signature(true).unwrap();
+        assert!(enabled.contains("ON"));
+        assert!(manager.list().require_trusted_signature);
+        assert!(load_persisted_state(&root.join("enabled.json")).require_trusted_signature);
+
+        let disabled = manager.set_require_trusted_signature(false).unwrap();
+        assert!(disabled.contains("OFF"));
+        assert!(!manager.list().require_trusted_signature);
+        assert!(!load_persisted_state(&root.join("enabled.json")).require_trusted_signature);
 
         fs::remove_dir_all(root).unwrap();
     }
