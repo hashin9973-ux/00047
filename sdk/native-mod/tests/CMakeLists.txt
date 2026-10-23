@@ -17,6 +17,14 @@ set(WMOD_HOOK_INCLUDE_DIRS
 )
 
 
+add_executable(00047_signature_verifier_smoke
+  signature_verifier_smoke.cpp
+  "${CMAKE_CURRENT_LIST_DIR}/../../../src-tauri/native/signature_verifier.cpp"
+)
+target_compile_features(00047_signature_verifier_smoke PRIVATE cxx_std_20)
+target_compile_definitions(00047_signature_verifier_smoke PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(00047_signature_verifier_smoke PRIVATE wintrust crypt32)
+
 add_executable(00047_native_mod_compat_test nonhook_compat_test.cpp)
 target_compile_features(00047_native_mod_compat_test PRIVATE cxx_std_17)
 target_compile_definitions(00047_native_mod_compat_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
