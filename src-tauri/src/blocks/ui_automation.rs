@@ -120,6 +120,24 @@ pub(super) fn register_into(m:&mut std::collections::HashMap<&'static str,Box<dy
 mod tests{
  use super::*;
  #[test]fn selector_requires_a_target(){assert!(selectors(&json!({"automationId":"saveBtn"})).is_ok());assert!(selectors(&json!({"processName":"notepad.exe"})).is_ok());assert!(selectors(&json!({})).is_err());}
+ #[test]fn ui_selectors_and_values_expand_run_variables(){
+  let cx=NodeCx{
+   cfg:json!({}),
+   token:tokio_util::sync::CancellationToken::new(),
+   visit:1,
+   report:Box::new(|_:&str,_:Option<f64>,_:String|{}),
+   log:Box::new(|_:&str,_:String|{}),
+   resolve:Box::new(||Ok(Vec::new())),
+   visible:Box::new(||false),
+   variables:std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+  };
+  cx.set_variable("button".into(),json!("Save changes")).unwrap();
+  cx.set_variable("window".into(),json!("Settings")).unwrap();
+  let cfg=expand_ui_config(&cx,&json!({"elementName":"{{button}}","windowTitle":"{{window}}","value":"{{button}}"})).unwrap();
+  assert_eq!(cfg["elementName"],"Save changes");
+  assert_eq!(cfg["windowTitle"],"Settings");
+  assert_eq!(cfg["value"],"Save changes");
+ }
  #[test]fn enabled_filter_is_validated(){assert!(selectors(&json!({"automationId":"saveBtn","enabledState":"disabled"})).is_ok());assert!(selectors(&json!({"automationId":"saveBtn","enabledState":"unknown"})).is_err());}
  #[test]fn process_selector_rejects_paths(){assert!(selectors(&json!({"processName":"notepad.exe"})).is_ok());assert!(selectors(&json!({"processName":"C:\\\\Windows\\\\notepad.exe"})).is_err());}
 }
