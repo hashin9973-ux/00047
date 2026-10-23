@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     fs,
-    io::{Read, Write},
+    io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Mutex, OnceLock},
@@ -57,15 +57,26 @@ pub fn set_secret(name:&str,value:&str)->Result<(),String>{
     validate_name(name)?;
     if value.len()>32768{return Err("Secret values are limited to 32 KiB".into())}
     if value.contains('\0'){return Err("Secret value must not contain NUL characters".into())}
-    let target=file(name)?;let tmp=target.with_extension("dpapi.tmp");
+    let target=file(name)?;
+    let tmp=target.with_extension(format!("dpapi.{}.tmp",std::process::id()));
+    let backup=target.with_extension(format!("dpapi.{}.bak",std::process::id()));
     // Hex input keeps plaintext out of process arguments and avoids console code-page loss.
     let encoded=hex(value.as_bytes());
     let script="$ErrorActionPreference='Stop'; $hex=[Console]::In.ReadToEnd().Trim(); if(($hex.Length % 2) -ne 0){throw 'Invalid UTF8 hex input'}; $bytes=New-Object byte[] ($hex.Length / 2); for($i=0;$i -lt $bytes.Length;$i++){ $bytes[$i]=[Convert]::ToByte($hex.Substring($i*2,2),16) }; $plain=[Text.Encoding]::UTF8.GetString($bytes); $secure=ConvertTo-SecureString -String $plain -AsPlainText -Force; $enc=ConvertFrom-SecureString -SecureString $secure; [Console]::Out.Write($enc); $plain=$null; $secure.Dispose();";
     let encrypted=powershell(script,Some(encoded.as_bytes()))?;
     if encrypted.is_empty(){return Err("Windows did not return encrypted secret data".into())}
     fs::write(&tmp,encrypted.as_bytes()).map_err(|e|format!("write encrypted secret: {e}"))?;
-    if target.exists(){fs::remove_file(&target).map_err(|e|format!("replace encrypted secret: {e}"))?;}
-    fs::rename(&tmp,&target).map_err(|e|format!("install encrypted secret: {e}"))?;
+    let had_old=target.exists();
+    if had_old {
+        if backup.exists(){fs::remove_file(&backup).map_err(|e|format!("remove stale secret backup: {e}"))?;}
+        if let Err(e)=fs::rename(&target,&backup){let _=fs::remove_file(&tmp);return Err(format!("stage previous encrypted secret: {e}"));}
+    }
+    if let Err(e)=fs::rename(&tmp,&target){
+        let _=fs::remove_file(&tmp);
+        let restored=if had_old {fs::rename(&backup,&target).is_ok()} else {true};
+        return Err(format!("install encrypted secret: {e}; previous secret restoration was {}",if restored{"successful"}else{"unsuccessful"}));
+    }
+    if had_old {let _=fs::remove_file(&backup);}
     if let Ok(mut c)=cache().lock(){c.remove(name);}
     Ok(())
 }
