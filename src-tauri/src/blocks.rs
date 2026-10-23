@@ -151,10 +151,35 @@ impl NodeCx {
 /// Extremely short values are intentionally not substring-redacted because that would corrupt
 /// nearly every ordinary diagnostic; callers should avoid using low-entropy values as secrets.
 pub fn redact_message(secrets: &Mutex<Vec<String>>, input: &str) -> String {
+    fn short_value(s: &str) -> bool { s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') }
+    fn word(c: char) -> bool { c.is_ascii_alphanumeric() || c == '_' }
+    fn redact_short(input: &str, secret: &str) -> String {
+        let mut out = String::with_capacity(input.len());
+        let mut cursor = 0;
+        while let Some(rel) = input[cursor..].find(secret) {
+            let start = cursor + rel;
+            let end = start + secret.len();
+            let left = input[..start].chars().next_back();
+            let right = input[end..].chars().next();
+            out.push_str(&input[cursor..start]);
+            if !left.is_some_and(word) && !right.is_some_and(word) {
+                out.push_str("[REDACTED]");
+            } else {
+                out.push_str(secret);
+            }
+            cursor = end;
+        }
+        out.push_str(&input[cursor..]);
+        out
+    }
     let mut output = input.to_string();
     if let Ok(known) = secrets.lock() {
-        for secret in known.iter().filter(|s| s.chars().count() >= 4) {
-            output = output.replace(secret, "[REDACTED]");
+        for secret in known.iter().filter(|s| !s.is_empty()) {
+            if secret.chars().count() >= 4 {
+                output = output.replace(secret, "[REDACTED]");
+            } else if short_value(secret) {
+                output = redact_short(&output, secret);
+            }
         }
     }
     output
