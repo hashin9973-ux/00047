@@ -11,6 +11,7 @@ mod logstore;
 mod model;
 mod store;
 mod sys;
+mod secrets;
 
 use engine::{Engine, Runtime};
 use model::{Automation, LogEntry, RunRecord};
@@ -229,6 +230,21 @@ fn get_history(eng: State<'_, Arc<Engine>>, id: String) -> Vec<RunRecord> {
 #[tauri::command]
 fn get_workflow_variables(eng: State<'_, Arc<Engine>>, id: String) -> serde_json::Value {
     eng.workflow_variables(&id)
+}
+
+#[tauri::command]
+fn list_secrets(eng: State<'_, Arc<Engine>>) -> Result<Vec<String>, String> {
+    eng.list_secrets()
+}
+
+#[tauri::command]
+fn save_secret(eng: State<'_, Arc<Engine>>, name: String, value: String) -> Result<(), String> {
+    eng.save_secret(&name, &value)
+}
+
+#[tauri::command]
+fn delete_secret(eng: State<'_, Arc<Engine>>, name: String) -> Result<bool, String> {
+    eng.delete_secret(&name)
 }
 
 #[tauri::command]
@@ -639,6 +655,9 @@ fn main() {
             get_logs,
             get_history,
             get_workflow_variables,
+            list_secrets,
+            save_secret,
+            delete_secret,
             clear_logs,
             app_stats,
             get_autostart,
