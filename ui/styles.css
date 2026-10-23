@@ -389,3 +389,14 @@ textarea.glass.liquidglass-variant {
 #ed-debug-pause,#ed-debug-step,#ed-debug-resume,#ed-breakpoints{white-space:nowrap}
 @media(max-width:1050px){.secret-form{grid-template-columns:1fr}.secret-form .btn{justify-self:start}}
 @media(max-width:760px){#ed-debug-pause,#ed-debug-step,#ed-debug-resume,#ed-breakpoints{display:none}}
+
+.node.breakpoint{box-shadow:0 0 0 2px #ff647c,0 0 16px rgba(255,100,124,.26)}
+.node.breakpoint:before{content:"";position:absolute;right:7px;top:7px;width:8px;height:8px;border-radius:50%;background:#ff647c;box-shadow:0 0 0 2px rgba(255,100,124,.2)}
+.variable-inspector{display:flex;flex-direction:column;gap:7px}
+.variable-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px}
+.variable-grid{display:grid;grid-template-columns:minmax(80px,1fr) 90px minmax(160px,2fr);gap:4px}
+.variable-row{display:contents}
+.variable-row>code,.variable-row>.variable-type,.variable-row>.variable-value{min-width:0;padding:5px 7px;border-radius:5px;background:rgba(255,255,255,.035);font-size:11px;overflow-wrap:anywhere}
+.variable-type{color:var(--mu)}
+.variable-value{white-space:pre-wrap;max-height:70px;overflow:auto}
+.snapshot-run{font-size:10px;padding:3px 7px;flex:none}
