@@ -206,6 +206,9 @@ impl Engine {
     }
 
     async fn debug_gate(self: &Arc<Self>, ctx: &Arc<Ctx>, node: &Node) -> bool {
+        // Nested subflows share the caller's execution session; avoid breakpoints that
+        // the parent UI cannot resume by child automation ID.
+        if ctx.depth > 0 { return !ctx.token.is_cancelled(); }
         let aid = ctx.auto.id.as_str();
         if ctx.token.is_cancelled() { return false; }
         let breakpoint = self.debug_breakpoints.lock().ok()
