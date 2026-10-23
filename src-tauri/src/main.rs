@@ -11,6 +11,7 @@ mod logstore;
 mod model;
 mod store;
 mod sys;
+mod vault;
 
 use engine::{Engine, Runtime};
 use model::{Automation, LogEntry, RunRecord};
@@ -171,6 +172,22 @@ fn update_windhawk_blur(app: AppHandle, surfaces: Vec<GlassSurface>) -> Result<(
         let _ = (app, surfaces);
         Err("Native Windhawk Composition blur is available only on Windows.".into())
     }
+}
+
+#[tauri::command]
+fn vault_list_secrets() -> Result<Vec<String>, String> {
+    vault::list_secrets()
+}
+
+#[tauri::command]
+async fn vault_set_secret(name: String, value: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || vault::set_secret(&name, &value))
+        .await.map_err(|e| format!("Secret vault worker failed: {e}"))?
+}
+
+#[tauri::command]
+fn vault_delete_secret(name: String) -> Result<(), String> {
+    vault::delete_secret(&name)
 }
 
 #[tauri::command]
@@ -616,6 +633,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             update_windhawk_blur,
+            vault_list_secrets,
+            vault_set_secret,
+            vault_delete_secret,
             list_automations,
             save_automation,
             delete_automation,
@@ -665,6 +685,7 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            vault::init(dir.join("secrets")).map_err(std::io::Error::other)?;
             custom::init(dir.join("blocks"));
             let _ = std::fs::create_dir_all(dir.join("blocks"));
             app.manage(extensions::ExtensionManager::new(dir.join("extensions")));
