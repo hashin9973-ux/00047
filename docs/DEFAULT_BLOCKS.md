@@ -97,3 +97,24 @@ Use `{{variable_name}}` placeholders in supported text settings, including the R
 ### Wait until satisfied, polling, and timeouts
 
 Where conditions represent a state that can change over time, they support **Check once**, **Wait until satisfied**, and **Wait until state changes** with poll interval, optional stable-duration debounce, and timeout. This applies to network, CPU, disk, battery, file/folder, active-window, device-presence, lock/idle, application-responsiveness, visible-window-count, process-audio, process-count, service-state, clipboard, environment-variable, file-age, directory-count, file-watcher, file-content, HTTP-status, and window-state conditions. The legacy RAM Usage and Process Running conditions, plus Time Window, also expose wait and state-change modes with real polling, stable-duration debounce, and timeout handling. Interval remains a time gate rather than a polled state condition. For existing automations that predate the Behavior field, an absent setting defaults to **Check once** to preserve their previous semantics. Interval remains a time gate rather than a polled state condition.
+
+
+## Next-generation blocks
+
+### UI Automation and events
+- **UI Element State** locates an element by accessible name and optional Automation ID, and can check/wait for existence, absence, enabled, or disabled state.
+- **Click UI Element** invokes an accessible control through Invoke, SelectionItem, or Toggle patterns. **Set UI Element Value** uses the UI Automation Value pattern instead of relying on screen coordinates.
+- **Wait for File Event** uses Windows FileSystemWatcher notifications and can wait for create, change, delete, or rename.
+- **Wait for Process Event** subscribes to Windows WMI start/stop notifications rather than repeatedly polling process lists.
+- **Breakpoint** pauses at that point for the editor's Resume or Step controls. Pause takes effect at the next block boundary; it does not forcibly interrupt an already-running action.
+
+### Data processing and flow control
+- **Parse JSON**, **Get JSON Value**, **Regex Extract**, **Regex Replace**, **Read CSV**, **Write CSV**, and **Transform Value** pass typed results through per-run workflow variables. Parsing has size/row caps, file replacement has an explicit policy, and regex operations use Rust's linear-time regex engine.
+- **Switch / Case** routes a value match through IF/ELSE.
+- **For Each Item** iterates an array stored in a variable; connect its IF wire to the loop body and the body's end back to the For Each block. It uses the ELSE/AFTER route when the items are exhausted.
+- **Call Subflow** executes another saved automation with shared run-scoped variables. Recursive calls are rejected and nesting is capped at 16. **Return Value** stores an optional result variable and terminates the current subflow path. Route the Call Subflow ELSE wire to handle failures.
+- **Replay Run Snapshot** is limited to the current app session and refuses workflows with classified side effects. Unknown/user-defined blocks are not replayed.
+
+### Secrets and debugging
+- The **Secrets Vault** stores values protected by Windows DPAPI for the current Windows user. The UI lists secret names only; values can be created/replaced and deleted, but not read back into the UI. Use the placeholder {{secret:NAME}} in supported templated block fields. Don't print secret values from commands or logs.
+- The editor adds Pause, Resume, Step, and Breakpoint controls; history retains an in-memory snapshot of the run configuration for safe replay. Node states and the Live log provide step timing, result, and failure detail.
