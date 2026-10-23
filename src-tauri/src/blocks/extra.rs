@@ -270,7 +270,7 @@ impl Block for NetworkCondition {
         let (behavior,poll,stable,timeout) = wait_settings(&cx.cfg)?;
         poll_condition(cx, &behavior, poll, stable, timeout, || {
             let adapter=adapter.clone(); let ssid=ssid.clone(); let host=host.clone(); let mode=mode.clone();
-            let op=op.clone(); let unit=unit.clone();
+            let op=op.clone(); let unit=unit.clone(); let behavior=behavior.clone();
             Box::pin(async move {
                 if mode == "internet" {
                     let target = network_host_target(&host);
