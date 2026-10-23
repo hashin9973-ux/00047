@@ -125,6 +125,7 @@ const editor = new Editor($('#ed-host'), {
   toast,
   pickFile: async () => { try { return await invoke('pick_file'); } catch (e) { toast('File picker failed: ' + e, 'err'); return null; } },
   testBlock: id => testBlock(id),
+  getAutomations: () => S.autos,
 });
 
 async function testBlock(nodeId) {
