@@ -11,6 +11,7 @@ mod logstore;
 mod model;
 mod store;
 mod sys;
+mod secrets;
 
 use engine::{Engine, Runtime};
 use model::{Automation, LogEntry, RunRecord};
@@ -204,6 +205,26 @@ async fn stop_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), 
     eng.stop(&id);
     Ok(())
 }
+
+#[tauri::command]
+fn pause_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.pause(&id)
+}
+#[tauri::command]
+fn resume_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.resume(&id)
+}
+#[tauri::command]
+fn step_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.step(&id)
+}
+
+#[tauri::command]
+fn list_secrets() -> Result<Vec<String>, String> { secrets::list() }
+#[tauri::command]
+fn secret_set(name: String, value: String) -> Result<(), String> { secrets::set(&name, &value) }
+#[tauri::command]
+fn secret_delete(name: String) -> Result<bool, String> { secrets::delete(&name) }
 
 #[tauri::command]
 async fn restart_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
@@ -621,7 +642,13 @@ fn main() {
             delete_automation,
             start_automation,
             stop_automation,
+            pause_automation,
+            resume_automation,
+            step_automation,
             restart_automation,
+            list_secrets,
+            secret_set,
+            secret_delete,
             get_runtime,
             get_logs,
             get_history,
@@ -665,6 +692,7 @@ fn main() {
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
+            let secrets_warning = secrets::init(dir.join("secrets.json")).err();
             custom::init(dir.join("blocks"));
             let _ = std::fs::create_dir_all(dir.join("blocks"));
             app.manage(extensions::ExtensionManager::new(dir.join("extensions")));
@@ -685,6 +713,7 @@ fn main() {
             app.manage(engine.clone());
             app.manage(Mutex::new(sys::CpuState::default()));
             engine.app_log("info", format!("00047 started (data folder: {})", dir.display()));
+            if let Some(w) = secrets_warning { engine.app_log("warn", w); }
             if let Some(w) = warn {
                 engine.app_log("error", w);
             }
