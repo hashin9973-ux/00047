@@ -234,6 +234,10 @@ export function fieldError(f, cfg) {
     if (v < f.min || v > f.max) return `${f.min} – ${f.max}`;
   }
   if (f.type === 'time' && !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? ''))) return 'Use HH:MM';
+  if (f.type === 'automation') {
+    const s = String(v ?? '').trim();
+    if (f.required && !s) return 'Select a saved automation';
+  }
   if (f.type === 'text' || f.type === 'textarea' || f.type === 'file') {
     const s = String(v ?? '').trim();
     if (f.required && !s) return 'Required';
