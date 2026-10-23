@@ -28,12 +28,14 @@ The builder puts manifest.json at the ZIP root and copies the DLL to the module 
 4. Inspect DebugView or another debugger's output for the two sample messages.
 5. Disable the mod to test its shutdown export.
 
-## ABI v1
+## ABI v2
 
 The module must export exact x64 names:
 
-- WmodGetApiVersion() returning 1
+- WmodGetApiVersion() returning 2
 - WmodInitializeV1() returning non-zero on success
 - WmodShutdownV1() called before unload
+- WmodIsInitializedV1() reporting whether initialization is active
+- WmodCanUnloadV1() reporting whether tracked hooks and detectable in-flight module references have cleared
 
-A mod may use normal Windows APIs and its own hook framework. Hooks must be removed and owned resources released inside WmodShutdownV1. Crashes in the mod can crash the target process; use a VM or disposable test environment for new mods.
+The SDK's x64 hook compatibility layer uses MinHook; generated projects and this sample compile it into the DLL, but no hooks are installed by this example. The host requires WmodCanUnloadV1() to approve unload and leaves a DLL mapped if quiescence cannot be established. This is a best-effort safety check, not a universal proof for all custom fibers or saved execution contexts. Crashes in native mods can still crash or hang the target process; use a VM or disposable test environment for new mods.
