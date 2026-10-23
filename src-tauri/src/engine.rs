@@ -391,6 +391,79 @@ impl Engine {
         Ok(txt.to_string())
     }
 
+    async fn run_subflow(self: Arc<Self>, parent: Arc<Ctx>, target_id: String, inputs: Value) -> Result<Value, String> {
+        if parent.subflow_stack.len() >= 16 {
+            return Err("Subflow nesting limit (16) exceeded".into());
+        }
+        if parent.subflow_stack.iter().any(|id| id == &target_id) {
+            return Err(format!("Recursive subflow call detected for automation '{target_id}'"));
+        }
+        let mut auto = self.store.get(&target_id).ok_or_else(|| format!("Subflow automation '{target_id}' was not found"))?;
+        validate_automation(&auto).map_err(|errors| format!("Subflow automation is invalid: {}", errors.join("; ")))?;
+        let entries = entry_nodes(&auto);
+        if entries.is_empty() {
+            return Err(format!("Subflow automation '{}' has no enabled entry blocks", auto.name));
+        }
+        let input_map = inputs.as_object().ok_or("Subflow inputs must be a JSON object")?;
+        let mut variables = HashMap::new();
+        for (name, value) in self.secrets.load_for_run()? {
+            variables.insert(name, Value::String(value));
+        }
+        for (name, value) in input_map {
+            if name.is_empty() || name.len() > 64
+                || !name.chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+                || name.starts_with("__00047.")
+            {
+                return Err(format!("Invalid or reserved subflow input variable name '{name}'"));
+            }
+            variables.insert(name.clone(), value.clone());
+        }
+        let child_original_name = auto.name.clone();
+        let child_original_id = auto.id.clone();
+        let nonce = self.run_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let synthetic_id = format!("{}::subflow::{}::{nonce}", parent.auto.id, child_original_id);
+        auto.id = synthetic_id.clone();
+        auto.name = format!("{} / subflow: {}", parent.log_auto_name, child_original_name);
+        let child_ctx = Arc::new(Ctx {
+            eng: self.clone(),
+            auto: Arc::new(auto),
+            token: parent.token.child_token(),
+            pause: parent.pause.clone(),
+            log_auto_id: parent.log_auto_id.clone(),
+            log_auto_name: parent.log_auto_name.clone(),
+            subflow_stack: parent.subflow_stack.iter().cloned().chain(std::iter::once(child_original_id)).collect(),
+            visits: Default::default(),
+            variables: Arc::new(Mutex::new(variables)),
+            rate: Default::default(),
+            handles: Default::default(),
+            errors: AtomicU32::new(0),
+            aborted: AtomicBool::new(false),
+            single: entries.len() == 1,
+        });
+        self.log("info", &parent.log_auto_id, &parent.log_auto_name, None, format!("Calling subflow '{child_original_name}'"));
+        let handles: Vec<_> = entries.into_iter().map(|entry| tokio::spawn(run_entry(child_ctx.clone(), entry))).collect();
+        for handle in handles {
+            let _ = handle.await;
+        }
+        loop {
+            let handle = child_ctx.handles.lock().unwrap().pop();
+            match handle {
+                Some(handle) => { let _ = handle.await; }
+                None => break,
+            }
+        }
+        self.nodes.lock().unwrap().remove(&synthetic_id);
+        if parent.token.is_cancelled() {
+            return Err("Subflow was cancelled because the parent automation stopped".into());
+        }
+        if child_ctx.aborted.load(Ordering::SeqCst) {
+            return Err(format!("Subflow '{child_original_name}' aborted"));
+        }
+        let result = child_ctx.variables.lock().map_err(|_| "Subflow variables unavailable")?;
+        Ok(Value::Object(result.iter().map(|(key, value)| (key.clone(), value.clone())).collect()))
+    }
+
     pub async fn shutdown(&self) {
         let ids: Vec<String> = self.runs.lock().unwrap().keys().cloned().collect();
         for id in &ids {
@@ -450,11 +523,17 @@ impl Engine {
         let variables = Arc::new(Mutex::new(run_variables));
         self.variable_stores.lock().unwrap().insert(auto.id.clone(), variables.clone());
         self.last_variables.lock().unwrap().remove(&auto.id);
+        let log_auto_id = auto.id.clone();
+        let log_auto_name = auto.name.clone();
+        let subflow_stack = vec![auto.id.clone()];
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
             auto: Arc::new(auto),
             token: parent.child_token(),
             pause,
+            log_auto_id,
+            log_auto_name,
+            subflow_stack,
             visits: Default::default(),
             variables,
             rate: Default::default(),
@@ -515,6 +594,11 @@ struct Ctx {
     auto: Arc<Automation>,
     token: CancellationToken,
     pause: Arc<RunPause>,
+    /// Top-level automation identity for logging nested subflow activity in the parent run.
+    log_auto_id: String,
+    log_auto_name: String,
+    /// Original automation identities on the call stack, used to reject recursive subflow cycles.
+    subflow_stack: Vec<String>,
     visits: Mutex<HashMap<String, u64>>,
     variables: Arc<Mutex<HashMap<String, Value>>>,
     rate: Mutex<HashMap<String, VecDeque<Instant>>>,
@@ -563,7 +647,7 @@ impl Ctx {
         format!("{t} #{}", n.id.chars().take(4).collect::<String>())
     }
     fn log(&self, level: &str, n: Option<&Node>, msg: String) {
-        self.eng.log(level, &self.auto.id, &self.auto.name, n.map(|n| (n.id.clone(), self.label(n))), msg);
+        self.eng.log(level, &self.log_auto_id, &self.log_auto_name, n.map(|n| (n.id.clone(), self.label(n))), msg);
     }
     fn abort(&self) {
         self.aborted.store(true, Ordering::SeqCst);
