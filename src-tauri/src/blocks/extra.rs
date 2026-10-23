@@ -91,10 +91,31 @@ pub(super) async fn poll_condition<'a>(
     let start = Instant::now();
     let baseline = if behavior == "change" { Some(probe().await?) } else { None };
     let mut true_since: Option<Instant> = None;
+
+    // A state-change check needs a real polling interval between its baseline
+    // sample and the first comparison. Probing twice immediately is especially
+    // wrong for stateful measurements such as network throughput.
+    if behavior == "change" {
+        let mut delay = Duration::from_secs_f64(poll_sec.max(0.05));
+        if timeout_sec > 0.0 {
+            let remaining = Duration::from_secs_f64(timeout_sec).saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                return Err(format!("condition timed out after {timeout_sec:.1} seconds"));
+            }
+            delay = delay.min(remaining);
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {},
+            _ = cx.token.cancelled() => return Err("cancelled".into()),
+        }
+    }
+
     loop {
         if cx.token.is_cancelled() { return Err("cancelled".into()); }
         let value = probe().await?;
-        if behavior == "check" { return Ok(if value { Outcome::Satisfied } else { Outcome::NotSatisfied }); }
+        if behavior == "check" {
+            return Ok(if value { Outcome::Satisfied } else { Outcome::NotSatisfied });
+        }
         let satisfied = if behavior == "change" { baseline.map(|b| b != value).unwrap_or(false) } else { value };
         if satisfied {
             let since = *true_since.get_or_insert_with(Instant::now);
@@ -108,8 +129,13 @@ pub(super) async fn poll_condition<'a>(
             return Err(format!("condition timed out after {timeout_sec:.1} seconds"));
         }
         (cx.report)("waiting", None, format!("Waiting for condition · elapsed {:.1}s", start.elapsed().as_secs_f64()));
+        let mut delay = Duration::from_secs_f64(poll_sec.max(0.05));
+        if timeout_sec > 0.0 {
+            let remaining = Duration::from_secs_f64(timeout_sec).saturating_sub(start.elapsed());
+            delay = delay.min(remaining);
+        }
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs_f64(poll_sec.max(0.05))) => {},
+            _ = tokio::time::sleep(delay) => {},
             _ = cx.token.cancelled() => return Err("cancelled".into()),
         }
     }
@@ -137,12 +163,85 @@ struct NetSample {
     ssid: String,
     rx: u64,
     tx: u64,
+    adapter_found: bool,
+    wlan_text: String,
+}
+
+fn parse_wlan_status(output: &str) -> (bool, String) {
+    let mut saw_state = false;
+    let mut connected_state = false;
+    let mut ssid = String::new();
+
+    for line in output.lines() {
+        let Some((label, value)) = line.trim().split_once(':') else { continue };
+        match label.trim().to_ascii_lowercase().as_str() {
+            "state" => {
+                saw_state = true;
+                connected_state |= value.trim().eq_ignore_ascii_case("connected");
+            }
+            "ssid" if ssid.is_empty() => {
+                let value = value.trim();
+                if !value.is_empty() {
+                    ssid = value.to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Use SSID as a fallback if the State label is absent; if State is present,
+    // an explicit "disconnected" result must not be overridden by an old SSID.
+    (connected_state || (!saw_state && !ssid.is_empty()), ssid)
+}
+
+fn network_rate(bytes: u64, elapsed_seconds: f64, unit: &str) -> Option<f64> {
+    if !elapsed_seconds.is_finite() || elapsed_seconds <= 0.0 {
+        return None;
+    }
+    Some(if unit == "MiB/s" {
+        bytes as f64 / 1_048_576.0 / elapsed_seconds
+    } else {
+        bytes as f64 * 8.0 / 1_000_000.0 / elapsed_seconds
+    })
 }
 
 async fn net_sample(cx: &NodeCx, adapter_hint: &str) -> Result<NetSample, String> {
     let hint = ps_quote(adapter_hint);
-    let script = format!(r#"$ErrorActionPreference='Stop'; $hint={hint}; $all=@(Get-NetAdapter -ErrorAction SilentlyContinue); if($hint){{$a=$all | Where-Object {{ $_.Name -like ('*'+$hint.Trim([char]39)+'*') -or $_.InterfaceDescription -like ('*'+$hint.Trim([char]39)+'*') }} | Select-Object -First 1}} else {{$a=$all | Where-Object {{ $_.Name -match 'Wi-?Fi|WLAN|Wireless' -or $_.InterfaceDescription -match 'Wireless|802.11' }} | Select-Object -First 1}}; $up=$false; $connected=$false; $ssid=''; $rx=0L; $tx=0L; if($null -ne $a){{$up=($a.Status -eq 'Up'); try {{$s=Get-NetAdapterStatistics -Name $a.Name -ErrorAction Stop; $rx=[long]$s.ReceivedBytes; $tx=[long]$s.SentBytes}} catch {{}}; if($up){{$t=(netsh wlan show interfaces 2>$null | Out-String); if($t -match '(?m)^\s*SSID\s*:\s*(.+?)\s*$'){{$ssid=$matches[1].Trim(); $connected=($ssid.Length -gt 0)}}}}}}; [pscustomobject]@{{connected=$connected;ssid=$ssid;rx=$rx;tx=$tx}} | ConvertTo-Json -Compress"#);
-    ps_json(cx, &script).await
+    let script = format!(r#"$ErrorActionPreference='Stop';
+$hint={hint};
+$all=@(Get-NetAdapter -ErrorAction SilentlyContinue);
+$wireless=@($all | Where-Object {{ $_.Name -match 'Wi-?Fi|WLAN|Wireless' -or $_.InterfaceDescription -match 'Wireless|802.11|Wi-?Fi' }});
+if($hint) {{
+    $candidates=@($all | Where-Object {{ $_.Name -like ('*'+$hint.Trim([char]39)+'*') -or $_.InterfaceDescription -like ('*'+$hint.Trim([char]39)+'*') }});
+}} else {{
+    $candidates=$wireless;
+}}
+$a=$candidates | Where-Object {{ $_.Status -eq 'Up' -and $_.HardwareInterface }} | Select-Object -First 1;
+if($null -eq $a){{$a=$candidates | Where-Object {{ $_.Status -eq 'Up' }} | Select-Object -First 1}};
+if($null -eq $a){{$a=$candidates | Select-Object -First 1}};
+$adapterFound=($null -ne $a);
+$rx=0L;
+$tx=0L;
+if($adapterFound){{try {{$stats=Get-NetAdapterStatistics -Name $a.Name -ErrorAction Stop; $rx=[long]$stats.ReceivedBytes; $tx=[long]$stats.SentBytes}} catch {{}}}};
+# Resolve Wi-Fi association independently of which adapter is selected for byte counters.
+$profileConnected=$false;
+try {{
+    $profiles=@(Get-NetConnectionProfile -ErrorAction SilentlyContinue);
+    foreach($wa in $wireless) {{
+        if($wa.Status -eq 'Up') {{
+            $profile=$profiles | Where-Object {{ $_.InterfaceIndex -eq $wa.ifIndex }} | Select-Object -First 1;
+            if($null -ne $profile){{$profileConnected=$true; break}}
+        }}
+    }}
+}} catch {{}};
+$wlanText='';
+try {{$wlanText=(& netsh.exe wlan show interfaces 2>$null | Out-String)}} catch {{}};
+[pscustomobject]@{{connected=$profileConnected;ssid='';rx=$rx;tx=$tx;adapter_found=$adapterFound;wlan_text=$wlanText}} | ConvertTo-Json -Compress"#);
+    let mut sample: NetSample = ps_json(cx, &script).await?;
+    let (wlan_connected, ssid) = parse_wlan_status(&sample.wlan_text);
+    sample.connected |= wlan_connected;
+    sample.ssid = ssid;
+    Ok(sample)
 }
 
 fn network_spec() -> Value {
@@ -156,7 +255,7 @@ fn network_spec() -> Value {
         json!({"key":"unit","label":"Rate unit","type":"select","default":"Mbps","options":[["Mbps","Mbps"],["MiB/s","MiB/s"]],"show":{"key":"mode","in":["download","upload"]}}),
     ];
     fields.extend(behavior_fields());
-    json!({"category":"condition","title":"Network Condition","icon":"wifi","description":"Checks Wi-Fi connectivity, SSID, internet reachability, or measured adapter throughput. Supports polling and stable-state debounce.","fields":fields,"summary":"Network: {mode}","help":"Throughput is estimated from byte-counter deltas between samples. Mbps is megabits/second; MiB/s is mebibytes/second. The default adapter filter selects a wireless adapter; enter an adapter name to monitor another adapter. Internet reachability probes a host/URL and may take several seconds."})
+    json!({"category":"condition","title":"Network Condition","icon":"wifi","description":"Checks Wi-Fi connectivity, SSID, internet reachability, or measured adapter throughput. Supports polling and stable-state debounce.","fields":fields,"summary":"Network: {mode}","help":"Wi-Fi status is read independently from adapter-counter selection, using Windows WLAN state plus active wireless network profiles. Throughput is estimated from byte-counter deltas between samples; a one-shot throughput check samples for one second. Mbps is megabits/second; MiB/s is mebibytes/second. The default counter adapter prefers an active physical wireless adapter; enter an adapter name to measure another interface. Internet reachability probes a host/URL and may take several seconds."})
 }
 
 struct NetworkCondition;
@@ -186,6 +285,23 @@ impl Block for NetworkCondition {
         let (behavior,poll,stable,timeout) = wait_settings(&cx.cfg)?;
         let last = std::sync::Arc::new(std::sync::Mutex::new(None::<(u64,u64,Instant)>));
         let last2 = last.clone();
+
+        // A one-shot throughput comparison needs two counter readings. Capture
+        // a baseline, allow counters to advance, and then run the ordinary probe.
+        if matches!(mode.as_str(), "download" | "upload") && behavior == "check" {
+            let baseline = net_sample(cx, &adapter).await?;
+            if !baseline.adapter_found {
+                return Err("No matching network adapter was found for throughput measurement. Set Adapter name to the interface you want to measure.".into());
+            }
+            *last.lock().map_err(|_| "network counter lock poisoned".to_string())? =
+                Some((baseline.rx, baseline.tx, Instant::now()));
+            (cx.report)("waiting", None, "Sampling network throughput for 1 second".into());
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                _ = cx.token.cancelled() => return Err("cancelled".into()),
+            }
+        }
+
         poll_condition(cx, &behavior, poll, stable, timeout, || {
             let adapter=adapter.clone(); let ssid=ssid.clone(); let host=host.clone(); let mode=mode.clone();
             let op=op.clone(); let unit=unit.clone(); let last=last2.clone();
@@ -205,16 +321,22 @@ impl Block for NetworkCondition {
                     "wifi_disconnected" => Ok(!sample.connected),
                     "ssid" => Ok(sample.connected && sample.ssid.eq_ignore_ascii_case(&ssid)),
                     "download" | "upload" => {
-                        let now=Instant::now();
-                        let mut state=last.lock().map_err(|_|"network counter lock poisoned".to_string())?;
-                        let current=(sample.rx,sample.tx,now);
-                        let prior=state.replace(current);
-                        let Some((prx,ptx,pt))=prior else { return Ok(false) };
-                        let elapsed=now.duration_since(pt).as_secs_f64();
-                        if elapsed<=0.0 { return Ok(false) }
-                        let bytes=if mode=="download" { sample.rx.saturating_sub(prx) } else { sample.tx.saturating_sub(ptx) } as f64;
-                        let rate=if unit=="MiB/s" { bytes/1_048_576.0/elapsed } else { bytes*8.0/1_000_000.0/elapsed };
-                        Ok(if op=="above" { rate>threshold } else { rate<=threshold })
+                        if !sample.adapter_found {
+                            return Err("No matching network adapter was found for throughput measurement. Set Adapter name to the interface you want to measure.".into());
+                        }
+                        let now = Instant::now();
+                        let mut state = last.lock().map_err(|_| "network counter lock poisoned".to_string())?;
+                        let current = (sample.rx, sample.tx, now);
+                        let prior = state.replace(current);
+                        let Some((prx, ptx, pt)) = prior else { return Ok(false) };
+                        let elapsed = now.duration_since(pt).as_secs_f64();
+                        let bytes = if mode == "download" {
+                            sample.rx.saturating_sub(prx)
+                        } else {
+                            sample.tx.saturating_sub(ptx)
+                        };
+                        let Some(rate) = network_rate(bytes, elapsed, &unit) else { return Ok(false) };
+                        Ok(if op == "above" { rate > threshold } else { rate <= threshold })
                     }
                     _ => Ok(false)
                 }
@@ -582,4 +704,36 @@ pub(super) fn register_into(m:&mut HashMap<&'static str,Box<dyn Block>>){
  m.insert("act.delete_file",Box::new(DeleteFile));
  m.insert("act.play_sound",Box::new(PlaySoundSpeak));
  m.insert("act.service",Box::new(ServiceControl));
+}
+
+
+#[cfg(test)]
+mod network_condition_regression_tests {
+    use super::*;
+
+    #[test]
+    fn wlan_connected_state_is_true_even_when_ssid_is_hidden() {
+        let output = "Name : Wi-Fi\nState : connected\nSSID :\nBSSID : 00:11:22:33:44:55\n";
+        assert_eq!(parse_wlan_status(output), (true, String::new()));
+    }
+
+    #[test]
+    fn explicitly_disconnected_state_does_not_trust_a_stale_ssid_line() {
+        let output = "Name : Wi-Fi\nState : disconnected\nSSID : PreviousNetwork\n";
+        assert_eq!(parse_wlan_status(output), (false, "PreviousNetwork".into()));
+    }
+
+    #[test]
+    fn ssid_is_a_fallback_when_state_is_not_reported() {
+        let output = "Name : Wi-Fi\nSSID : OfficeNet\nBSSID : 00:11:22:33:44:55\n";
+        assert_eq!(parse_wlan_status(output), (true, "OfficeNet".into()));
+    }
+
+    #[test]
+    fn network_rate_converts_bytes_to_mib_per_second_and_mbps() {
+        assert_eq!(network_rate(1_048_576, 1.0, "MiB/s"), Some(1.0));
+        assert_eq!(network_rate(1_000_000, 1.0, "Mbps"), Some(8.0));
+        assert_eq!(network_rate(1, 0.0, "MiB/s"), None);
+        assert_eq!(network_rate(1, f64::NAN, "Mbps"), None);
+    }
 }
