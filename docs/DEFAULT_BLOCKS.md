@@ -97,3 +97,63 @@ Use `{{variable_name}}` placeholders in supported text settings, including the R
 ### Wait until satisfied, polling, and timeouts
 
 Where conditions represent a state that can change over time, they support **Check once**, **Wait until satisfied**, and **Wait until state changes** with poll interval, optional stable-duration debounce, and timeout. This applies to network, CPU, disk, battery, file/folder, active-window, device-presence, lock/idle, application-responsiveness, visible-window-count, process-audio, process-count, service-state, clipboard, environment-variable, file-age, directory-count, file-watcher, file-content, HTTP-status, and window-state conditions. The legacy RAM Usage and Process Running conditions, plus Time Window, also expose wait and state-change modes with real polling, stable-duration debounce, and timeout handling. Interval remains a time gate rather than a polled state condition. For existing automations that predate the Behavior field, an absent setting defaults to **Check once** to preserve their previous semantics. Interval remains a time gate rather than a polled state condition.
+
+
+## UI automation and data-processing blocks
+
+The reliability follow-up adds UI Automation-backed blocks and typed data transformations.
+
+### UI Automation
+
+- **Wait for UI Element** checks whether a named control or Automation ID exists, is missing, or exposes a matching value. It supports Check once, Wait until satisfied, Wait for state change, polling, stable duration, and timeout.
+- **Find UI Element** queries a scoped application window and can store the matching element's name, value, Automation ID, control type, enabled status, and bounds as a JSON workflow variable.
+- **Click UI Element** invokes or selects the matched control through UI Automation.
+- **Set UI Element Value** sets controls exposing ValuePattern; it does not simulate keystrokes.
+- **Select UI Item** selects controls exposing SelectionItemPattern.
+
+UI Automation requires an interactive Windows desktop. Some elevated applications, browser canvas surfaces, remote sessions, and custom-drawn controls may not expose accessible UI Automation patterns. Scope searches to a process name or window title and a control name, Automation ID, or control type. Use keyboard/mouse blocks when UI Automation is unavailable.
+
+### Data processing
+
+- **Extract JSON Value** parses JSON, traverses dot-separated object properties and numeric array indices, and stores the selected value with its JSON type preserved.
+- **Regex Extract** evaluates a .NET regular expression with a two-second match timeout and stores a numbered capture group. A missing match returns Not Satisfied; invalid expressions and timeouts are errors.
+- **CSV to JSON** parses quoted CSV, including escaped quotes and embedded newlines, into an array of objects. Empty/duplicate headers and inconsistent column counts are rejected.
+- **JSON to CSV** converts an array of objects to CSV text in a workflow variable using the sorted union of property names as headers.
+- **Transform Value** trims, changes case, performs literal replacement, splits to an array, parses JSON, applies numeric arithmetic/rounding, or stores the current Unix timestamp.
+
+These data blocks process configured or variable-expanded text within bounded field sizes. They store values in per-run variables rather than logging sensitive data. Treat variables derived from clipboard content, HTTP responses, or UI text as potentially sensitive.
+
+
+### Array iteration and loop control
+
+- **For Each Item** iterates a JSON array in a workflow variable. Each visit stores the current item and a zero-based index in user-selected variables. Wire the loop body back to the iterator; its ELSE output is taken once the array is exhausted.
+- **Break Loop** exits the matching named For Each loop through the iterator's ELSE output.
+- **Continue Loop** jumps directly to the matching iterator to load the next item, skipping the remaining actions in the current body.
+
+Loop names must be unique within an automation. Use a single incoming path to an iterator to avoid concurrent branches competing for the same iteration counter. Internal loop-control values are hidden from the variable inspector.
+
+
+### Secret Vault
+
+The **Secret Vault** in application settings stores named secrets separately from automation definitions. On Windows, secret values are encrypted with DPAPI for the current Windows user and written to the app data directory. Exported automation files contain only ordinary block configuration, not vault values.
+
+Use `{{secret.api_key}}` (replace `api_key` with the exact secret name) in supported fields such as HTTP URLs, headers, body text, file text, or command input. Secret names are case-sensitive and resolve only at runtime. The execution inspector redacts keys containing secret/token/password/credential/cookie/authorization terminology; logs can still contain a secret if an arbitrary command or remote service deliberately echoes it. Do not print credentials from commands.
+
+The vault UI lists names only, uses a password field for entry, and supports replacement/deletion. DPAPI-encrypted values can only be decrypted by the same Windows user profile on that Windows installation. Back up credentials independently and recreate them after profile migration.
+
+
+### Event-driven triggers
+
+- **Wait for File Event** uses Windows `FileSystemWatcher` change notifications for create, modify, delete, rename, or any supported event. Configure a folder, wildcard, and recursive scanning. The watcher is registered when the block starts, so it should run before the expected change.
+- **Wait for Global Hotkey** registers a system-wide shortcut with Windows `RegisterHotKey` and blocks until it is pressed. Choose a shortcut that is not already reserved. A configured timeout or stopping the automation cancels the wait.
+
+File notification behavior depends on the filesystem and may overflow on very high-volume changes or remote shares. Global shortcuts may fail if another process owns the same combination. These are event-based wait conditions, so their default timeout is 0 (wait indefinitely).
+
+
+## Execution inspection and debugging
+
+The editor dock includes live logs, recent run history, and a **Variables** inspector for the active automation or its last completed run. Variables are isolated per run; inspector keys likely to contain credentials are redacted, and internal loop-control values are hidden.
+
+Use the **Pause** toolbar control to stop scheduling additional blocks after the current operations finish, and **Resume** to continue. From a block's context menu, **Add breakpoint** pauses before that block executes on a subsequent visit; Resume then executes that block once without immediately retriggering the same breakpoint. Breakpoints are held for the current application session and are not exported with the workflow. Long-running actions may finish before a requested pause takes effect; Stop cancels a run.
+
+Debugging remains cooperative rather than instruction-level: the inspector does not single-step inside a running script or guarantee rollback of side effects that have already happened.

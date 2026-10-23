@@ -134,15 +134,117 @@ pub(super) fn wait_settings(c: &Value) -> Result<(String, f64, f64, f64), String
 #[derive(Deserialize, Clone, Default)]
 struct NetSample {
     connected: bool,
+    wireless: bool,
+    wireless_found: bool,
     ssid: String,
-    rx: u64,
-    tx: u64,
+    rx: Option<u64>,
+    tx: Option<u64>,
+    adapter: String,
+    adapter_found: bool,
+    adapter_status: String,
 }
 
 async fn net_sample(cx: &NodeCx, adapter_hint: &str) -> Result<NetSample, String> {
-    let hint = ps_quote(adapter_hint);
-    let script = format!(r#"$ErrorActionPreference='Stop'; $hint={hint}; $all=@(Get-NetAdapter -ErrorAction SilentlyContinue); if($hint){{$a=$all | Where-Object {{ $_.Name -like ('*'+$hint.Trim([char]39)+'*') -or $_.InterfaceDescription -like ('*'+$hint.Trim([char]39)+'*') }} | Select-Object -First 1}} else {{$a=$all | Where-Object {{ $_.Name -match 'Wi-?Fi|WLAN|Wireless' -or $_.InterfaceDescription -match 'Wireless|802.11' }} | Select-Object -First 1}}; $up=$false; $connected=$false; $ssid=''; $rx=0L; $tx=0L; if($null -ne $a){{$up=($a.Status -eq 'Up'); try {{$s=Get-NetAdapterStatistics -Name $a.Name -ErrorAction Stop; $rx=[long]$s.ReceivedBytes; $tx=[long]$s.SentBytes}} catch {{}}; if($up){{$t=(netsh wlan show interfaces 2>$null | Out-String); if($t -match '(?m)^\s*SSID\s*:\s*(.+?)\s*$'){{$ssid=$matches[1].Trim(); $connected=($ssid.Length -gt 0)}}}}}}; [pscustomobject]@{{connected=$connected;ssid=$ssid;rx=$rx;tx=$tx}} | ConvertTo-Json -Compress"#);
+    let script = format!(r#"
+$ErrorActionPreference='Stop'
+$hint={hint}
+$all=@(Get-NetAdapter -ErrorAction SilentlyContinue)
+$wireless=@($all | Where-Object {{ $_.Name -match '(?i)Wi-?Fi|WLAN|Wireless' -or $_.InterfaceDescription -match '(?i)Wireless|802\.11|Wi-?Fi' }})
+$wlanName=''
+$wlanSsid=''
+$wlanConnected=$false
+try {{
+  $wlan=(& netsh.exe wlan show interfaces 2>$null | Out-String)
+  $blocks=[regex]::Split($wlan,'\r?\n\s*\r?\n')
+  foreach ($block in $blocks) {{
+    $n=[regex]::Match($block,'(?im)^\s*Name\s*:\s*(.+?)\s*$')
+    $st=[regex]::Match($block,'(?im)^\s*State\s*:\s*(.+?)\s*$')
+    $sm=[regex]::Match($block,'(?im)^\s*SSID\s*:\s*(.+?)\s*$')
+    $thisName='';$thisSsid=''
+    if ($n.Success) {{ $thisName=$n.Groups[1].Value.Trim() }}
+    if ($sm.Success) {{ $thisSsid=$sm.Groups[1].Value.Trim() }}
+    if ($st.Success -and $st.Groups[1].Value.Trim() -ieq 'connected' -and $thisSsid.Length -gt 0) {{
+      if (($hint.Length -eq 0) -or ($thisName.Length -gt 0 -and $thisName.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0)) {{
+        $wlanConnected=$true;$wlanName=$thisName;$wlanSsid=$thisSsid
+        if ($hint.Length -gt 0) {{ break }}
+      }}
+    }}
+  }}
+}} catch {{}}
+if ($hint.Length -gt 0 -and $wlanName.Length -gt 0 -and $wlanName.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0) {{
+  $a=$all | Where-Object {{ $_.Name -ieq $wlanName }} | Select-Object -First 1
+  if ($null -eq $a) {{ $a=$all | Where-Object {{ $_.Name.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.InterfaceDescription.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 }} | Select-Object -First 1 }}
+}} elseif ($hint.Length -gt 0) {{
+  $a=$all | Where-Object {{ $_.Name.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.InterfaceDescription.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 }} | Select-Object -First 1
+}} elseif ($wlanName.Length -gt 0) {{
+  $a=$all | Where-Object {{ $_.Name -ieq $wlanName }} | Select-Object -First 1
+  if ($null -eq $a) {{ $a=$wireless | Where-Object {{ $_.Status -eq 'Up' }} | Select-Object -First 1 }}
+}} else {{
+  $a=$wireless | Where-Object {{ $_.Status -eq 'Up' }} | Select-Object -First 1
+  if ($null -eq $a) {{ $a=$wireless | Select-Object -First 1 }}
+}}
+$found=($null -ne $a)
+$connected=$false;$wirelessSelected=$false;$wirelessFound=($wireless.Count -gt 0 -or $wlanName.Length -gt 0);$ssid='';$rx=$null;$tx=$null;$adapterName='';$adapterStatus=''
+if ($found) {{
+  $adapterName=[string]$a.Name;$adapterStatus=[string]$a.Status
+  $isWireless=($wireless.Name -contains $a.Name)
+  $connected=($a.Status -eq 'Up')
+  $wirelessSelected=($isWireless -or ($wlanName.Length -gt 0 -and $adapterName -ieq $wlanName))
+  if ($wirelessSelected) {{
+    # Wireless adapter "Up" only means the radio/interface is enabled, not joined to an AP.
+    $connected=($wlanConnected -and $adapterName -ieq $wlanName)
+  }}
+  if ($adapterName -ieq $wlanName) {{ $ssid=$wlanSsid }}
+  try {{
+    $stats=Get-NetAdapterStatistics -Name $a.Name -ErrorAction Stop
+    $rx=[long]$stats.ReceivedBytes;$tx=[long]$stats.SentBytes
+  }} catch {{$rx=$null;$tx=$null}}
+}} elseif ($hint.Length -eq 0 -and $wlanName.Length -gt 0) {{
+  $wirelessSelected=$true;$connected=$wlanConnected;$ssid=$wlanSsid;$adapterName=$wlanName
+}}
+[pscustomobject]@{{connected=[bool]$connected;wireless=[bool]$wirelessSelected;wirelessFound=[bool]$wirelessFound;ssid=[string]$ssid;rx=$rx;tx=$tx;adapter=[string]$adapterName;adapterFound=[bool]$found;adapterStatus=[string]$adapterStatus}} | ConvertTo-Json -Compress
+"#, hint = ps_quote(adapter_hint));
     ps_json(cx, &script).await
+}
+
+fn network_host_target(input: &str) -> String {
+    let mut authority=input.trim();
+    if let Some(rest)=authority.strip_prefix("https://").or_else(||authority.strip_prefix("http://")) { authority=rest; }
+    authority=authority.split(['/', '?', '#']).next().unwrap_or(authority);
+    if authority.starts_with('[') {
+        return authority.split(']').next().unwrap_or(authority).trim_start_matches('[').to_string();
+    }
+    if let Some((host,port))=authority.rsplit_once(':') {
+        if !host.is_empty() && !port.is_empty() && port.chars().all(|c|c.is_ascii_digit()) { return host.to_string(); }
+    }
+    authority.to_string()
+}
+
+fn network_rate(bytes_start: u64, bytes_end: u64, elapsed_seconds: f64, unit: &str) -> Option<f64> {
+    if !elapsed_seconds.is_finite() || elapsed_seconds <= 0.0 || bytes_end < bytes_start {
+        return None;
+    }
+    let bytes_per_second = (bytes_end - bytes_start) as f64 / elapsed_seconds;
+    Some(if unit == "MiB/s" {
+        bytes_per_second / 1_048_576.0
+    } else {
+        bytes_per_second * 8.0 / 1_000_000.0
+    })
+}
+
+fn network_rate_matches(rate: f64, threshold: f64, op: &str) -> bool {
+    if !rate.is_finite() || !threshold.is_finite() { return false; }
+    if op == "above" { rate > threshold } else { rate <= threshold }
+}
+
+fn wifi_state_matches(mode: &str, sample: &NetSample, expected_ssid: &str) -> bool {
+    match mode {
+        "wifi_connected" => sample.wireless && sample.connected,
+        "wifi_disconnected" => sample.wireless_found && !sample.connected,
+        "ssid" => sample.wireless && sample.connected && !sample.ssid.is_empty()
+            && sample.ssid.eq_ignore_ascii_case(expected_ssid.trim()),
+        _ => false,
+    }
 }
 
 fn network_spec() -> Value {
@@ -156,7 +258,7 @@ fn network_spec() -> Value {
         json!({"key":"unit","label":"Rate unit","type":"select","default":"Mbps","options":[["Mbps","Mbps"],["MiB/s","MiB/s"]],"show":{"key":"mode","in":["download","upload"]}}),
     ];
     fields.extend(behavior_fields());
-    json!({"category":"condition","title":"Network Condition","icon":"wifi","description":"Checks Wi-Fi connectivity, SSID, internet reachability, or measured adapter throughput. Supports polling and stable-state debounce.","fields":fields,"summary":"Network: {mode}","help":"Throughput is estimated from byte-counter deltas between samples. Mbps is megabits/second; MiB/s is mebibytes/second. The default adapter filter selects a wireless adapter; enter an adapter name to monitor another adapter. Internet reachability probes a host/URL and may take several seconds."})
+    json!({"category":"condition","title":"Network Condition","icon":"wifi","description":"Checks Wi-Fi connectivity, SSID, internet reachability, or measured adapter throughput. Supports polling and stable-state debounce.","fields":fields,"summary":"Network: {mode}","help":"Connectivity checks select an active wireless adapter rather than the first adapter returned by Windows. Throughput is sampled from two byte-counter readings even in Check once mode. Mbps is megabits/second; MiB/s is mebibytes/second. The default adapter filter monitors Wi-Fi; enter an adapter name to monitor a specific interface. Internet reachability probes TCP port 443 on a host or URL."})
 }
 
 struct NetworkCondition;
@@ -184,40 +286,65 @@ impl Block for NetworkCondition {
         let op = text(&cx.cfg,"op");
         let unit = text(&cx.cfg,"unit");
         let (behavior,poll,stable,timeout) = wait_settings(&cx.cfg)?;
-        let last = std::sync::Arc::new(std::sync::Mutex::new(None::<(u64,u64,Instant)>));
-        let last2 = last.clone();
         poll_condition(cx, &behavior, poll, stable, timeout, || {
             let adapter=adapter.clone(); let ssid=ssid.clone(); let host=host.clone(); let mode=mode.clone();
-            let op=op.clone(); let unit=unit.clone(); let last=last2.clone();
+            let op=op.clone(); let unit=unit.clone(); let behavior=behavior.clone();
             Box::pin(async move {
                 if mode == "internet" {
-                    let target = if host.starts_with("http://") || host.starts_with("https://") {
-                        host.split("://").nth(1).unwrap_or(&host).split('/').next().unwrap_or(&host).split(':').next().unwrap_or(&host).to_string()
-                    } else { host.clone() };
+                    let target = network_host_target(&host);
                     let q = ps_quote(&target);
-                    let script = format!("$ErrorActionPreference='SilentlyContinue'; $ok=$false; try {{$ok=Test-NetConnection -ComputerName {q} -Port 443 -InformationLevel Quiet -WarningAction SilentlyContinue}} catch {{$ok=$false}}; [bool]$ok | ConvertTo-Json -Compress");
+                    let script = format!("$ErrorActionPreference='SilentlyContinue'; $ok=$false; $client=$null; try {{$client=New-Object Net.Sockets.TcpClient; $ar=$client.BeginConnect({},443,$null,$null); if($ar.AsyncWaitHandle.WaitOne(2500)){{$client.EndConnect($ar);$ok=$true}}; $client.Close()}}catch{{$ok=$false;if($null -ne $client){{$client.Close()}}}}; [bool]$ok | ConvertTo-Json -Compress", q);
                     let out = powershell(cx, &script).await?;
-                    return Ok(out.trim().eq_ignore_ascii_case("true"));
+                    let ok: bool = serde_json::from_str(out.trim()).map_err(|e| format!("Could not parse network reachability result: {e}"))?;
+                    (cx.report)("waiting", None, format!("TCP 443 reachability to {}: {}", target, if ok { "reachable" } else { "unreachable" }));
+                    return Ok(ok);
+                }
+                if mode == "download" || mode == "upload" {
+                    // A one-shot probe previously always returned false because its first and
+                    // only counter sample had no baseline. Take two readings within this probe.
+                    let first=net_sample(cx,&adapter).await?;
+                    if !first.adapter_found {
+                        (cx.report)("running", None, "No matching network adapter was found".into());
+                        return Ok(false);
+                    }
+                    let (Some(first_rx),Some(first_tx))=(first.rx,first.tx) else {
+                        (cx.report)("waiting", None, format!("Could not read byte counters for {}",first.adapter));
+                        return Ok(false);
+                    };
+                    let sample_started=Instant::now();
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    if cx.token.is_cancelled() { return Err("cancelled".into()); }
+                    let second=net_sample(cx,&adapter).await?;
+                    let (Some(second_rx),Some(second_tx))=(second.rx,second.tx) else {
+                        (cx.report)("waiting", None, format!("Could not read byte counters for {}",first.adapter));
+                        return Ok(false);
+                    };
+                    if !second.adapter_found || second.adapter != first.adapter {
+                        (cx.report)("waiting", None, "Network adapter changed while sampling; retrying".into());
+                        return Ok(false);
+                    }
+                    let elapsed=sample_started.elapsed().as_secs_f64();
+                    let (start,end)=if mode=="download" { (first_rx,second_rx) } else { (first_tx,second_tx) };
+                    let Some(rate)=network_rate(start,end,elapsed,&unit) else {
+                        (cx.report)("waiting", None, "Network byte counters reset or the sample was invalid; retrying".into());
+                        return Ok(false);
+                    };
+                    let ok=network_rate_matches(rate,threshold,&op);
+                    let unit_label=if unit=="MiB/s" { "MiB/s" } else { "Mbps" };
+                    (cx.report)(if behavior=="check" {"running"} else {"waiting"},None,
+                        format!("{} on {}: {:.2} {} ({} threshold {:.2})",
+                            if mode=="download" {"Download"} else {"Upload"},
+                            first.adapter,rate,unit_label,if op=="above" {"above"} else {"at or below"},threshold));
+                    return Ok(ok);
                 }
                 let sample = net_sample(cx, &adapter).await?;
-                match mode.as_str() {
-                    "wifi_connected" => Ok(sample.connected),
-                    "wifi_disconnected" => Ok(!sample.connected),
-                    "ssid" => Ok(sample.connected && sample.ssid.eq_ignore_ascii_case(&ssid)),
-                    "download" | "upload" => {
-                        let now=Instant::now();
-                        let mut state=last.lock().map_err(|_|"network counter lock poisoned".to_string())?;
-                        let current=(sample.rx,sample.tx,now);
-                        let prior=state.replace(current);
-                        let Some((prx,ptx,pt))=prior else { return Ok(false) };
-                        let elapsed=now.duration_since(pt).as_secs_f64();
-                        if elapsed<=0.0 { return Ok(false) }
-                        let bytes=if mode=="download" { sample.rx.saturating_sub(prx) } else { sample.tx.saturating_sub(ptx) } as f64;
-                        let rate=if unit=="MiB/s" { bytes/1_048_576.0/elapsed } else { bytes*8.0/1_000_000.0/elapsed };
-                        Ok(if op=="above" { rate>threshold } else { rate<=threshold })
-                    }
-                    _ => Ok(false)
-                }
+                let ok = wifi_state_matches(&mode, &sample, &ssid);
+                (cx.report)(if behavior=="check" {"running"} else {"waiting"},None,
+                    format!("Network mode {}: {}{}",
+                        mode,
+                        if ok {"satisfied"} else {"not satisfied"},
+                        if sample.adapter.is_empty() {String::new()} else {format!(" · {} ({})",sample.adapter,sample.adapter_status)}));
+                Ok(ok)
             }) as Probe<'_>
         }).await
     }
@@ -508,7 +635,7 @@ struct HttpRequest;
 impl Block for HttpRequest{
  fn title(&self)-> &'static str{"HTTP Request / Webhook"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn supports_timeout(&self)->bool{true}fn spec(&self)->Option<Value>{Some(http_spec())}
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&http_spec(),c)?;let u=text(c,"url");if !(u.starts_with("http://")||u.starts_with("https://")){return Err("URL must start with http:// or https://".into())};if ["url","body","headersJson","saveBodyAs","saveStatusAs"].iter().any(|k|text(c,k).contains('\0')){return Err("HTTP fields must not contain NUL characters".into())};for key in ["saveBodyAs","saveStatusAs"]{let name=text(c,key);if !name.is_empty()&&!(name.len()<=64&&name.chars().next().is_some_and(|ch|ch.is_ascii_alphabetic()||ch=='_')&&name.chars().all(|ch|ch.is_ascii_alphanumeric()||matches!(ch,'_'|'-'|'.'))){return Err(format!("{key} variable name is invalid"))}};if !text(c,"headersJson").is_empty(){let v:Value=serde_json::from_str(&text(c,"headersJson")).map_err(|e|format!("Headers must be valid JSON: {e}"))?;if !v.is_object(){return Err("Headers must be a JSON object".into())}}check_timeout(c)}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let url=cx.expand_template(&text(&cx.cfg,"url"))?;let method=text(&cx.cfg,"method");let body=cx.expand_template(&text(&cx.cfg,"body"))?;let headers=cx.expand_template(&text(&cx.cfg,"headersJson"))?;let save_body=text(&cx.cfg,"saveBodyAs");let save_status=text(&cx.cfg,"saveStatusAs");let log_response=cx.cfg.get("logResponse").and_then(Value::as_bool).unwrap_or(false);let seconds=rng(&cx.cfg,"timeoutSec",15.0,1.0,120.0,"Request timeout")?;let src=format!("$ErrorActionPreference='Stop'; $u={}; $m={}; $timeout={}; $headers=@{{}}; $hjson={}; if($hjson){{$hj=ConvertFrom-Json $hjson; foreach($prop in $hj.PSObject.Properties){{$headers[$prop.Name]=[string]$prop.Value}}}}; $args=@{{Uri=$u;Method=$m;TimeoutSec=$timeout;UseBasicParsing=$true;ErrorAction='Stop'}}; if($headers.Count -gt 0){{$args.Headers=$headers}}; $body={}; if($body -and @('POST','PUT','PATCH') -contains $m){{$args.Body=$body}}; try{{$r=Invoke-WebRequest @args; $content=[string]$r.Content; if($content.Length -gt 4000){{$content=$content.Substring(0,4000)+' …[truncated]'}}; [pscustomobject]@{{status=[int]$r.StatusCode;content=$content}} | ConvertTo-Json -Compress -Depth 4}}catch{{if($_.Exception.Response){{$status=[int]$_.Exception.Response.StatusCode; [pscustomobject]@{{status=$status;content='HTTP request returned an error status'}} | ConvertTo-Json -Compress}}else{{throw}}}}",ps_quote(&url),ps_quote(&method),seconds,ps_quote(&headers),ps_quote(&body));
+ async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let url=cx.expand_template(&text(&cx.cfg,"url"))?;let method=text(&cx.cfg,"method");let body=cx.expand_template(&text(&cx.cfg,"body"))?;let headers=cx.expand_template(&text(&cx.cfg,"headersJson"))?;let save_body=text(&cx.cfg,"saveBodyAs");let save_status=text(&cx.cfg,"saveStatusAs");let log_response=cx.cfg.get("logResponse").and_then(Value::as_bool).unwrap_or(false);let seconds=rng(&cx.cfg,"timeoutSec",15.0,1.0,120.0,"Request timeout")?;let src=format!("$ErrorActionPreference='Stop'; $u={}; $m={}; $timeout={}; $headers=@{{}}; $hjson={}; if($hjson){{$hj=ConvertFrom-Json $hjson; foreach($prop in $hj.PSObject.Properties){{$headers[$prop.Name]=[string]$prop.Value}}}}; $args=@{{Uri=$u;Method=$m;TimeoutSec=$timeout;UseBasicParsing=$true;ErrorAction='Stop'}}; if($headers.Count -gt 0){{$args.Headers=$headers}}; $body={}; if($body -and @('POST','PUT','PATCH') -contains $m){{$args.Body=$body}}; try{{$r=Invoke-WebRequest @args; $content=[string]$r.Content; if($content.Length -gt 4000){{$content=$content.Substring(0,4000)+' …[truncated]'}}; [pscustomobject]@{{status=[int]$r.StatusCode;content=$content}} | ConvertTo-Json -Compress -Depth 4}}catch{{$response=$_.Exception.Response; if($response){{$status=[int]$response.StatusCode; $content=''; try{{$stream=$response.GetResponseStream(); if($stream){{$reader=New-Object System.IO.StreamReader($stream);$content=$reader.ReadToEnd();$reader.Dispose();$stream.Dispose()}}}}catch{{}}; if($content.Length -gt 4000){{$content=$content.Substring(0,4000)+' …[truncated]'}}; [pscustomobject]@{{status=$status;content=$content}} | ConvertTo-Json -Compress -Depth 4}}else{{throw}}}}",ps_quote(&url),ps_quote(&method),seconds,ps_quote(&headers),ps_quote(&body));
  let out=powershell(cx,&src).await?;let v:Value=serde_json::from_str(&out).map_err(|e|format!("HTTP response parse failed: {e}"))?;let status=v.get("status").and_then(Value::as_i64).unwrap_or(0);let excerpt=v.get("content").and_then(Value::as_str).unwrap_or("");if !save_body.is_empty(){cx.set_variable(save_body,Value::String(excerpt.to_string()))?};if !save_status.is_empty(){cx.set_variable(save_status,json!(status))?};(cx.log)(if (200..400).contains(&status){"info"}else{"error"},if log_response{format!("HTTP {method} returned status {status}; response excerpt: {}",excerpt.chars().take(4000).collect::<String>())}else{format!("HTTP {method} returned status {status} (response body omitted)")});if (200..400).contains(&status){Ok(Outcome::Satisfied)}else{Err(format!("HTTP request returned status {status}"))}}
 }
 
@@ -524,10 +651,37 @@ impl Block for MediaControl{
 fn power_spec()->Value{simple_action_spec("Power Control","power","Locks, sleeps, hibernates, restarts, shuts down, or cancels a scheduled shutdown.",vec![json!({"key":"operation","label":"Operation","type":"select","default":"lock","options":[["lock","Lock workstation"],["sleep","Sleep"],["hibernate","Hibernate"],["shutdown","Shut down"],["restart","Restart"],["cancel_shutdown","Cancel pending shutdown"]]}),json!({"key":"delaySec","label":"Shutdown/restart delay","type":"number","min":0,"max":600,"step":5,"unit":"s","default":60,"show":{"key":"operation","in":["shutdown","restart"]}}),json!({"preset":"onFail"})],"Power: {operation}","Shutdown/restart default to a 60-second cancellation window. Sleep/hibernate availability depends on hardware and power policy. This block is marked risky; use it only in workflows you trust.")}
 struct PowerControl;
 #[async_trait]
-impl Block for PowerControl{
- fn title(&self)-> &'static str{"Power Control"}fn category(&self)->Cat{Cat::Action}fn risky(&self)->bool{true}fn supports_timeout(&self)->bool{true}fn spec(&self)->Option<Value>{Some(power_spec())}
- fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&power_spec(),c)}
- async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{self.validate(&cx.cfg)?;let op=text(&cx.cfg,"operation");let delay=rng(&cx.cfg,"delaySec",60.0,0.0,600.0,"Shutdown delay")? as u32;let script=match op.as_str(){"lock"=>"rundll32.exe user32.dll,LockWorkStation".to_string(),"sleep"=>"Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class PowerNative { [DllImport(\"powrprof.dll\", SetLastError=true)] public static extern bool SetSuspendState(bool hibernate,bool forceCritical,bool disableWakeEvent); }'; [void][PowerNative]::SetSuspendState($false,$false,$false)".into(),"hibernate"=>"shutdown.exe /h".into(),"shutdown"=>format!("shutdown.exe /s /t {delay} /c \"Scheduled by 00047; use Cancel shutdown to abort.\""),"restart"=>format!("shutdown.exe /r /t {delay} /c \"Scheduled by 00047; use Cancel shutdown to abort.\""),"cancel_shutdown"=>"shutdown.exe /a".into(),_=>return Err("Unknown power operation".into())};let out=powershell(cx,&format!("$ErrorActionPreference='Stop'; {script}; 'Power operation requested.'")).await?;(cx.log)("warn",format!("Power control action '{}': {}",op,out));Ok(Outcome::Satisfied)}
+impl Block for PowerControl {
+    fn title(&self) -> &'static str { "Power Control" }
+    fn category(&self) -> Cat { Cat::Action }
+    fn risky(&self) -> bool { true }
+    fn supports_timeout(&self) -> bool { true }
+    fn spec(&self) -> Option<Value> { Some(power_spec()) }
+    fn validate(&self, c: &Value) -> Result<(), String> {
+        spec::validate(&power_spec(), c)?;
+        let op = text(c, "operation");
+        if !matches!(op.as_str(), "lock" | "sleep" | "hibernate" | "shutdown" | "restart" | "cancel_shutdown") {
+            return Err("Unknown power operation".into());
+        }
+        Ok(())
+    }
+    async fn run(&self, cx: &NodeCx) -> Result<Outcome, String> {
+        self.validate(&cx.cfg)?;
+        let op = text(&cx.cfg, "operation");
+        let delay = rng(&cx.cfg, "delaySec", 60.0, 0.0, 600.0, "Shutdown delay")? as u32;
+        let script = match op.as_str() {
+            "lock" => "rundll32.exe user32.dll,LockWorkStation; if($LASTEXITCODE -ne 0){throw \"LockWorkStation exited with code $LASTEXITCODE\"}".to_string(),
+            "sleep" => "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class PowerNative { [DllImport(\"powrprof.dll\", SetLastError=true)] public static extern bool SetSuspendState(bool hibernate,bool forceCritical,bool disableWakeEvent); }'; $ok=[PowerNative]::SetSuspendState($false,$false,$false); if(-not $ok){$code=[Runtime.InteropServices.Marshal]::GetLastWin32Error(); throw \"Windows refused sleep (Win32 error $code)\"}".to_string(),
+            "hibernate" => "shutdown.exe /h; if($LASTEXITCODE -ne 0){throw \"Hibernate request failed with exit code $LASTEXITCODE\"}".to_string(),
+            "shutdown" => format!("shutdown.exe /s /t {delay} /c \"Scheduled by 00047; use Cancel shutdown to abort.\"; if($LASTEXITCODE -ne 0){{throw \"Shutdown request failed with exit code $LASTEXITCODE\"}}"),
+            "restart" => format!("shutdown.exe /r /t {delay} /c \"Scheduled by 00047; use Cancel shutdown to abort.\"; if($LASTEXITCODE -ne 0){{throw \"Restart request failed with exit code $LASTEXITCODE\"}}"),
+            "cancel_shutdown" => "shutdown.exe /a; if($LASTEXITCODE -ne 0){throw \"Cancel shutdown failed with exit code $LASTEXITCODE\"}".to_string(),
+            _ => return Err("Unknown power operation".into()),
+        };
+        let out = powershell(cx, &format!("$ErrorActionPreference='Stop'; {script}; 'Power operation accepted by Windows.'")).await?;
+        (cx.log)("warn", format!("Power control action '{}': {}", op, out));
+        Ok(Outcome::Satisfied)
+    }
 }
 
 fn delete_spec()->Value{simple_action_spec("Delete or Recycle File","trash-2","Deletes a file or sends it to the Windows Recycle Bin.",vec![json!({"key":"path","label":"File path","type":"text","required":true,"maxLen":2048}),json!({"key":"mode","label":"Deletion method","type":"select","default":"recycle","options":[["recycle","Send to Recycle Bin"],["permanent","Delete permanently"]]}),json!({"preset":"onFail"})],"Delete: {path}","Does not support wildcard patterns. Permanent deletion is irreversible. Recycle Bin behavior depends on volume and Windows policy.")}
@@ -582,4 +736,52 @@ pub(super) fn register_into(m:&mut HashMap<&'static str,Box<dyn Block>>){
  m.insert("act.delete_file",Box::new(DeleteFile));
  m.insert("act.play_sound",Box::new(PlaySoundSpeak));
  m.insert("act.service",Box::new(ServiceControl));
+}
+
+#[cfg(test)]
+mod network_condition_tests {
+    use super::*;
+
+    #[test]
+    fn network_host_parser_handles_urls_paths_and_ports() {
+        assert_eq!(network_host_target("https://example.com/api?q=1"), "example.com");
+        assert_eq!(network_host_target("example.com:8443"), "example.com");
+        assert_eq!(network_host_target("http://[::1]:8080/path"), "::1");
+        assert_eq!(network_host_target("example.org"), "example.org");
+    }
+
+    #[test]
+    fn throughput_samples_compute_rates_for_a_single_check() {
+        assert!((network_rate(1000, 1_001_000, 1.0, "Mbps").unwrap() - 8.0).abs() < 0.001);
+        assert!((network_rate(0, 1_048_576, 1.0, "MiB/s").unwrap() - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn throughput_handles_counter_resets_and_invalid_time() {
+        assert!(network_rate(200, 100, 1.0, "Mbps").is_none());
+        assert!(network_rate(0, 100, 0.0, "Mbps").is_none());
+        assert!(network_rate(0, 100, f64::NAN, "Mbps").is_none());
+    }
+
+    #[test]
+    fn wifi_disconnected_requires_a_real_wireless_interface() {
+        let none = NetSample::default();
+        assert!(!wifi_state_matches("wifi_connected", &none, ""));
+        assert!(!wifi_state_matches("wifi_disconnected", &none, ""));
+        let disconnected = NetSample { wireless_found: true, ..NetSample::default() };
+        assert!(wifi_state_matches("wifi_disconnected", &disconnected, ""));
+        assert!(!wifi_state_matches("wifi_connected", &disconnected, ""));
+        let connected = NetSample { connected: true, wireless: true, wireless_found: true, ssid: "office".into(), ..NetSample::default() };
+        assert!(wifi_state_matches("wifi_connected", &connected, ""));
+        assert!(wifi_state_matches("ssid", &connected, "OFFICE"));
+        assert!(!wifi_state_matches("ssid", &connected, "guest"));
+    }
+
+    #[test]
+    fn throughput_comparison_honors_both_operators() {
+        assert!(network_rate_matches(2.1, 2.0, "above"));
+        assert!(!network_rate_matches(2.0, 2.0, "above"));
+        assert!(network_rate_matches(2.0, 2.0, "below"));
+        assert!(!network_rate_matches(2.1, 2.0, "below"));
+    }
 }

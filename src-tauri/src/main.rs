@@ -12,6 +12,7 @@ mod logstore;
 mod model;
 mod store;
 mod sys;
+mod secrets;
 
 use engine::{Engine, Runtime};
 use model::{Automation, LogEntry, RunRecord};
@@ -207,6 +208,26 @@ async fn stop_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), 
 }
 
 #[tauri::command]
+fn pause_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.pause(&id)
+}
+
+#[tauri::command]
+fn resume_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.resume(&id)
+}
+
+#[tauri::command]
+fn get_breakpoints(eng: State<'_, Arc<Engine>>, id: String) -> Vec<String> {
+    eng.get_breakpoints(&id)
+}
+
+#[tauri::command]
+fn set_breakpoint(eng: State<'_, Arc<Engine>>, id: String, node_id: String, enabled: bool) -> Result<bool, String> {
+    eng.set_breakpoint(&id, &node_id, enabled)
+}
+
+#[tauri::command]
 async fn restart_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
     let e = eng.inner().clone();
     e.restart(&id).await
@@ -225,6 +246,26 @@ fn get_logs(eng: State<'_, Arc<Engine>>, since: Option<u64>, auto_id: Option<Str
 #[tauri::command]
 fn get_history(eng: State<'_, Arc<Engine>>, id: String) -> Vec<RunRecord> {
     eng.history(&id)
+}
+
+#[tauri::command]
+fn get_workflow_variables(eng: State<'_, Arc<Engine>>, id: String) -> serde_json::Value {
+    eng.workflow_variables(&id)
+}
+
+#[tauri::command]
+fn list_secrets(eng: State<'_, Arc<Engine>>) -> Result<Vec<String>, String> {
+    eng.list_secrets()
+}
+
+#[tauri::command]
+fn save_secret(eng: State<'_, Arc<Engine>>, name: String, value: String) -> Result<(), String> {
+    eng.save_secret(&name, &value)
+}
+
+#[tauri::command]
+fn delete_secret(eng: State<'_, Arc<Engine>>, name: String) -> Result<bool, String> {
+    eng.delete_secret(&name)
 }
 
 #[tauri::command]
@@ -660,10 +701,18 @@ fn main() {
             delete_automation,
             start_automation,
             stop_automation,
+            pause_automation,
+            resume_automation,
+            get_breakpoints,
+            set_breakpoint,
             restart_automation,
             get_runtime,
             get_logs,
             get_history,
+            get_workflow_variables,
+            list_secrets,
+            save_secret,
+            delete_secret,
             clear_logs,
             app_stats,
             get_autostart,

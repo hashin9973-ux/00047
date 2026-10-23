@@ -4,11 +4,12 @@ use crate::{
     store::Store,
 };
 use crate::logstore::LogStore;
+use crate::secrets::SecretVault;
 use futures::future::BoxFuture;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
@@ -16,8 +17,35 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter};
-use tokio::task::JoinHandle;
+use tokio::{sync::Notify, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
+
+fn is_sensitive_variable_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    ["password", "passwd", "secret", "token", "api_key", "apikey", "authorization", "cookie", "credential"]
+        .iter().any(|needle| lower.contains(needle))
+}
+
+#[cfg(test)]
+mod workflow_variable_inspector_tests {
+    use super::*;
+
+    #[test]
+    fn redacts_sensitive_variable_names() {
+        for name in ["api_token", "refreshToken", "password", "my_secret", "authorization", "session_cookie", "credential"] {
+            assert!(is_sensitive_variable_name(name), "{name} should be redacted");
+        }
+        assert!(!is_sensitive_variable_name("result_count"));
+    }
+
+    #[test]
+    fn internal_loop_state_is_separate_from_user_inspector_keys() {
+        assert!(is_internal_variable_name("__00047.break.items"));
+        assert!(!is_internal_variable_name("items"));
+    }
+}
+
+fn is_internal_variable_name(name: &str) -> bool { name.starts_with("__00047.") }
 
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -26,9 +54,29 @@ pub fn now_ms() -> u64 {
 const LOG_CAP: usize = 5000;
 const HIST_CAP: usize = 50;
 
+struct RunPause {
+    paused: AtomicBool,
+    breakpoint_hit: AtomicBool,
+    current_node: Mutex<Option<String>>,
+    skip_once: Mutex<HashSet<String>>,
+    notify: Notify,
+}
+impl RunPause {
+    fn new() -> Self {
+        Self {
+            paused: AtomicBool::new(false),
+            breakpoint_hit: AtomicBool::new(false),
+            current_node: Mutex::new(None),
+            skip_once: Mutex::new(HashSet::new()),
+            notify: Notify::new(),
+        }
+    }
+}
+#[derive(Clone)]
 struct RunHandle {
     token: CancellationToken,
     run_id: u64,
+    pause: Arc<RunPause>,
 }
 
 #[derive(Serialize)]
@@ -40,9 +88,15 @@ pub struct Runtime {
 pub struct Engine {
     app: AppHandle,
     pub store: Arc<Store>,
+    secrets: Arc<SecretVault>,
     runs: Mutex<HashMap<String, RunHandle>>,
+    breakpoints: Mutex<HashMap<String, HashSet<String>>>,
     autos: Mutex<HashMap<String, AutoRuntime>>,
     nodes: Mutex<HashMap<String, HashMap<String, NodeState>>>,
+    /// Active per-run variable stores, separate from the persisted automation configuration.
+    variable_stores: Mutex<HashMap<String, Arc<Mutex<HashMap<String, Value>>>>>,
+    /// Last completed run's safe-to-inspect variable snapshot, retained for debugger visibility.
+    last_variables: Mutex<HashMap<String, Value>>,
     logs: Mutex<VecDeque<LogEntry>>,
     hist: Mutex<HashMap<String, VecDeque<RunRecord>>>,
     seq: AtomicU64,
@@ -68,9 +122,13 @@ impl Engine {
         Engine {
             app,
             store,
+            secrets: Arc::new(SecretVault::new(dir.join("secrets.json"))),
             runs: Default::default(),
+            breakpoints: Default::default(),
             autos: Default::default(),
             nodes: Default::default(),
+            variable_stores: Default::default(),
+            last_variables: Default::default(),
             logs: Mutex::new(logs),
             hist: Mutex::new(hist),
             seq: AtomicU64::new(seq),
@@ -79,6 +137,10 @@ impl Engine {
             disk,
         }
     }
+
+    pub fn list_secrets(&self) -> Result<Vec<String>, String> { self.secrets.list_names() }
+    pub fn save_secret(&self, name: &str, value: &str) -> Result<(), String> { self.secrets.save(name, value) }
+    pub fn delete_secret(&self, name: &str) -> Result<bool, String> { self.secrets.delete(name) }
 
     // ----- UI visibility (live events are only sent while the window is visible) -----
     pub fn visible(&self) -> bool {
@@ -159,6 +221,23 @@ impl Engine {
         self.hist.lock().unwrap().get(id).map(|h| h.iter().cloned().collect()).unwrap_or_default()
     }
 
+    /// Returns an inspector snapshot of the active or most recently completed run.
+    /// Potential secrets are redacted before crossing the UI boundary.
+    pub fn workflow_variables(&self, id: &str) -> Value {
+        let active = self.variable_stores.lock().ok().and_then(|stores| stores.get(id).cloned());
+        let values = if let Some(store) = active {
+            store.lock().ok().map(|map| Value::Object(map.iter().filter(|(key, _)| !key.starts_with("__00047.")).map(|(key, value)| {
+                (key.clone(), if is_sensitive_variable_name(key) { Value::String("[REDACTED]".into()) } else { value.clone() })
+            }).collect())).unwrap_or_else(|| json!({}))
+        } else {
+            self.last_variables.lock().ok().and_then(|values| values.get(id).cloned()).unwrap_or_else(|| json!({}))
+        };
+        json!({
+            "active": self.variable_stores.lock().map(|stores| stores.contains_key(id)).unwrap_or(false),
+            "variables": values
+        })
+    }
+
     // ----- control -----
     pub fn start(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let auto = self.store.get(id).ok_or_else(|| "automation not found".to_string())?;
@@ -169,27 +248,83 @@ impl Engine {
             return Err(errs.join("\n"));
         }
         let token = CancellationToken::new();
+        let pause = Arc::new(RunPause::new());
         let run_id = self.run_seq.fetch_add(1, Ordering::Relaxed) + 1;
         {
             let mut r = self.runs.lock().unwrap();
             if r.contains_key(id) {
                 return Err("already running".into());
             }
-            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id });
+            r.insert(id.to_string(), RunHandle { token: token.clone(), run_id, pause: pause.clone() });
         }
         let me = self.clone();
         tauri::async_runtime::spawn(async move {
-            me.run_automation(auto, token, run_id).await;
+            me.run_automation(auto, token, run_id, pause).await;
         });
         Ok(())
     }
 
     pub fn stop(&self, id: &str) {
-        let t = self.runs.lock().unwrap().get(id).map(|r| r.token.clone());
-        if let Some(t) = t {
-            t.cancel();
+        let handle = self.runs.lock().unwrap().get(id).cloned();
+        if let Some(handle) = handle {
+            handle.token.cancel();
+            handle.pause.paused.store(false, Ordering::SeqCst);
+            handle.pause.notify.notify_waiters();
             self.set_auto(id, |r| r.status = "stopping".into());
         }
+    }
+
+    pub fn pause(&self, id: &str) -> Result<(), String> {
+        let handle = self.runs.lock().unwrap().get(id).cloned().ok_or("automation is not running")?;
+        if handle.pause.paused.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        self.set_auto(id, |r| r.status = "paused".into());
+        self.log("info", id, &self.store.get(id).map(|a| a.name).unwrap_or_default(), None, "Pause requested; active blocks finish their current operation, then execution stops before the next block".into());
+        Ok(())
+    }
+
+    pub fn resume(&self, id: &str) -> Result<(), String> {
+        let handle = self.runs.lock().unwrap().get(id).cloned().ok_or("automation is not running")?;
+        if !handle.pause.paused.swap(false, Ordering::SeqCst) {
+            return Ok(());
+        }
+        if handle.pause.breakpoint_hit.swap(false, Ordering::SeqCst) {
+            if let Some(node_id) = handle.pause.current_node.lock().unwrap().clone() {
+                handle.pause.skip_once.lock().unwrap().insert(node_id);
+            }
+        }
+        *handle.pause.current_node.lock().unwrap() = None;
+        handle.pause.notify.notify_waiters();
+        self.set_auto(id, |r| r.status = "running".into());
+        let name = self.store.get(id).map(|a| a.name).unwrap_or_default();
+        self.log("info", id, &name, None, "Automation resumed".into());
+        Ok(())
+    }
+
+    pub fn set_breakpoint(&self, id: &str, node_id: &str, enabled: bool) -> Result<bool, String> {
+        let auto = self.store.get(id).ok_or("automation not found")?;
+        if !auto.nodes.iter().any(|node| node.id == node_id) {
+            return Err("block not found in this automation".into());
+        }
+        let mut all = self.breakpoints.lock().map_err(|_| "breakpoint store unavailable")?;
+        let set = all.entry(id.to_string()).or_default();
+        if enabled { set.insert(node_id.to_string()); } else { set.remove(node_id); }
+        let is_enabled = set.contains(node_id);
+        if set.is_empty() { all.remove(id); }
+        Ok(is_enabled)
+    }
+
+    pub fn get_breakpoints(&self, id: &str) -> Vec<String> {
+        let mut list: Vec<String> = self.breakpoints.lock().ok()
+            .and_then(|all| all.get(id).map(|set| set.iter().cloned().collect()))
+            .unwrap_or_default();
+        list.sort();
+        list
+    }
+
+    fn has_breakpoint(&self, id: &str, node_id: &str) -> bool {
+        self.breakpoints.lock().ok().and_then(|all| all.get(id).map(|set| set.contains(node_id))).unwrap_or(false)
     }
 
     pub async fn stop_and_wait(&self, id: &str) -> Result<(), String> {
@@ -243,6 +378,7 @@ impl Engine {
             },
             visible: Box::new(|| false),
             variables: Arc::new(Mutex::new(HashMap::new())),
+            call_subflow: Arc::new(|_, _| Box::pin(async { Err::<Value, String>("Nested automation is unavailable in an isolated block test".into()) })),
         };
         let out = tokio::time::timeout(Duration::from_secs(60), blk.run(&cx))
             .await
@@ -253,6 +389,79 @@ impl Engine {
         };
         self.log("info", &auto.id, &auto.name, Some((node.id.clone(), label)), format!("Test run: {txt}"));
         Ok(txt.to_string())
+    }
+
+    async fn run_subflow(self: Arc<Self>, parent: Arc<Ctx>, target_id: String, inputs: Value) -> Result<Value, String> {
+        if parent.subflow_stack.len() >= 16 {
+            return Err("Subflow nesting limit (16) exceeded".into());
+        }
+        if parent.subflow_stack.iter().any(|id| id == &target_id) {
+            return Err(format!("Recursive subflow call detected for automation '{target_id}'"));
+        }
+        let mut auto = self.store.get(&target_id).ok_or_else(|| format!("Subflow automation '{target_id}' was not found"))?;
+        validate_automation(&auto).map_err(|errors| format!("Subflow automation is invalid: {}", errors.join("; ")))?;
+        let entries = entry_nodes(&auto);
+        if entries.is_empty() {
+            return Err(format!("Subflow automation '{}' has no enabled entry blocks", auto.name));
+        }
+        let input_map = inputs.as_object().ok_or("Subflow inputs must be a JSON object")?;
+        let mut variables = HashMap::new();
+        for (name, value) in self.secrets.load_for_run()? {
+            variables.insert(name, Value::String(value));
+        }
+        for (name, value) in input_map {
+            if name.is_empty() || name.len() > 64
+                || !name.chars().next().is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+                || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+                || name.starts_with("__00047.")
+            {
+                return Err(format!("Invalid or reserved subflow input variable name '{name}'"));
+            }
+            variables.insert(name.clone(), value.clone());
+        }
+        let child_original_name = auto.name.clone();
+        let child_original_id = auto.id.clone();
+        let nonce = self.run_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let synthetic_id = format!("{}::subflow::{}::{nonce}", parent.auto.id, child_original_id);
+        auto.id = synthetic_id.clone();
+        auto.name = format!("{} / subflow: {}", parent.log_auto_name, child_original_name);
+        let child_ctx = Arc::new(Ctx {
+            eng: self.clone(),
+            auto: Arc::new(auto),
+            token: parent.token.child_token(),
+            pause: parent.pause.clone(),
+            log_auto_id: parent.log_auto_id.clone(),
+            log_auto_name: parent.log_auto_name.clone(),
+            subflow_stack: parent.subflow_stack.iter().cloned().chain(std::iter::once(child_original_id)).collect(),
+            visits: Default::default(),
+            variables: Arc::new(Mutex::new(variables)),
+            rate: Default::default(),
+            handles: Default::default(),
+            errors: AtomicU32::new(0),
+            aborted: AtomicBool::new(false),
+            single: entries.len() == 1,
+        });
+        self.log("info", &parent.log_auto_id, &parent.log_auto_name, None, format!("Calling subflow '{child_original_name}'"));
+        let handles: Vec<_> = entries.into_iter().map(|entry| tokio::spawn(run_entry(child_ctx.clone(), entry))).collect();
+        for handle in handles {
+            let _ = handle.await;
+        }
+        loop {
+            let handle = child_ctx.handles.lock().unwrap().pop();
+            match handle {
+                Some(handle) => { let _ = handle.await; }
+                None => break,
+            }
+        }
+        self.nodes.lock().unwrap().remove(&synthetic_id);
+        if parent.token.is_cancelled() {
+            return Err("Subflow was cancelled because the parent automation stopped".into());
+        }
+        if child_ctx.aborted.load(Ordering::SeqCst) {
+            return Err(format!("Subflow '{child_original_name}' aborted"));
+        }
+        let result = child_ctx.variables.lock().map_err(|_| "Subflow variables unavailable")?;
+        Ok(Value::Object(result.iter().map(|(key, value)| (key.clone(), value.clone())).collect()))
     }
 
     pub async fn shutdown(&self) {
@@ -292,7 +501,7 @@ impl Engine {
     }
 
     // ----- run -----
-    async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64) {
+    async fn run_automation(self: Arc<Self>, auto: Automation, parent: CancellationToken, run_id: u64, pause: Arc<RunPause>) {
         let started = now_ms();
         self.nodes.lock().unwrap().remove(&auto.id);
         self.set_auto(&auto.id, |r| {
@@ -302,12 +511,31 @@ impl Engine {
         });
         self.log("info", &auto.id, &auto.name, None, "Automation started".into());
         let entries = entry_nodes(&auto);
+        let mut run_variables = HashMap::new();
+        match self.secrets.load_for_run() {
+            Ok(secrets) => {
+                for (name, value) in secrets {
+                    run_variables.insert(name, Value::String(value));
+                }
+            }
+            Err(error) => self.log("error", &auto.id, &auto.name, None, format!("Secret Vault could not be loaded; secret references will fail closed: {error}")),
+        }
+        let variables = Arc::new(Mutex::new(run_variables));
+        self.variable_stores.lock().unwrap().insert(auto.id.clone(), variables.clone());
+        self.last_variables.lock().unwrap().remove(&auto.id);
+        let log_auto_id = auto.id.clone();
+        let log_auto_name = auto.name.clone();
+        let subflow_stack = vec![auto.id.clone()];
         let ctx = Arc::new(Ctx {
             eng: self.clone(),
             auto: Arc::new(auto),
             token: parent.child_token(),
+            pause,
+            log_auto_id,
+            log_auto_name,
+            subflow_stack,
             visits: Default::default(),
-            variables: Arc::new(Mutex::new(HashMap::new())),
+            variables,
             rate: Default::default(),
             handles: Default::default(),
             errors: AtomicU32::new(0),
@@ -346,6 +574,11 @@ impl Engine {
             }
         }
         let label = if errors > 0 { format!("{outcome} ({errors} errors)") } else { outcome.to_string() };
+        let snapshot = ctx.variables.lock().ok().map(|values| Value::Object(values.iter().filter(|(key, _)| !key.starts_with("__00047.")).map(|(key, value)| {
+            (key.clone(), if is_sensitive_variable_name(key) { Value::String("[REDACTED]".into()) } else { value.clone() })
+        }).collect())).unwrap_or_else(|| json!({}));
+        self.last_variables.lock().unwrap().insert(aid.clone(), snapshot);
+        self.variable_stores.lock().unwrap().remove(&aid);
         self.set_auto(&aid, |r| {
             r.status = outcome.into();
             r.started_at = None;
@@ -360,6 +593,12 @@ struct Ctx {
     eng: Arc<Engine>,
     auto: Arc<Automation>,
     token: CancellationToken,
+    pause: Arc<RunPause>,
+    /// Top-level automation identity for logging nested subflow activity in the parent run.
+    log_auto_id: String,
+    log_auto_name: String,
+    /// Original automation identities on the call stack, used to reject recursive subflow cycles.
+    subflow_stack: Vec<String>,
     visits: Mutex<HashMap<String, u64>>,
     variables: Arc<Mutex<HashMap<String, Value>>>,
     rate: Mutex<HashMap<String, VecDeque<Instant>>>,
@@ -370,6 +609,36 @@ struct Ctx {
 }
 
 impl Ctx {
+    async fn wait_before_node(&self, node: &Node) -> bool {
+        loop {
+            if self.token.is_cancelled() { return false; }
+            if !self.pause.paused.load(Ordering::SeqCst) {
+                let skip = self.pause.skip_once.lock().unwrap().remove(&node.id);
+                if !skip && self.eng.has_breakpoint(&self.auto.id, &node.id) {
+                    *self.pause.current_node.lock().unwrap() = Some(node.id.clone());
+                    self.pause.breakpoint_hit.store(true, Ordering::SeqCst);
+                    self.pause.paused.store(true, Ordering::SeqCst);
+                    self.eng.set_auto(&self.auto.id, |r| r.status = "paused".into());
+                    self.eng.set_node(&self.auto.id, &node.id, "paused", None, "Breakpoint · paused before execution".into());
+                    self.log("info", Some(node), "Breakpoint reached; resume to execute this block".into());
+                    continue;
+                }
+                return true;
+            }
+            {
+                let mut current = self.pause.current_node.lock().unwrap();
+                if current.is_none() { *current = Some(node.id.clone()); }
+            }
+            self.eng.set_node(&self.auto.id, &node.id, "paused", None, "Paused before execution".into());
+            let notified = self.pause.notify.notified();
+            if !self.pause.paused.load(Ordering::SeqCst) { continue; }
+            tokio::select! {
+                _ = notified => {},
+                _ = self.token.cancelled() => return false,
+            }
+        }
+    }
+
     fn node(&self, id: &str) -> Option<Node> {
         self.auto.nodes.iter().find(|n| n.id == id).cloned()
     }
@@ -378,7 +647,7 @@ impl Ctx {
         format!("{t} #{}", n.id.chars().take(4).collect::<String>())
     }
     fn log(&self, level: &str, n: Option<&Node>, msg: String) {
-        self.eng.log(level, &self.auto.id, &self.auto.name, n.map(|n| (n.id.clone(), self.label(n))), msg);
+        self.eng.log(level, &self.log_auto_id, &self.log_auto_name, n.map(|n| (n.id.clone(), self.label(n))), msg);
     }
     fn abort(&self) {
         self.aborted.store(true, Ordering::SeqCst);
@@ -564,6 +833,22 @@ pub fn validate_automation(a: &Automation) -> Result<(), Vec<String>> {
             errs.push(format!("duplicate connection {} -> {} ({})", e.from, e.to, e.kind));
         }
     }
+    let mut foreach_targets: HashMap<String, String> = HashMap::new();
+    for node in a.nodes.iter().filter(|node| node.kind == "act.for_each_item" && !node.disabled) {
+        let name = node.cfg.get("loopName").and_then(Value::as_str).unwrap_or("").trim();
+        if !name.is_empty() {
+            if foreach_targets.insert(name.to_string(), node.id.clone()).is_some() {
+                errs.push(format!("For Each loop name '{name}' must be unique"));
+            }
+        }
+    }
+    for node in a.nodes.iter().filter(|node| matches!(node.kind.as_str(), "act.break_loop" | "act.continue_loop") && !node.disabled) {
+        let name = node.cfg.get("loopName").and_then(Value::as_str).unwrap_or("").trim();
+        if name.is_empty() || !foreach_targets.contains_key(name) {
+            errs.push(format!("{} {} references an unknown For Each loop name '{}'", node.kind, short(node), name));
+        }
+    }
+
     for n in &a.nodes {
         if n.disabled {
             continue;
@@ -670,6 +955,7 @@ fn branch(ctx: Arc<Ctx>, start: String) -> BoxFuture<'static, ()> {
 }
 
 async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
+    if !ctx.wait_before_node(node).await { return vec![]; }
     let eng = &ctx.eng;
     let aid = ctx.auto.id.clone();
     let Some(blk) = registry().get(node.kind.as_str()) else {
@@ -722,6 +1008,13 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             Box::new(move || c.eng.visible())
         },
         variables: ctx.variables.clone(),
+        call_subflow: {
+            let parent = ctx.clone();
+            Arc::new(move |target_id, inputs| {
+                let parent = parent.clone();
+                Box::pin(async move { parent.eng.clone().run_subflow(parent, target_id, inputs).await })
+            })
+        },
     };
 
     let timeout = if blk.supports_timeout() { cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0) } else { 0.0 };
@@ -741,6 +1034,20 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     let dt = t0.elapsed().as_secs_f64();
     match res {
         Ok(o) => {
+            if o == Outcome::Satisfied && matches!(node.kind.as_str(), "act.break_loop" | "act.continue_loop") {
+                let name = node.cfg.get("loopName").and_then(Value::as_str).unwrap_or("");
+                if let Some(target) = ctx.auto.nodes.iter().find(|candidate| {
+                    candidate.kind == "act.for_each_item"
+                        && !candidate.disabled
+                        && candidate.cfg.get("loopName").and_then(Value::as_str) == Some(name)
+                }) {
+                    let target_id = target.id.clone();
+                    let detail = if node.kind == "act.break_loop" { "breaking loop" } else { "continuing loop" };
+                    eng.set_node(&aid, &node.id, "done", None, format!("{detail} · {dt:.1}s"));
+                    ctx.log("info", Some(node), format!("Jumped to For Each loop '{name}'"));
+                    return vec![target_id];
+                }
+            }
             let (txt, kinds): (&str, &[&str]) = if blk.category() == Cat::Target {
                 ("passed through", &["target"])
             } else if o == Outcome::Satisfied {
@@ -889,6 +1196,39 @@ mod loop_semantics_tests {
         assert!(validate_automation(&a).is_ok());
         assert_eq!(entry_nodes(&a), vec!["start".to_string()]);
         assert_eq!(loop_start_id(&a).unwrap(), "start");
+    }
+
+    #[test]
+    fn for_each_break_and_continue_require_a_unique_existing_loop() {
+        let a = automation(
+            vec![
+                node("start", "act.start", json!({})),
+                node("each", "act.for_each_item", json!({"loopName":"items","arrayVariable":"records","itemVariable":"item","indexVariable":"index"})),
+                node("continue", "act.continue_loop", json!({"loopName":"items"})),
+                node("break", "act.break_loop", json!({"loopName":"missing"})),
+            ],
+            vec![
+                edge("e1", "start", "each", "after"),
+                edge("e2", "each", "continue", "if"),
+            ],
+        );
+        let errors = validate_automation(&a).unwrap_err().join(" ");
+        assert!(errors.contains("unknown For Each loop name 'missing'"));
+
+        let valid = automation(
+            vec![
+                node("start", "act.start", json!({})),
+                node("each", "act.for_each_item", json!({"loopName":"items","arrayVariable":"records","itemVariable":"item","indexVariable":"index"})),
+                node("continue", "act.continue_loop", json!({"loopName":"items"})),
+                node("break", "act.break_loop", json!({"loopName":"items"})),
+            ],
+            vec![
+                edge("e1", "start", "each", "after"),
+                edge("e2", "each", "continue", "if"),
+                edge("e3", "each", "break", "else"),
+            ],
+        );
+        assert!(validate_automation(&valid).is_ok());
     }
 
     #[test]

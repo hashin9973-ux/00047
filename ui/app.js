@@ -22,10 +22,10 @@ const fmtAgo = ts => {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`; return new Date(ts).toLocaleDateString();
 };
 
-const LABEL = { running: 'Running', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
-const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
+const LABEL = { running: 'Running', paused: 'Paused', stopped: 'Stopped', stopping: 'Stopping…', completed: 'Completed', failed: 'Failed' };
+const S = { autos: [], rt: { autos: {}, nodes: {} }, logs: [], view: 'overview', editId: null, vis: true, hist: [], vars: { active: false, variables: {} }, tab: 'log', lf: { q: '', level: '', auto: '' }, q: '', edSt: '' };
 const stOf = id => S.rt.autos[id]?.status || 'stopped';
-const isRun = id => ['running', 'stopping'].includes(stOf(id));
+const isRun = id => ['running', 'paused', 'stopping'].includes(stOf(id));
 const active = () => S.vis && !document.hidden;
 
  
@@ -125,6 +125,14 @@ const editor = new Editor($('#ed-host'), {
   toast,
   pickFile: async () => { try { return await invoke('pick_file'); } catch (e) { toast('File picker failed: ' + e, 'err'); return null; } },
   testBlock: id => testBlock(id),
+  toggleBreakpoint: async (nodeId, enabled) => {
+    if (!S.editId) return;
+    try {
+      const actual = await invoke('set_breakpoint', { id: S.editId, nodeId, enabled });
+      editor.setBreakpoint(nodeId, !!actual);
+      toast(actual ? 'Breakpoint added' : 'Breakpoint removed');
+    } catch (e) { toast('Breakpoint update failed: ' + (e?.message || e), 'err'); }
+  },
 });
 
 async function testBlock(nodeId) {
@@ -260,8 +268,29 @@ function editorStatus() {
   p.className = 'pill ' + st; p.textContent = LABEL[st] || st;
   $('[data-ed=start]').disabled = run;
   $('[data-ed=stop]').disabled = !run;
+  $('[data-ed=pause]').disabled = !run || st === 'paused' || st === 'stopping';
+  $('[data-ed=resume]').disabled = !run || st !== 'paused';
   if (!run || (st === 'running' && S.edSt !== 'running')) $('#ed-note').textContent = '';
   S.edSt = st;
+}
+
+let varsRefreshTimer = 0;
+async function refreshVariables() {
+  if (!S.editId) return;
+  const id = S.editId;
+  try {
+    const snapshot = await invoke('get_workflow_variables', { id });
+    if (id !== S.editId) return;
+    S.vars = snapshot && typeof snapshot === 'object' ? snapshot : { active: false, variables: {} };
+  } catch {
+    if (id !== S.editId) return;
+    S.vars = { active: false, variables: {} };
+  }
+  if (S.view === 'editor' && S.tab === 'variables') renderDock();
+}
+function scheduleVariablesRefresh() {
+  clearTimeout(varsRefreshTimer);
+  varsRefreshTimer = setTimeout(() => { void refreshVariables(); }, 180);
 }
 
 function renderDock() {
@@ -279,6 +308,18 @@ function renderDock() {
     el.innerHTML = S.hist.length
       ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
       : '<div class="empty">No finished runs yet.</div>';
+  } else if (S.tab === 'variables') {
+    const values = S.vars?.variables && typeof S.vars.variables === 'object' ? S.vars.variables : {};
+    const keys = Object.keys(values).sort((a, b) => a.localeCompare(b));
+    const content = keys.map(key => {
+      let value;
+      try { value = typeof values[key] === 'string' ? values[key] : JSON.stringify(values[key]); }
+      catch { value = '[unavailable]'; }
+      return `<div class="var-row"><span class="var-key">${esc(key)}</span><code class="var-value">${esc(value ?? 'null')}</code></div>`;
+    }).join('');
+    el.innerHTML = `<div class="var-head"><span>${S.vars?.active ? 'Live variables' : 'Last run snapshot'} · ${keys.length}</span><button class="btn" type="button" data-refresh-vars>Refresh</button></div>`
+      + (content || `<div class="empty">${S.vars?.active ? 'No variables have been set in this run yet.' : 'No saved variables from the latest run. Start the automation to inspect values as blocks execute.'}</div>`)
+      + '<div class="var-foot">Variables are isolated per automation run. Variable names suggesting passwords, tokens, secrets, credentials, cookies, or authorization values are redacted here.</div>';
   } else el.innerHTML = HELP;
 }
 
@@ -290,9 +331,11 @@ async function refreshHist() {
 
 function openEditor(id) {
   const a = S.autos.find(x => x.id === id); if (!a) return;
-  S.editId = id; S.edSt = '';
+  S.editId = id; S.edSt = ''; S.vars = { active: false, variables: {} };
   show('editor');
   editor.load(a);
+  editor.setBreakpoints([]);
+  invoke('get_breakpoints', { id }).then(ids => { if (S.editId === id) editor.setBreakpoints(ids); }).catch(() => {});
   $('#ed-name').value = a.name;
   $('#ed-auto').checked = !!a.autoStart;
   for (const [nid, st] of Object.entries(S.rt.nodes[id] || {})) editor.setNodeState(nid, st);
@@ -311,7 +354,12 @@ $('#dock-toggle').addEventListener('click', () => { $('#ed-dock').classList.togg
 $('#dock-tabs').addEventListener('click', e => {
   const b = e.target.closest('button'); if (!b) return;
   S.tab = b.dataset.tab; $('#ed-dock').classList.remove('closed');
-  if (S.tab === 'history') refreshHist(); else renderDock();
+  if (S.tab === 'history') refreshHist();
+  else if (S.tab === 'variables') refreshVariables();
+  else renderDock();
+});
+$('#dock-body').addEventListener('click', e => {
+  if (e.target.closest('[data-refresh-vars]')) refreshVariables();
 });
 
 // ---------- controls ----------
@@ -543,11 +591,15 @@ async function bindEvents() {
   await listen('node-state', e => {
     const { autoId, nodeId, state } = e.payload;
     (S.rt.nodes[autoId] ||= {})[nodeId] = state;
-    if (S.editId === autoId) editor.setNodeState(nodeId, state);
+    if (S.editId === autoId) {
+      editor.setNodeState(nodeId, state);
+      if (S.tab === 'variables') scheduleVariablesRefresh();
+    }
   });
   await listen('auto-state', e => {
     const { id, runtime } = e.payload;
     S.rt.autos[id] = runtime;
+    if (S.editId === id && S.tab === 'variables') scheduleVariablesRefresh();
     if (runtime.status === 'running') {
       S.rt.nodes[id] = {};
       if (S.editId === id) editor.clearStates();
@@ -674,6 +726,67 @@ async function reloadBlocks() {
   try { await invoke('restart_app'); } catch (e) { toast('Restart failed: ' + e, 'err'); }
 }
 $('#btn-blocks').addEventListener('click', () => { $('#pop-settings').hidden = true; openBlocksManager(); });
+
+async function openSecretsVault() {
+  let names;
+  try { names = await invoke('list_secrets'); }
+  catch (e) { toast('Could not load Secret Vault: ' + (e?.message || e), 'err'); return; }
+  const m = $('#modal');
+  const entries = (Array.isArray(names) ? names : []).map(name =>
+    `<div class="secret-entry"><code>${esc(name)}</code><button class="btn danger" type="button" data-secret-delete="${esc(name)}">Delete</button></div>`
+  ).join('');
+  m.innerHTML = `<div class="mbox glass secret-vault">
+    <h3>Secret Vault</h3>
+    <p>Secrets are encrypted with Windows DPAPI for the current Windows user. They are not stored in exported automation files. Use <code>{{secret.name}}</code> in supported text fields to reference a secret.</p>
+    <div class="secret-list">${entries || '<div class="empty">No secrets saved yet.</div>'}</div>
+    <form id="secret-form" autocomplete="off">
+      <label class="secret-field"><span>Secret name</span><input id="secret-name" type="text" maxlength="64" required autocomplete="off" placeholder="api_key"></label>
+      <label class="secret-field"><span>Secret value</span><input id="secret-value" type="password" maxlength="16384" required autocomplete="new-password" spellcheck="false" placeholder="Paste credential"></label>
+      <div class="mbtn"><button class="btn primary" type="submit">Save secret</button><button class="btn" type="button" data-secret-close>Close</button></div>
+    </form>
+  </div>`;
+  m.hidden = false;
+  const close = () => { m.hidden = true; m.innerHTML = ''; };
+  m.onclick = async e => {
+    if (e.target === m || e.target.closest('[data-secret-close]')) { close(); return; }
+    const button = e.target.closest('[data-secret-delete]');
+    if (!button) return;
+    const name = button.dataset.secretDelete;
+    close();
+    const confirmed = await modal({ title: 'Delete secret?', body: `Delete "${name}" from this Windows user’s vault? Workflows referencing it will fail until it is saved again.`, buttons: [['cancel', 'Cancel'], ['del', 'Delete', 'danger']] });
+    if (confirmed !== 'del') { await openSecretsVault(); return; }
+    try {
+      await invoke('delete_secret', { name });
+      toast(`Deleted secret "${name}"`);
+    } catch (err) { toast('Delete failed: ' + (err?.message || err), 'err'); }
+    await openSecretsVault();
+  };
+  const form = $('#secret-form', m);
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const name = $('#secret-name', form).value.trim();
+    const value = $('#secret-value', form).value;
+    if (!name || !value) return;
+    const submit = form.querySelector('[type="submit"]');
+    submit.disabled = true;
+    try {
+      await invoke('save_secret', { name, value });
+      toast(`Saved secret "${name}"`);
+      await openSecretsVault();
+      const nextName = $('#secret-name', $('#modal'));
+      if (nextName) nextName.focus();
+    } catch (err) {
+      toast('Secret could not be saved: ' + (err?.message || err), 'err');
+      submit.disabled = false;
+      $('#secret-value', form).value = '';
+      $('#secret-value', form).focus();
+    }
+  });
+}
+$('#btn-secrets').addEventListener('click', () => {
+  $('#pop-settings').hidden = true;
+  openSecretsVault();
+});
 
 function startWindhawkGlassBridge() {
   const status = $('#glass-refresh-status');

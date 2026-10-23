@@ -47,6 +47,8 @@
         <span id="ed-status" class="pill stopped">Stopped</span>
         <div class="ed-ctl">
           <button class="btn" data-ed="start">▶ Start</button>
+          <button class="btn" data-ed="pause">Ⅱ Pause</button>
+          <button class="btn" data-ed="resume">▶ Resume</button>
           <button class="btn" data-ed="stop">■ Stop</button>
           <button class="btn" data-ed="restart">↻ Restart</button>
         </div>
@@ -64,6 +66,7 @@
           <div id="dock-tabs">
             <button data-tab="log" class="on">Live log</button>
             <button data-tab="history">History</button>
+            <button data-tab="variables">Variables</button>
             <button data-tab="help">Help</button>
           </div>
           <button id="dock-toggle" class="ib" title="Collapse / expand">▾</button>
@@ -80,6 +83,7 @@
       <strong>LiquidGlass backdrop</strong>
       <small id="glass-refresh-status" class="mu">Applying native Windows Acrylic…</small>
     </div>
+    <button class="btn" id="btn-secrets">Secret Vault…</button>
     <button class="btn" id="btn-blocks">Custom blocks…</button>
   </div>
   <div id="modal" class="modal" hidden></div>
