@@ -1118,7 +1118,10 @@ async fn execute_try_catch(ctx: Arc<Ctx>, node: &Node) -> Result<bool,String> {
     let mut proxy=node.clone();
     let try_inputs=node.cfg.get("tryInputMapJson").and_then(Value::as_str).unwrap_or("{}");
     let try_outputs=node.cfg.get("tryOutputMapJson").and_then(Value::as_str).unwrap_or("{}");
-    let catch_inputs=node.cfg.get("catchInputMapJson").and_then(Value::as_str).unwrap_or("{\"errorMessage\":\"errorMessage\"}");
+    let catch_inputs_raw=node.cfg.get("catchInputMapJson").and_then(Value::as_str).unwrap_or("{}");
+    let catch_inputs = if catch_inputs_raw.trim().is_empty() || catch_inputs_raw.trim()=="{}" {
+        json!({"errorMessage":error_var}).to_string()
+    } else { catch_inputs_raw.to_string() };
     let catch_outputs=node.cfg.get("catchOutputMapJson").and_then(Value::as_str).unwrap_or("{}");
     proxy.cfg=json!({"automationId":try_id,"inputMapJson":try_inputs,"outputMapJson":try_outputs,"onFail":"stop"});
     match Box::pin(execute_subflow(ctx.clone(),&proxy)).await {
