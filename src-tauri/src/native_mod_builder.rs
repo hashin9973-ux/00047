@@ -114,13 +114,20 @@ pub async fn build_and_install(
 
     let workspace = BuildWorkspace::create()?;
     let build_dir = workspace.path.join("build");
-    let sdk_argument = format!("-DWMOD_SDK_DIR={}", sdk_root.display());
+
+    // Canonicalize for security checks above, but pass ordinary DOS/UNC paths
+    // to CMake/MSBuild. Their generated project files can mis-handle the
+    // Windows `\\?\\` verbatim prefix (e.g. turn it into `///?/C:/...`).
+    let cmake_project_root = cmake_tool_path(&project_root)?;
+    let cmake_sdk_root = cmake_tool_path(&sdk_root)?;
+    let cmake_build_dir = cmake_tool_path(&build_dir)?;
+    let sdk_argument = format!("-DWMOD_SDK_DIR={}", cmake_sdk_root.display());
 
     let configure_args = vec![
         "-S".into(),
-        project_root.as_os_str().to_os_string(),
+        cmake_project_root.as_os_str().to_os_string(),
         "-B".into(),
-        build_dir.as_os_str().to_os_string(),
+        cmake_build_dir.as_os_str().to_os_string(),
         "-A".into(),
         "x64".into(),
         sdk_argument.into(),
@@ -128,7 +135,7 @@ pub async fn build_and_install(
     let configure_output = run_command(
         "cmake",
         configure_args,
-        &project_root,
+        &cmake_project_root,
         BUILD_TIMEOUT,
         "CMake configure",
     )
@@ -136,7 +143,7 @@ pub async fn build_and_install(
 
     let build_args = vec![
         "--build".into(),
-        build_dir.as_os_str().to_os_string(),
+        cmake_build_dir.as_os_str().to_os_string(),
         "--config".into(),
         "Release".into(),
         "--parallel".into(),
@@ -145,13 +152,13 @@ pub async fn build_and_install(
     let build_output = run_command(
         "cmake",
         build_args,
-        &project_root,
+        &cmake_project_root,
         BUILD_TIMEOUT,
         "CMake build",
     )
     .await?;
 
-    let dll = locate_built_dll(&build_dir, &module_name)?;
+    let dll = locate_built_dll(&cmake_build_dir, &module_name)?;
     let dll_metadata = fs::symlink_metadata(&dll)
         .map_err(|e| format!("Cannot inspect compiled DLL: {e}"))?;
     if dll_metadata.file_type().is_symlink()
@@ -252,6 +259,41 @@ fn safe_module_relative_path(module: &str) -> Result<PathBuf, String> {
         );
     }
     Ok(PathBuf::from("bin").join(components[1]))
+}
+
+#[cfg(windows)]
+fn cmake_tool_path(path: &Path) -> Result<PathBuf, String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let value = path.to_string_lossy();
+    let ordinary = if let Some(rest) = value.strip_prefix(r"\\?\UNC\\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = value.strip_prefix(r"\\?\\") {
+        rest.to_string()
+    } else {
+        value.into_owned()
+    };
+    let normalized = PathBuf::from(ordinary);
+    // Visual Studio project files are not reliably generated for paths beyond
+    // MAX_PATH across all supported CMake/MSBuild combinations. Fail early
+    // with an actionable message rather than a misleading missing-source error.
+    if normalized.as_os_str().encode_wide().count() >= 260 {
+        return Err(format!(
+            "CMake/Visual Studio cannot reliably build from paths of 260 or more UTF-16 code units; move the source project and SDK to shorter paths: {}",
+            normalized.display()
+        ));
+    }
+    Ok(normalized)
+}
+
+#[cfg(test)]
+static SOURCE_BUILD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn lock_source_build_tests() -> std::sync::MutexGuard<'static, ()> {
+    SOURCE_BUILD_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn checked_sdk_directory(sdk_dir: &Path) -> Result<PathBuf, String> {
@@ -429,6 +471,7 @@ mod tests {
 
     #[test]
     fn only_one_source_build_can_run_at_a_time() {
+        let _serial = lock_source_build_tests();
         let first = BuildPermit::acquire().unwrap();
         assert!(BuildPermit::acquire().is_err());
         drop(first);
@@ -436,8 +479,24 @@ mod tests {
     }
 
     #[cfg(windows)]
+    #[test]
+    fn cmake_tool_path_normalizes_verbatim_dos_and_unc_paths() {
+        assert_eq!(
+            cmake_tool_path(Path::new(r"\\?\C:\build\source")).unwrap(),
+            PathBuf::from(r"C:\build\source")
+        );
+        assert_eq!(
+            cmake_tool_path(Path::new(r"\\?\UNC\server\share\source")).unwrap(),
+            PathBuf::from(r"\\server\share\source")
+        );
+        let long = PathBuf::from(format!(r"C:\{}", "a".repeat(270)));
+        assert!(cmake_tool_path(&long).unwrap_err().contains("260 or more UTF-16 code units"));
+    }
+
+    #[cfg(windows)]
     #[tokio::test]
     async fn in_app_builder_compiles_validates_and_installs_disabled() {
+        let _serial = lock_source_build_tests();
         const MOD_ID: &str = "com.example.inapp-builder-smoke";
         const MODULE_NAME: &str = "com_example_inapp_builder_smoke";
         let root = std::env::temp_dir().join(format!(
