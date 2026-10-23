@@ -169,7 +169,10 @@ try {{
     }}
   }}
 }} catch {{}}
-if ($hint.Length -gt 0) {{
+if ($hint.Length -gt 0 -and $wlanName.Length -gt 0 -and $wlanName.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0) {{
+  $a=$all | Where-Object {{ $_.Name -ieq $wlanName }} | Select-Object -First 1
+  if ($null -eq $a) {{ $a=$all | Where-Object {{ $_.Name.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.InterfaceDescription.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 }} | Select-Object -First 1 }}
+}} elseif ($hint.Length -gt 0) {{
   $a=$all | Where-Object {{ $_.Name.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 -or $_.InterfaceDescription.IndexOf($hint,[StringComparison]::OrdinalIgnoreCase) -ge 0 }} | Select-Object -First 1
 }} elseif ($wlanName.Length -gt 0) {{
   $a=$all | Where-Object {{ $_.Name -ieq $wlanName }} | Select-Object -First 1
@@ -286,7 +289,6 @@ impl Block for NetworkCondition {
                 if mode == "download" || mode == "upload" {
                     // A one-shot probe previously always returned false because its first and
                     // only counter sample had no baseline. Take two readings within this probe.
-                    let sample_started=Instant::now();
                     let first=net_sample(cx,&adapter).await?;
                     if !first.adapter_found {
                         (cx.report)("running", None, "No matching network adapter was found".into());
@@ -296,6 +298,7 @@ impl Block for NetworkCondition {
                         (cx.report)("waiting", None, format!("Could not read byte counters for {}",first.adapter));
                         return Ok(false);
                     };
+                    let sample_started=Instant::now();
                     tokio::time::sleep(Duration::from_millis(400)).await;
                     if cx.token.is_cancelled() { return Err("cancelled".into()); }
                     let second=net_sample(cx,&adapter).await?;
