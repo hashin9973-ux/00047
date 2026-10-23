@@ -38,6 +38,15 @@ fn selectors(c:&Value)->Result<(String,String,String,String,String,String),Strin
  if !matches!(enabled.as_str(),"enabled"|"disabled"|"any"){return Err("Unknown enabled state filter".into())}
  Ok((id,name,ctl,proc,title,enabled))
 }
+fn expand_ui_config(cx:&NodeCx,c:&Value)->Result<Value,String>{
+ let mut expanded=c.clone();
+ for key in ["automationId","elementName","processName","windowTitle","value"] {
+  if let Some(value)=c.get(key).and_then(Value::as_str) {
+   expanded[key]=Value::String(cx.expand_template(value)?);
+  }
+ }
+ Ok(expanded)
+}
 fn make_query_script(c:&Value, operation:&str)->Result<String,String>{
  let (id,name,ctl,proc,title,enabled)=selectors(c)?;
  let value=raw(c,"value");
@@ -75,7 +84,8 @@ impl Block for UiElementCondition{
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&condition_spec(),c)?;no_nul(c,&["automationId","elementName","processName","windowTitle"])?;selectors(c).map(|_|())?;extra::wait_settings(c).map(|_|())}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
   self.validate(&cx.cfg)?;
-  let script=make_query_script(&cx.cfg,"query")?;
+  let expanded=expand_ui_config(cx,&cx.cfg)?;
+  let script=make_query_script(&expanded,"query")?;
   let(behavior,poll,stable,timeout)=extra::wait_settings(&cx.cfg)?;
   extra::poll_condition(cx,&behavior,poll,stable,timeout,||Box::pin(async{
     let out=extra::powershell(cx,&script).await?;
@@ -94,7 +104,7 @@ impl Block for UiAutomationAction{
  fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&action_spec(),c)?;no_nul(c,&["automationId","elementName","processName","windowTitle","value"])?;selectors(c).map(|_|())?;let op=text(c,"operation");if !matches!(op.as_str(),"invoke"|"focus"|"set_value"|"toggle"|"select"){return Err("Unknown UI Automation operation".into())}if op=="set_value"&&raw(c,"value").is_empty(){return Err("Value is required for Set text value".into())}Ok(())}
  async fn run(&self,cx:&NodeCx)->Result<Outcome,String>{
   self.validate(&cx.cfg)?;
-  let operation=text(&cx.cfg,"operation");let script=make_query_script(&cx.cfg,&operation)?;
+  let operation=text(&cx.cfg,"operation");let expanded=expand_ui_config(cx,&cx.cfg)?;let script=make_query_script(&expanded,&operation)?;
   let out=extra::powershell(cx,&script).await?;let v=parse_result(&out)?;
   if v.get("count").and_then(Value::as_u64)!=Some(1){return Err("UI selector must match exactly one enabled control".into())}
   if !v.get("ok").and_then(Value::as_bool).unwrap_or(false){return Err(format!("UI Automation operation failed: {}",v.get("error").and_then(Value::as_str).unwrap_or("control pattern not supported")))}
