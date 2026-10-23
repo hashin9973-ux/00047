@@ -81,6 +81,8 @@ pub struct NodeCx {
     pub visible: Flag,
     /// Variables are shared by every block in this automation run and are discarded when it ends.
     pub variables: Arc<Mutex<HashMap<String, Value>>>,
+    /// Plaintext secrets expanded during this run; retained only in memory to redact logs and node details.
+    pub secrets_to_redact: Arc<Mutex<Vec<String>>>,
 }
 
 impl NodeCx {
@@ -118,6 +120,10 @@ impl NodeCx {
             let name = &after[..end];
             if let Some(secret_name) = name.strip_prefix("secret:") {
                 let secret = crate::secrets::get(secret_name)?;
+                if !secret.is_empty() {
+                    let mut known = self.secrets_to_redact.lock().map_err(|e| e.to_string())?;
+                    if !known.iter().any(|x| x == &secret) { known.push(secret.clone()); }
+                }
                 output.push_str(&secret);
                 rest = &after[end + 2..];
                 continue;
@@ -138,6 +144,20 @@ impl NodeCx {
         output.push_str(rest);
         Ok(output)
     }
+}
+
+
+/// Replaces expanded secrets in messages before they reach persistent logs or UI node details.
+/// Extremely short values are intentionally not substring-redacted because that would corrupt
+/// nearly every ordinary diagnostic; callers should avoid using low-entropy values as secrets.
+pub fn redact_message(secrets: &Mutex<Vec<String>>, input: &str) -> String {
+    let mut output = input.to_string();
+    if let Ok(known) = secrets.lock() {
+        for secret in known.iter().filter(|s| s.chars().count() >= 4) {
+            output = output.replace(secret, "[REDACTED]");
+        }
+    }
+    output
 }
 
 #[async_trait]
