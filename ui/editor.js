@@ -819,8 +819,16 @@ if (A.kind === 'act.loop') {
       let inp;
       if (f.type === 'select') {
         inp = document.createElement('select');
-        inp.innerHTML = f.options.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+        inp.innerHTML = f.options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('');
         inp.value = n.cfg[f.key];
+      } else if (f.type === 'automation') {
+        inp = document.createElement('select');
+        const autos = typeof this.hooks.getAutomations === 'function' ? this.hooks.getAutomations() : [];
+        const current = String(n.cfg[f.key] ?? '');
+        const options = autos.map(a => `<option value="${esc(a.id)}">${esc(a.name || a.id)}</option>`);
+        if (current && !autos.some(a => a.id === current)) options.unshift(`<option value="${esc(current)}">Missing automation · ${esc(current)}</option>`);
+        inp.innerHTML = '<option value="">Select saved automation…</option>' + options.join('');
+        inp.value = current;
       } else if (f.type === 'bool') {
         inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!n.cfg[f.key];
         row.classList.add('chk'); row.prepend(inp);
@@ -837,7 +845,7 @@ if (A.kind === 'act.loop') {
         inp.spellcheck = false;
         inp.value = n.cfg[f.key] ?? '';
       }
-      inp.addEventListener(f.type === 'select' || f.type === 'bool' ? 'change' : 'input', () => {
+      inp.addEventListener(f.type === 'select' || f.type === 'automation' || f.type === 'bool' ? 'change' : 'input', () => {
         n.cfg[f.key] = f.type === 'bool' ? inp.checked : f.type === 'number' ? (inp.value === '' ? null : Number(inp.value)) : inp.value;
 this.refresh(n); if (!n.collapsed) this.pushApart(n.id); this.changed('f' + n.id + f.key);
       });
