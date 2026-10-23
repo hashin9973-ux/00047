@@ -207,6 +207,26 @@ async fn stop_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), 
 }
 
 #[tauri::command]
+fn pause_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.pause(&id)
+}
+
+#[tauri::command]
+fn resume_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
+    eng.resume(&id)
+}
+
+#[tauri::command]
+fn get_breakpoints(eng: State<'_, Arc<Engine>>, id: String) -> Vec<String> {
+    eng.get_breakpoints(&id)
+}
+
+#[tauri::command]
+fn set_breakpoint(eng: State<'_, Arc<Engine>>, id: String, node_id: String, enabled: bool) -> Result<bool, String> {
+    eng.set_breakpoint(&id, &node_id, enabled)
+}
+
+#[tauri::command]
 async fn restart_automation(eng: State<'_, Arc<Engine>>, id: String) -> Result<(), String> {
     let e = eng.inner().clone();
     e.restart(&id).await
@@ -650,6 +670,10 @@ fn main() {
             delete_automation,
             start_automation,
             stop_automation,
+            pause_automation,
+            resume_automation,
+            get_breakpoints,
+            set_breakpoint,
             restart_automation,
             get_runtime,
             get_logs,
