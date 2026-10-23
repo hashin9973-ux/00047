@@ -299,8 +299,19 @@ function renderDock() {
     el.innerHTML = rows.join('') || '<div class="empty">No events yet. Start the automation to see live logs.</div>';
   } else if (S.tab === 'history') {
     el.innerHTML = S.hist.length
-      ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
+      ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span>${r.snapshot ? `<button class="btn snapshot-run" data-snapshot-run="${r.id}">Copy snapshot</button>` : ''}</div>`).join('')
       : '<div class="empty">No finished runs yet.</div>';
+    el.querySelectorAll('[data-snapshot-run]').forEach(btn => btn.addEventListener('click', async () => {
+      const runId = Number(btn.dataset.snapshotRun), autoId = S.editId;
+      const confirmCopy = await modal({ title: 'Recreate run snapshot?', body: 'This creates a separate editable automation with the saved graph configuration. It does not start the workflow. Review destructive actions before running it.', buttons: [['cancel','Cancel'],['copy','Create copy','primary']] });
+      if (confirmCopy !== 'copy' || !autoId) return;
+      try {
+        const copy = await invoke('recreate_run_snapshot', { id: autoId, runId });
+        S.autos = await invoke('list_automations');
+        toast('Snapshot copied. The workflow was not started.');
+        openEditor(copy.id);
+      } catch (e) { toast('Could not recreate snapshot: ' + String(e?.message || e), 'err'); }
+    }));
   } else if (S.tab === 'variables') {
     const id = S.editId;
     el.innerHTML = '<div class="variable-inspector"><div class="mu">Loading workflow variables…</div></div>';
