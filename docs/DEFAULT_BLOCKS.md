@@ -122,3 +122,12 @@ UI Automation requires an interactive Windows desktop. Some elevated application
 - **Transform Value** trims, changes case, performs literal replacement, splits to an array, parses JSON, applies numeric arithmetic/rounding, or stores the current Unix timestamp.
 
 These data blocks process configured or variable-expanded text within bounded field sizes. They store values in per-run variables rather than logging sensitive data. Treat variables derived from clipboard content, HTTP responses, or UI text as potentially sensitive.
+
+
+### Array iteration and loop control
+
+- **For Each Item** iterates a JSON array in a workflow variable. Each visit stores the current item and a zero-based index in user-selected variables. Wire the loop body back to the iterator; its ELSE output is taken once the array is exhausted.
+- **Break Loop** exits the matching named For Each loop through the iterator's ELSE output.
+- **Continue Loop** jumps directly to the matching iterator to load the next item, skipping the remaining actions in the current body.
+
+Loop names must be unique within an automation. Use a single incoming path to an iterator to avoid concurrent branches competing for the same iteration counter. Internal loop-control values are hidden from the variable inspector.
