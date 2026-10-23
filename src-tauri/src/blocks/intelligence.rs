@@ -654,12 +654,12 @@ $ErrorActionPreference='Stop'
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
-public static class Open0047Hotkey {
- [StructLayout(LayoutKind.Sequential)] public struct MSG { public IntPtr hwnd; public UInt32 message; public UIntPtr wParam; public IntPtr lParam; public UInt32 time; public Int32 x; public Int32 y; }
+public static class Open0047Hotkey {{
+ [StructLayout(LayoutKind.Sequential)] public struct MSG {{ public IntPtr hwnd; public UInt32 message; public UIntPtr wParam; public IntPtr lParam; public UInt32 time; public Int32 x; public Int32 y; }}
  [DllImport("user32.dll", SetLastError=true)] public static extern bool RegisterHotKey(IntPtr hwnd,int id,uint modifiers,uint key);
  [DllImport("user32.dll", SetLastError=true)] public static extern bool UnregisterHotKey(IntPtr hwnd,int id);
  [DllImport("user32.dll", SetLastError=true)] public static extern int GetMessage(out MSG msg,IntPtr hwnd,uint min,uint max);
-}
+}}
 '@
 $registered=[Open0047Hotkey]::RegisterHotKey([IntPtr]::Zero,1,[uint]{bits},[uint]{key})
 if(-not $registered){{throw "RegisterHotKey failed; shortcut may already be in use (Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"}}
