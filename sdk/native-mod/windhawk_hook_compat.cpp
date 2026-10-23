@@ -96,12 +96,25 @@ public:
         return success;
     }
 
-    bool HasOwner(HMODULE owner) noexcept {
-        if (!owner || !LockTable()) return true;
-        const auto ownerValue = reinterpret_cast<std::uintptr_t>(owner);
+    bool ReferencesModule(HMODULE module) noexcept {
+        if (!module || !LockTable()) return true;
+        MODULEINFO info{};
+        if (!GetModuleInformation(GetCurrentProcess(), module, &info, sizeof(info)) ||
+            !info.lpBaseOfDll || info.SizeOfImage == 0) {
+            ReleaseTable();
+            return true; // Fail closed when module bounds are unavailable.
+        }
+        const auto start = reinterpret_cast<std::uintptr_t>(info.lpBaseOfDll);
+        const auto end = start + info.SizeOfImage;
+        if (end < start) {
+            ReleaseTable();
+            return true;
+        }
+        const auto ownerValue = reinterpret_cast<std::uintptr_t>(module);
         bool found = false;
         for (DWORD i = 0; i < table_->count; ++i) {
-            if (table_->entries[i].owner == ownerValue) {
+            const auto target = table_->entries[i].target;
+            if (table_->entries[i].owner == ownerValue || (target >= start && target < end)) {
                 found = true;
                 break;
             }
@@ -237,6 +250,8 @@ struct HookRecord {
     bool enabled = false;
     bool removeQueued = false;
     HMODULE ownerModule = nullptr;
+    bool registryClaimed = false;
+    bool backendRemoved = false;
 };
 
 std::mutex g_mutex;
@@ -261,14 +276,17 @@ void TryUninitializeLocked() noexcept {
 BOOL RestoreCommittedStatesLocked() noexcept {
     if (!g_initialized) return true;
     bool queued = true;
+    bool anyBackendEntries = false;
     for (const auto& entry : g_hooks) {
+        if (entry.second.backendRemoved) continue;
+        anyBackendEntries = true;
         const MH_STATUS status = entry.second.enabled
             ? MH_QueueEnableHook(entry.first)
             : MH_QueueDisableHook(entry.first);
         if (status != MH_OK) queued = false;
     }
     if (!queued) return false;
-    return MH_ApplyQueued() == MH_OK;
+    return !anyBackendEntries || MH_ApplyQueued() == MH_OK;
 }
 
 BOOL ApplyLocked() noexcept {
@@ -278,6 +296,7 @@ BOOL ApplyLocked() noexcept {
     }
 
     std::vector<void*> removals;
+    bool anyBackendOperations = false;
     try {
         removals.reserve(g_hooks.size());
 
@@ -286,23 +305,24 @@ BOOL ApplyLocked() noexcept {
         // functions with each intermediate state visible to running threads.
         for (const auto& entry : g_hooks) {
             const HookRecord& hook = entry.second;
+            if (hook.backendRemoved) {
+                if (hook.removeQueued) removals.push_back(hook.target);
+                continue;
+            }
             const MH_STATUS status = hook.removeQueued
                 ? MH_QueueDisableHook(hook.target)
                 : MH_QueueEnableHook(hook.target);
             if (status != MH_OK) {
-                // Discard any partially queued changes by restoring each hook's
-                // last committed state before returning failure.
                 if (!RestoreCommittedStatesLocked()) {
                     OutputDebugStringW(L"00047: unable to restore queued hook operations.\n");
                 }
                 return FALSE;
             }
+            anyBackendOperations = true;
             if (hook.removeQueued) removals.push_back(hook.target);
         }
 
-        if (MH_ApplyQueued() != MH_OK) {
-            // The backend can fail after applying part of a queue. Re-queue the
-            // state we last committed and apply it as a rollback attempt.
+        if (anyBackendOperations && MH_ApplyQueued() != MH_OK) {
             if (!RestoreCommittedStatesLocked()) {
                 OutputDebugStringW(L"00047: hook batch failed and rollback was unsuccessful.\n");
             }
@@ -310,18 +330,36 @@ BOOL ApplyLocked() noexcept {
         }
 
         for (auto& entry : g_hooks) {
-            entry.second.enabled = !entry.second.removeQueued;
+            if (!entry.second.backendRemoved) {
+                entry.second.enabled = !entry.second.removeQueued;
+            }
         }
 
-        // The whole enable/disable batch has completed; now remove disabled
-        // hook records and their trampolines. Preserve failed removals for retry.
+        // First remove the backend detour; then release its shared cross-mod
+        // claim. If either step fails, retain a record so shutdown can retry.
         bool removalFailed = false;
         for (void* target : removals) {
-            const MH_STATUS status = MH_RemoveHook(target);
-            if (status == MH_OK || status == MH_ERROR_NOT_CREATED) {
-                g_hooks.erase(target);
-            } else {
-                removalFailed = true;
+            auto it = g_hooks.find(target);
+            if (it == g_hooks.end()) continue;
+            HookRecord& hook = it->second;
+            if (!hook.backendRemoved) {
+                const MH_STATUS status = MH_RemoveHook(target);
+                if (status != MH_OK && status != MH_ERROR_NOT_CREATED) {
+                    removalFailed = true;
+                    continue;
+                }
+                hook.backendRemoved = true;
+                hook.enabled = false;
+            }
+            if (hook.registryClaimed) {
+                if (!SharedHookRegistry().Release(target, hook.ownerModule)) {
+                    removalFailed = true;
+                    continue;
+                }
+                hook.registryClaimed = false;
+            }
+            if (hook.backendRemoved && !hook.registryClaimed) {
+                g_hooks.erase(it);
             }
         }
         if (removalFailed) return FALSE;
@@ -329,8 +367,6 @@ BOOL ApplyLocked() noexcept {
         TryUninitializeLocked();
         return TRUE;
     } catch (...) {
-        // Allocation or container exceptions must not escape through the C API.
-        // Repair any queue that was prepared before the failure.
         if (!RestoreCommittedStatesLocked()) {
             OutputDebugStringW(L"00047: exception while preparing hook batch; rollback failed.\n");
         }
@@ -617,27 +653,48 @@ const char* Mnemonic(const unsigned char* bytes, size_t available, const hde64s&
 } // namespace
 
 BOOL Wh_SetFunctionHook(void* targetFunction, void* hookFunction, void** originalFunction) {
+    if (originalFunction) *originalFunction = nullptr;
     if (!targetFunction || !hookFunction || targetFunction == hookFunction) return FALSE;
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_accepting || g_hooks.find(targetFunction) != g_hooks.end() ||
-        !EnsureInitializedLocked()) {
-        if (originalFunction) *originalFunction = nullptr;
+    if (!g_accepting || g_hooks.find(targetFunction) != g_hooks.end()) return FALSE;
+
+    HMODULE ownerModule = CurrentHookOwnerModule();
+    if (!ownerModule || !SharedHookRegistry().Claim(targetFunction, ownerModule)) {
+        return FALSE;
+    }
+    if (!EnsureInitializedLocked()) {
+        (void)SharedHookRegistry().Release(targetFunction, ownerModule);
         return FALSE;
     }
 
     void* trampoline = nullptr;
     const MH_STATUS status = MH_CreateHook(targetFunction, hookFunction, &trampoline);
     if (status != MH_OK) {
-        if (originalFunction) *originalFunction = nullptr;
+        (void)SharedHookRegistry().Release(targetFunction, ownerModule);
         TryUninitializeLocked();
         return FALSE;
     }
 
     try {
-        g_hooks.emplace(targetFunction, HookRecord{targetFunction, hookFunction, trampoline, false, false});
+        const auto inserted = g_hooks.emplace(targetFunction, HookRecord{
+            targetFunction, hookFunction, trampoline, false, false,
+            ownerModule, true, false
+        });
+        if (!inserted.second) {
+            const MH_STATUS removed = MH_RemoveHook(targetFunction);
+            if (removed == MH_OK || removed == MH_ERROR_NOT_CREATED) {
+                (void)SharedHookRegistry().Release(targetFunction, ownerModule);
+                TryUninitializeLocked();
+            }
+            return FALSE;
+        }
     } catch (...) {
-        MH_RemoveHook(targetFunction);
-        if (originalFunction) *originalFunction = nullptr;
+        // If MinHook cleanup or shared-claim release fails, the shared registry
+        // retains the claim and CanUnload() refuses to unmap this module.
+        const MH_STATUS removed = MH_RemoveHook(targetFunction);
+        if (removed == MH_OK || removed == MH_ERROR_NOT_CREATED) {
+            (void)SharedHookRegistry().Release(targetFunction, ownerModule);
+        }
         TryUninitializeLocked();
         return FALSE;
     }
@@ -678,6 +735,8 @@ BOOL CanUnload() noexcept {
             // all removals, and left no MinHook entries registered.
             if (g_accepting || !g_hooks.empty() || g_initialized) return FALSE;
         }
+        HMODULE module = CurrentHookOwnerModule();
+        if (!module || SharedHookRegistry().ReferencesModule(module)) return FALSE;
         return HasNoInFlightModuleFrames() ? TRUE : FALSE;
     } catch (...) {
         return FALSE;
@@ -701,19 +760,31 @@ void ShutdownHookOperations() noexcept {
         // Best-effort retry, but never discard bookkeeping if Windows refuses
         // to remove a hook. CanUnload() stays false and the host retains the DLL.
         for (auto it = g_hooks.begin(); it != g_hooks.end();) {
-            if (it->second.enabled) {
+            HookRecord& hook = it->second;
+            if (!hook.backendRemoved && hook.enabled) {
                 if (MH_DisableHook(it->first) != MH_OK) {
                     ++it;
                     continue;
                 }
-                it->second.enabled = false;
+                hook.enabled = false;
             }
-            const MH_STATUS status = MH_RemoveHook(it->first);
-            if (status == MH_OK || status == MH_ERROR_NOT_CREATED) {
-                it = g_hooks.erase(it);
-            } else {
-                ++it;
+            if (!hook.backendRemoved) {
+                const MH_STATUS status = MH_RemoveHook(it->first);
+                if (status != MH_OK && status != MH_ERROR_NOT_CREATED) {
+                    ++it;
+                    continue;
+                }
+                hook.backendRemoved = true;
+                hook.enabled = false;
             }
+            if (hook.registryClaimed) {
+                if (!SharedHookRegistry().Release(it->first, hook.ownerModule)) {
+                    ++it;
+                    continue;
+                }
+                hook.registryClaimed = false;
+            }
+            it = g_hooks.erase(it);
         }
         TryUninitializeLocked();
         if (!g_hooks.empty() || g_initialized) {

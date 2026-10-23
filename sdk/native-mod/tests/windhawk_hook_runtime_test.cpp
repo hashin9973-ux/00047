@@ -11,6 +11,9 @@ using SimpleBoolFn = BOOL (WINAPI*)();
 using VoidFn = void (WINAPI*)();
 using HoldFn = void (WINAPI*)(BOOL);
 using InsideFn = BOOL (WINAPI*)();
+using AddressFn = void* (WINAPI*)();
+using ExternalInstallFn = BOOL (WINAPI*)(void*, void**);
+using ExternalRemoveFn = BOOL (WINAPI*)(void*);
 
 #define CHECK(expression) do { \
     if (!(expression)) { \
@@ -37,8 +40,30 @@ int wmain(int argc, wchar_t** argv) {
     auto canUnload = reinterpret_cast<SimpleBoolFn>(GetProcAddress(module, "HookRuntimeCanUnload"));
     auto holdDetour = reinterpret_cast<HoldFn>(GetProcAddress(module, "HookRuntimeHoldDetour"));
     auto insideDetour = reinterpret_cast<InsideFn>(GetProcAddress(module, "HookRuntimeInsideDetour"));
+    auto targetAddress = reinterpret_cast<AddressFn>(GetProcAddress(module, "HookRuntimeTargetAddress"));
     CHECK(target && disasm && begin && install && apply && remove &&
-          shutdown && canUnload && holdDetour && insideDetour);
+          shutdown && canUnload && holdDetour && insideDetour && targetAddress);
+
+    // Load a second copy of the same test DLL under a different path to model
+    // two independently linked mod DLLs in one shell process.
+    wchar_t tempDirectory[MAX_PATH]{};
+    const DWORD tempLength = GetTempPathW(_countof(tempDirectory), tempDirectory);
+    CHECK(tempLength > 0 && tempLength < _countof(tempDirectory));
+    wchar_t duplicatePath[MAX_PATH]{};
+    CHECK(swprintf_s(duplicatePath, _countof(duplicatePath),
+        L"%s00047-hook-registry-%lu.dll", tempDirectory, GetCurrentProcessId()) > 0);
+    DeleteFileW(duplicatePath);
+    CHECK(CopyFileW(argv[1], duplicatePath, FALSE) != FALSE);
+    HMODULE secondModule = LoadLibraryW(duplicatePath);
+    CHECK(secondModule != nullptr);
+    auto externalBegin = reinterpret_cast<SimpleBoolFn>(GetProcAddress(secondModule, "HookRuntimeExternalBegin"));
+    auto externalInstall = reinterpret_cast<ExternalInstallFn>(GetProcAddress(secondModule, "HookRuntimeExternalInstall"));
+    auto externalApply = reinterpret_cast<SimpleBoolFn>(GetProcAddress(secondModule, "HookRuntimeExternalApply"));
+    auto externalRemove = reinterpret_cast<ExternalRemoveFn>(GetProcAddress(secondModule, "HookRuntimeExternalRemove"));
+    auto externalShutdown = reinterpret_cast<VoidFn>(GetProcAddress(secondModule, "HookRuntimeExternalShutdown"));
+    auto externalCanUnload = reinterpret_cast<SimpleBoolFn>(GetProcAddress(secondModule, "HookRuntimeExternalCanUnload"));
+    CHECK(externalBegin && externalInstall && externalApply &&
+          externalRemove && externalShutdown && externalCanUnload);
 
     CHECK(target(5) == 7);
     TestDisasmResult disasmResult{};
@@ -51,11 +76,48 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(apply() == TRUE);
     CHECK(target(5) == 17);
 
+    // A second mod DLL must not be able to claim the same target address.
+    void* targetFunction = targetAddress();
+    void* externalOriginal = nullptr;
+    CHECK(targetFunction != nullptr);
+    CHECK(externalBegin() == TRUE);
+    CHECK(externalInstall(targetFunction, &externalOriginal) == FALSE);
+    CHECK(externalOriginal == nullptr);
+    CHECK(target(5) == 17);
+
     CHECK(remove() == TRUE);
     CHECK(target(5) == 17); // removals are queued too
     CHECK(apply() == TRUE);
     CHECK(target(5) == 7);
     CHECK(canUnload() == FALSE); // lifecycle still accepts new hooks
+    shutdown();
+    CHECK(canUnload() == TRUE);
+
+    // Once the first DLL releases the target claim, the second DLL can claim
+    // it. The first module must remain mapped while another mod hooks its code.
+    CHECK(externalInstall(targetFunction, &externalOriginal) == TRUE);
+    CHECK(externalOriginal != nullptr);
+    CHECK(externalApply() == TRUE);
+    CHECK(target(5) == 17);
+    CHECK(canUnload() == FALSE);
+
+    CHECK(externalRemove(targetFunction) == TRUE);
+    CHECK(externalApply() == TRUE);
+    CHECK(target(5) == 7);
+    externalShutdown();
+    CHECK(externalCanUnload() == TRUE);
+    CHECK(FreeLibrary(secondModule) != FALSE);
+    secondModule = nullptr;
+    CHECK(DeleteFileW(duplicatePath) != FALSE);
+
+    // Re-claiming the exact target from the first DLL confirms the cross-mod
+    // registry entry was released after the second DLL removed its hook.
+    CHECK(begin() == TRUE);
+    CHECK(install() == TRUE);
+    CHECK(apply() == TRUE);
+    CHECK(target(5) == 17);
+    CHECK(remove() == TRUE);
+    CHECK(apply() == TRUE);
     shutdown();
     CHECK(canUnload() == TRUE);
 

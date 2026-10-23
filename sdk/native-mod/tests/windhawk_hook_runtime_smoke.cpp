@@ -29,6 +29,38 @@ extern "C" __declspec(dllexport) int WINAPI HookRuntimeTarget(int value) {
     return HookTestTarget(value);
 }
 
+extern "C" __declspec(dllexport) void* WINAPI HookRuntimeTargetAddress(void) {
+    return reinterpret_cast<void*>(&HookTestTarget);
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeExternalBegin(void) {
+    return wmod::windhawk_hook_compat::BeginHookOperations();
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeExternalInstall(
+    void* target, void** original) {
+    const BOOL result = Wh_SetFunctionHook(
+        target, reinterpret_cast<void*>(&HookTestDetour), &g_originalAddress);
+    if (original) *original = result ? g_originalAddress : nullptr;
+    return result;
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeExternalApply(void) {
+    return Wh_ApplyHookOperations();
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeExternalRemove(void* target) {
+    return Wh_RemoveFunctionHook(target);
+}
+
+extern "C" __declspec(dllexport) void WINAPI HookRuntimeExternalShutdown(void) {
+    wmod::windhawk_hook_compat::ShutdownHookOperations();
+}
+
+extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeExternalCanUnload(void) {
+    return wmod::windhawk_hook_compat::CanUnload();
+}
+
 extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeDisasm(WH_DISASM_RESULT* result) {
     return Wh_Disasm(reinterpret_cast<void*>(&HookTestTarget), result);
 }
