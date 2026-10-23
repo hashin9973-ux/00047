@@ -102,6 +102,14 @@ jobs:
           if (-not (Test-Path $testExe)) { throw "Native SDK compatibility test executable was not created." }
           & $testExe
           if ($LASTEXITCODE -ne 0) { throw "Native SDK compatibility test failed with exit code $LASTEXITCODE." }
+
+          $adapterTestExe = Join-Path $build "Release/00047_windhawk_nonhook_adapter_runtime_test.exe"
+          $adapterTestDll = Join-Path $build "Release/00047_windhawk_nonhook_adapter_smoke.dll"
+          if (-not (Test-Path $adapterTestExe)) { throw "Non-hook lifecycle adapter runtime test executable was not created." }
+          if (-not (Test-Path $adapterTestDll)) { throw "Non-hook lifecycle adapter smoke DLL was not created." }
+          & $adapterTestExe $adapterTestDll
+          if ($LASTEXITCODE -ne 0) { throw "Non-hook lifecycle adapter runtime test failed with exit code $LASTEXITCODE." }
+
           $hookTestExe = Join-Path $build "Release/00047_windhawk_hook_runtime_test.exe"
           $hookTestDll = Join-Path $build "Release/00047_windhawk_hook_runtime_smoke.dll"
           if (-not (Test-Path $hookTestExe)) { throw "Native hook runtime test executable was not created." }
