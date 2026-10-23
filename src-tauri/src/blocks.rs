@@ -1122,3 +1122,15 @@ mod expanded_blocks_tests {
         assert!(r["act.service"].validate(&json!({"serviceName":"Spooler","operation":"stop","onFail":"stop","timeoutSec":0})).is_ok());
     }
 }
+
+#[cfg(test)]
+mod secret_redaction_tests {
+    use super::redact_message;
+    use std::sync::Mutex;
+    #[test]
+    fn redact_secret_strings_and_short_tokens_without_corrupting_words() {
+        let values = Mutex::new(vec!["token-abc-123".to_string(), "key".to_string()]);
+        assert_eq!(redact_message(&values, "header token-abc-123 done"), "header [REDACTED] done");
+        assert_eq!(redact_message(&values, "key=value; monkey"), "[REDACTED]=value; monkey");
+    }
+}
