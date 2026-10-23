@@ -894,10 +894,12 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     let aid = ctx.auto.id.clone();
     if !eng.debug_gate(ctx, node).await {
         eng.set_node(&aid, &node.id, "idle", None, "cancelled while paused".into());
+        ctx.trace_node(node, ctx.visit_count(&node.id), "cancelled", "cancelled while paused", 0);
         return vec![];
     }
     let Some(blk) = registry().get(node.kind.as_str()) else {
         ctx.errors.fetch_add(1, Ordering::SeqCst);
+        ctx.trace_node(node, ctx.visit_count(&node.id), "failed", "unknown block type", 0);
         ctx.log("error", Some(node), format!("unknown block type '{}'", node.kind));
         ctx.abort();
         return vec![];
@@ -905,12 +907,14 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     if !ctx.rate_ok(node) {
         ctx.errors.fetch_add(1, Ordering::SeqCst);
         eng.set_node(&aid, &node.id, "failed", None, "runaway guard".into());
+        ctx.trace_node(node, ctx.visit_count(&node.id), "failed", "runaway guard", 0);
         ctx.log("error", Some(node), "Runaway guard tripped: this block ran too often in a short time. Automation aborted. Add a Wait or raise the loop delay / interval.".into());
         ctx.abort();
         return vec![];
     }
     if node.disabled {
         eng.set_node(&aid, &node.id, "done", None, "disabled: skipped".into());
+        ctx.trace_node(node, ctx.visit_count(&node.id), "done", "disabled: skipped", 0);
         ctx.log("info", Some(node), "skipped (block is disabled); following AFTER wires only".into());
         return ctx.out(&node.id, &["after"]);
     }
@@ -947,11 +951,12 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     // not merely perform one action like ordinary blocks.
     if matches!(node.kind.as_str(), "act.for_each_end" | "act.for_each_continue" | "act.for_each_break") {
         eng.set_node(&aid, &node.id, "done", None, "loop control marker".into());
+        ctx.trace_node(node, visit, "done", "loop control marker", 0);
         ctx.log("info", Some(node), format!("{} reached", blk.title()));
         return vec![];
     }
     if node.kind == "act.for_each" {
-        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e); }
+        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e, 0); }
         let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
         let started = Instant::now();
         let result = if timeout > 0.0 {
@@ -962,15 +967,16 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         return match result {
             Ok(()) => {
                 let dt = started.elapsed().as_secs_f64();
+                ctx.trace_node(node, visit, "done", "all items processed", (dt * 1000.0) as u64);
                 eng.set_node(&aid, &node.id, "done", None, format!("all items processed · {dt:.1}s"));
                 ctx.log("info", Some(node), format!("For Each processed all items ({dt:.2}s)"));
                 ctx.out(&node.id, &["after"])
             }
-            Err(e) => route_node_error(ctx, node, e),
+            Err(e) => route_node_error(ctx, node, e, started.elapsed().as_millis() as u64),
         };
     }
     if node.kind == "act.try_catch" {
-        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e); }
+        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e, 0); }
         let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
         let started = Instant::now();
         let result = if timeout > 0.0 {
@@ -980,21 +986,23 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         } else { execute_try_catch(ctx.clone(), node).await };
         if ctx.token.is_cancelled() {
             eng.set_node(&aid, &node.id, "idle", None, "cancelled".into());
+            ctx.trace_node(node, visit, "cancelled", "cancelled", started.elapsed().as_millis() as u64);
             return vec![];
         }
         return match result {
             Ok(caught) => {
                 let dt = started.elapsed().as_secs_f64();
+                ctx.trace_node(node, visit, "done", if caught { "caught and recovered" } else { "try succeeded" }, (dt * 1000.0) as u64);
                 let routes: &[&str] = if caught { &["else", "after"] } else { &["if", "after"] };
                 eng.set_node(&aid, &node.id, "done", None, format!("{} · {dt:.1}s", if caught { "caught and recovered" } else { "try succeeded" }));
                 ctx.log(if caught { "warn" } else { "info" }, Some(node), format!("Try / Catch {} ({dt:.2}s)", if caught { "recovered" } else { "succeeded" }));
                 ctx.out(&node.id, routes)
             }
-            Err(e) => route_node_error(ctx, node, e),
+            Err(e) => route_node_error(ctx, node, e, started.elapsed().as_millis() as u64),
         };
     }
     if node.kind == "act.call_subflow" {
-        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e); }
+        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e, 0); }
         let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
         let started = Instant::now();
         let result = if timeout > 0.0 {
@@ -1005,11 +1013,12 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
         return match result {
             Ok(()) => {
                 let dt = started.elapsed().as_secs_f64();
+                ctx.trace_node(node, visit, "done", "subflow completed", (dt * 1000.0) as u64);
                 eng.set_node(&aid, &node.id, "done", None, format!("subflow completed · {dt:.1}s"));
                 ctx.log("info", Some(node), format!("Subflow completed ({dt:.2}s)"));
                 ctx.out(&node.id, &["if", "after"])
             }
-            Err(e) => route_node_error(ctx, node, e),
+            Err(e) => route_node_error(ctx, node, e, started.elapsed().as_millis() as u64),
         };
     }
 
@@ -1025,6 +1034,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
     };
     if ctx.token.is_cancelled() {
         eng.set_node(&aid, &node.id, "idle", None, String::new());
+        ctx.trace_node(node, visit, "cancelled", "cancelled", t0.elapsed().as_millis() as u64);
         return vec![];
     }
     let dt = t0.elapsed().as_secs_f64();
@@ -1040,6 +1050,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
             if node.kind == "act.loop" {
                 match loop_start_id(&ctx.auto) {
                     Ok(start_id) => {
+                        ctx.trace_node(node, visit, "done", "jumping to Start", (dt * 1000.0) as u64);
                         eng.set_node(&aid, &node.id, "done", None, format!("jumping to Start · {dt:.1}s"));
                         ctx.log("info", Some(node), "Loop redirected execution to Start (implicit connection)".into());
                         return vec![start_id];
@@ -1047,6 +1058,7 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
                     Err(message) => {
                         ctx.errors.fetch_add(1, Ordering::SeqCst);
                         eng.set_node(&aid, &node.id, "failed", None, message.clone());
+                        ctx.trace_node(node, visit, "failed", &message, (dt * 1000.0) as u64);
                         ctx.log("error", Some(node), message);
                         ctx.abort();
                         return vec![];
@@ -1054,17 +1066,19 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
                 }
             }
             eng.set_node(&aid, &node.id, "done", None, format!("{txt} · {dt:.1}s"));
+            ctx.trace_node(node, visit, "done", txt, (dt * 1000.0) as u64);
             ctx.log("info", Some(node), format!("{txt} ({dt:.2}s)"));
             ctx.out(&node.id, kinds)
         }
-        Err(e) => route_node_error(ctx, node, e)
+        Err(e) => route_node_error(ctx, node, e, (dt * 1000.0) as u64)
     }
 }
 
 
-fn route_node_error(ctx: &Arc<Ctx>, node: &Node, e: String) -> Vec<String> {
+fn route_node_error(ctx: &Arc<Ctx>, node: &Node, e: String, duration_ms: u64) -> Vec<String> {
     ctx.errors.fetch_add(1, Ordering::SeqCst);
     ctx.eng.set_node(&ctx.auto.id, &node.id, "failed", None, e.clone());
+    ctx.trace_node(node, ctx.visit_count(&node.id), "failed", &e, duration_ms);
     ctx.log("error", Some(node), format!("failed: {e}"));
     match node.cfg.get("onFail").and_then(Value::as_str).unwrap_or("stop") {
         "else" => ctx.out(&node.id, &["else"]),
@@ -1133,17 +1147,23 @@ async fn run_loop_path(ctx: Arc<Ctx>, start: String) -> Result<LoopMarker,String
         let Some(node)=ctx.node(&id) else {continue};
         match node.kind.as_str() {
             "act.for_each_end" => {
+                let visit=ctx.next_visit(&node.id);
                 ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"loop body boundary".into());
+                ctx.trace_node(&node,visit,"done","loop body boundary",0);
                 ctx.log("info",Some(&node),"For Each End reached".into());
                 return Ok(LoopMarker::End)
             }
             "act.for_each_continue" => {
+                let visit=ctx.next_visit(&node.id);
                 ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"skip to next loop item".into());
+                ctx.trace_node(&node,visit,"done","skip to next loop item",0);
                 ctx.log("info",Some(&node),"For Each Continue reached".into());
                 return Ok(LoopMarker::Continue)
             }
             "act.for_each_break" => {
+                let visit=ctx.next_visit(&node.id);
                 ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"stop current loop".into());
+                ctx.trace_node(&node,visit,"done","stop current loop",0);
                 ctx.log("info",Some(&node),"For Each Break reached".into());
                 return Ok(LoopMarker::Break)
             }
