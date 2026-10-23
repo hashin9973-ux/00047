@@ -864,6 +864,9 @@ impl NativeModManager {
         if !valid_id(id) {
             return Err("Invalid native mod ID.".into());
         }
+        // Persist retry work before removing the enabled intent. If the later
+        // state write or remote unload fails, recovery survives an app restart.
+        self.mark_pending_safe_unload(id)?;
         // Persist disabled intent before touching package files. A damaged or
         // temporarily inaccessible manifest must not keep the background
         // reconciler repeatedly trying to load a mod the user disabled.
@@ -1013,7 +1016,8 @@ impl NativeModManager {
     fn disable_after_load_failure(&self, id: &str, reason: &str) {
         let queue_signature_cleanup = self.signature_policy_enabled()
             && reason.contains("Trusted Authenticode signature is required");
-        let mut persistence_warning = None;
+        let mut persistence_warning = self.mark_pending_safe_unload(id).err()
+            .map(|error| format!("could not persist pending safe-unload work: {error}"));
         if let Ok(mut state) = self.state.lock() {
             state.enabled.remove(id);
             if queue_signature_cleanup {
