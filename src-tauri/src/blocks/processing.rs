@@ -423,12 +423,13 @@ fn foreach_spec()->Value{
         json!({"key":"itemsVar","label":"Array variable","type":"text","required":true,"maxLen":64}),
         json!({"key":"itemVar","label":"Current item variable","type":"text","default":"item","required":true,"maxLen":64}),
         json!({"key":"indexVar","label":"Zero-based index variable","type":"text","default":"index","required":true,"maxLen":64}),
+        json!({"preset":"timeout"}),
         json!({"preset":"onFail"}),
     ],"For each {itemsVar}","Connect the IF output to the loop body and terminate each path with For Each End. After runs after every item is processed. Body execution is sequential.")
 }
 #[async_trait]
 impl Block for ForEach{
-    fn title(&self)-> &'static str{"For Each Item"} fn category(&self)->Cat{Cat::Action}
+    fn title(&self)-> &'static str{"For Each Item"} fn category(&self)->Cat{Cat::Action} fn supports_timeout(&self)->bool{true}
     fn spec(&self)->Option<Value>{Some(foreach_spec())}
     fn validate(&self,c:&Value)->Result<(),String>{spec::validate(&foreach_spec(),c)?;no_nul(c,&["itemsVar","itemVar","indexVar"])?;for k in ["itemsVar","itemVar","indexVar"]{if !valid_name(&txt(c,k)){return Err(format!("{k} must be a valid variable name"))}}if txt(c,"itemVar")==txt(c,"indexVar"){return Err("Item and index variables must be different".into())}Ok(())}
     async fn run(&self,_:&NodeCx)->Result<Outcome,String>{Err("For Each Item is executed by the workflow engine.".into())}
@@ -449,12 +450,13 @@ fn subflow_spec()->Value{
         json!({"key":"automationId","label":"Automation ID to call","type":"text","required":true,"maxLen":128}),
         json!({"key":"inputMapJson","label":"Input mapping JSON (child variable → parent variable)","type":"textarea","rows":3,"default":"{}","maxLen":8000}),
         json!({"key":"outputMapJson","label":"Output mapping JSON (child variable → parent variable)","type":"textarea","rows":3,"default":"{}","maxLen":8000}),
+        json!({"preset":"timeout"}),
         json!({"preset":"onFail"}),
     ],"Call workflow {automationId}","Subflows share the current run's variable store. Maps must be JSON objects of variable-name pairs. A nested failure follows this block's On failure route.")
 }
 #[async_trait]
 impl Block for CallSubflow{
-    fn title(&self)-> &'static str{"Call Subflow"} fn category(&self)->Cat{Cat::Action}
+    fn title(&self)-> &'static str{"Call Subflow"} fn category(&self)->Cat{Cat::Action} fn supports_timeout(&self)->bool{true}
     fn spec(&self)->Option<Value>{Some(subflow_spec())}
     fn validate(&self,c:&Value)->Result<(),String>{
         spec::validate(&subflow_spec(),c)?;no_nul(c,&["automationId","inputMapJson","outputMapJson"])?;
