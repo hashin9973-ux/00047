@@ -11,7 +11,7 @@ fn ps(script:&str,input:&str)->Result<String,String>{
  #[cfg(not(windows))]{let _=(script,input);return Err("Secret storage is available only on Windows.".into())}
  #[cfg(windows)]{
   let mut cmd=Command::new("powershell.exe");
-  cmd.args(["-NoLogo","-NoProfile","-NonInteractive","-Command",script]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(false);
+  cmd.args(["-NoLogo","-NoProfile","-NonInteractive","-Command",script]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
   use std::os::windows::process::CommandExt;cmd.creation_flags(0x08000000);
   let mut child=cmd.spawn().map_err(|e|format!("Could not start DPAPI helper: {e}"))?;
   if let Some(mut stdin)=child.stdin.take(){stdin.write_all(input.as_bytes()).map_err(|e|e.to_string())?;stdin.write_all(b"\n").map_err(|e|e.to_string())?;}
