@@ -84,6 +84,18 @@ impl Default for AutoRuntime {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeTrace {
+    pub automation_id: String,
+    pub node_id: String,
+    pub block_title: String,
+    pub state: String,
+    pub detail: String,
+    pub visit: u64,
+    pub duration_ms: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct RunRecord {
@@ -92,4 +104,7 @@ pub struct RunRecord {
     pub ended_at: u64,
     pub outcome: String,
     pub errors: u32,
+    /// Per-node execution summaries; default keeps existing history files loadable.
+    #[serde(default)]
+    pub trace: Vec<NodeTrace>,
 }
