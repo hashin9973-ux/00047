@@ -811,9 +811,9 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
 
     // Loop and subflow blocks are interpreted by the engine so they can execute graph regions,
     // not merely perform one action like ordinary blocks.
-    if node.kind == "act.for_each_end" {
-        eng.set_node(&aid, &node.id, "done", None, "loop body boundary".into());
-        ctx.log("info", Some(node), "For Each End reached".into());
+    if matches!(node.kind.as_str(), "act.for_each_end" | "act.for_each_continue" | "act.for_each_break") {
+        eng.set_node(&aid, &node.id, "done", None, "loop control marker".into());
+        ctx.log("info", Some(node), format!("{} reached", blk.title()));
         return vec![];
     }
     if node.kind == "act.for_each" {
@@ -831,6 +831,30 @@ async fn exec_node(ctx: &Arc<Ctx>, node: &Node) -> Vec<String> {
                 eng.set_node(&aid, &node.id, "done", None, format!("all items processed · {dt:.1}s"));
                 ctx.log("info", Some(node), format!("For Each processed all items ({dt:.2}s)"));
                 ctx.out(&node.id, &["after"])
+            }
+            Err(e) => route_node_error(ctx, node, e),
+        };
+    }
+    if node.kind == "act.try_catch" {
+        if let Err(e) = blk.validate(&cx.cfg) { return route_node_error(ctx, node, e); }
+        let timeout = cx.cfg.get("timeoutSec").and_then(Value::as_f64).unwrap_or(0.0);
+        let started = Instant::now();
+        let result = if timeout > 0.0 {
+            match tokio::time::timeout(Duration::from_secs_f64(timeout), execute_try_catch(ctx.clone(), node)).await {
+                Ok(r) => r, Err(_) => Err(format!("Try / Catch timed out after {timeout}s")),
+            }
+        } else { execute_try_catch(ctx.clone(), node).await };
+        if ctx.token.is_cancelled() {
+            eng.set_node(&aid, &node.id, "idle", None, "cancelled".into());
+            return vec![];
+        }
+        return match result {
+            Ok(caught) => {
+                let dt = started.elapsed().as_secs_f64();
+                let routes: &[&str] = if caught { &["else", "after"] } else { &["if", "after"] };
+                eng.set_node(&aid, &node.id, "done", None, format!("{} · {dt:.1}s", if caught { "caught and recovered" } else { "try succeeded" }));
+                ctx.log(if caught { "warn" } else { "info" }, Some(node), format!("Try / Catch {} ({dt:.2}s)", if caught { "recovered" } else { "succeeded" }));
+                ctx.out(&node.id, routes)
             }
             Err(e) => route_node_error(ctx, node, e),
         };
@@ -937,9 +961,10 @@ async fn execute_for_each(ctx: Arc<Ctx>, node: &Node) -> Result<(), String> {
     }
     let starts = ctx.out(&node.id,&["if"]);
     if starts.is_empty() { return Err("For Each needs an IF wire to the first block in its loop body".into()); }
-    if !ctx.auto.nodes.iter().any(|n|n.kind=="act.for_each_end") {
-        return Err("Add a For Each End marker to the loop body".into());
+    if !ctx.auto.nodes.iter().any(|n|matches!(n.kind.as_str(),"act.for_each_end"|"act.for_each_continue"|"act.for_each_break")) {
+        return Err("Add a For Each End, For Each Continue, or For Each Break marker to the loop body".into());
     }
+    let total=items.len();
     for (i,item) in items.into_iter().enumerate() {
         if ctx.token.is_cancelled(){return Err("cancelled".into())}
         {
@@ -947,34 +972,72 @@ async fn execute_for_each(ctx: Arc<Ctx>, node: &Node) -> Result<(), String> {
             vars.insert(item_name.to_string(),item);
             vars.insert(index_name.to_string(),Value::from(i as u64));
         }
-        (ctx.eng.app.emit("for-each-progress",json!({"autoId":ctx.auto.id,"nodeId":node.id,"index":i+1,"total":ctx.variables.lock().ok().and_then(|v|v.get(items_name).and_then(Value::as_array).map(|a|a.len())).unwrap_or(i+1)}))).ok();
+        let _ = ctx.eng.app.emit("for-each-progress",json!({"autoId":ctx.auto.id,"nodeId":node.id,"index":i+1,"total":total}));
         ctx.log("debug",Some(node),format!("For Each item {} starting",i+1));
-        let mut found_end=false;
+        let mut ended=false; let mut should_break=false;
         for start in &starts {
-            found_end |= run_loop_path(ctx.clone(),start.clone()).await?;
+            match run_loop_path(ctx.clone(),start.clone()).await? {
+                LoopMarker::End | LoopMarker::Continue => ended=true,
+                LoopMarker::Break => { ended=true; should_break=true; break; }
+                LoopMarker::None => {}
+            }
         }
-        if !found_end { return Err("Loop body path did not reach a For Each End marker".into()); }
+        if !ended { return Err("Loop body path did not reach a For Each End, Continue, or Break marker".into()); }
+        if should_break { break; }
     }
     // Leave the last item value available for diagnostics, matching typical iterator semantics.
     Ok(())
 }
 
-async fn run_loop_path(ctx: Arc<Ctx>, start: String) -> Result<bool,String> {
+#[derive(Clone, Copy)]
+enum LoopMarker { None, End, Continue, Break }
+
+async fn run_loop_path(ctx: Arc<Ctx>, start: String) -> Result<LoopMarker,String> {
     let mut pending=vec![start];
-    let mut reached_end=false;
     while let Some(id)=pending.pop() {
         if ctx.token.is_cancelled(){return Err("cancelled".into())}
         let Some(node)=ctx.node(&id) else {continue};
-        if node.kind=="act.for_each_end" {
-            ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"loop body boundary".into());
-            ctx.log("info",Some(&node),"For Each End reached".into());
-            reached_end=true;
-            continue;
+        match node.kind.as_str() {
+            "act.for_each_end" => {
+                ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"loop body boundary".into());
+                ctx.log("info",Some(&node),"For Each End reached".into());
+                return Ok(LoopMarker::End)
+            }
+            "act.for_each_continue" => {
+                ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"skip to next loop item".into());
+                ctx.log("info",Some(&node),"For Each Continue reached".into());
+                return Ok(LoopMarker::Continue)
+            }
+            "act.for_each_break" => {
+                ctx.eng.set_node(&ctx.auto.id,&node.id,"done",None,"stop current loop".into());
+                ctx.log("info",Some(&node),"For Each Break reached".into());
+                return Ok(LoopMarker::Break)
+            }
+            _ => {}
         }
         let next=exec_node(&ctx,&node).await;
         for id in next.into_iter().rev(){pending.push(id)}
     }
-    Ok(reached_end)
+    Ok(LoopMarker::None)
+}
+
+async fn execute_try_catch(ctx: Arc<Ctx>, node: &Node) -> Result<bool,String> {
+    let try_id=node.cfg.get("tryAutomationId").and_then(Value::as_str).unwrap_or("");
+    let catch_id=node.cfg.get("catchAutomationId").and_then(Value::as_str).unwrap_or("");
+    let error_var=node.cfg.get("errorVar").and_then(Value::as_str).unwrap_or("errorMessage");
+    let mut proxy=node.clone();
+    proxy.cfg=json!({"automationId":try_id,"inputMapJson":"{}","outputMapJson":"{}","onFail":"stop"});
+    match execute_subflow(ctx.clone(),&proxy).await {
+        Ok(()) => Ok(false),
+        Err(try_error) => {
+            if ctx.token.is_cancelled(){return Err("cancelled".into())}
+            let detail:String=try_error.chars().take(2048).collect();
+            ctx.variables.lock().map_err(|e|e.to_string())?.insert(error_var.to_string(),Value::String(detail));
+            proxy.cfg=json!({"automationId":catch_id,"inputMapJson":"{}","outputMapJson":"{}","onFail":"stop"});
+            execute_subflow(ctx.clone(),&proxy).await.map_err(|catch_error|format!("Try subflow failed ({try_error}); catch subflow also failed ({catch_error})"))?;
+            Ok(true)
+        }
+    }
 }
 
 async fn execute_subflow(ctx: Arc<Ctx>, node: &Node) -> Result<(),String> {
