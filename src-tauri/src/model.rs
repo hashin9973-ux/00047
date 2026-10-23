@@ -120,3 +120,53 @@ pub struct RunRecord {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub trace_truncated: bool,
 }
+
+
+#[cfg(test)]
+mod run_trace_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn old_history_records_load_without_trace_or_snapshot() {
+        let record: RunRecord = serde_json::from_value(json!({
+            "id": 12,
+            "startedAt": 100,
+            "endedAt": 150,
+            "outcome": "completed",
+            "errors": 0
+        })).expect("legacy run history should remain readable");
+        assert!(record.snapshot.is_none());
+        assert!(record.trace.is_empty());
+        assert!(!record.trace_truncated);
+    }
+
+    #[test]
+    fn trace_fields_round_trip_in_camel_case() {
+        let record = RunRecord {
+            id: 2,
+            started_at: 10,
+            ended_at: 21,
+            outcome: "failed".into(),
+            errors: 1,
+            snapshot: None,
+            trace: vec![NodeTrace {
+                automation_id: "auto-1".into(),
+                node_id: "node-2".into(),
+                block_title: "Run Command".into(),
+                state: "failed".into(),
+                detail: "exit code 1".into(),
+                visit: 3,
+                duration_ms: 11,
+            }],
+            trace_truncated: true,
+        };
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["trace"][0]["nodeId"], "node-2");
+        assert_eq!(value["trace"][0]["durationMs"], 11);
+        assert_eq!(value["traceTruncated"], true);
+        let decoded: RunRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded.trace[0].visit, 3);
+        assert!(decoded.trace_truncated);
+    }
+}
