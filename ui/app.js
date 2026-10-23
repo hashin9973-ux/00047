@@ -301,6 +301,18 @@ function renderDock() {
     el.innerHTML = S.hist.length
       ? S.hist.map(r => `<div class="lr ${r.outcome === 'failed' ? 'error' : r.outcome === 'stopped' ? 'warn' : 'info'}"><span class="t">${fmtTime(r.startedAt)}</span><span class="lv">${esc(r.outcome)}</span><span class="bl">run ${r.id}</span><span class="ms">${fmtDur(r.endedAt - r.startedAt)}${r.errors ? ` · ${r.errors} errors` : ''}</span></div>`).join('')
       : '<div class="empty">No finished runs yet.</div>';
+  } else if (S.tab === 'variables') {
+    const id = S.editId;
+    el.innerHTML = '<div class="variable-inspector"><div class="mu">Loading workflow variables…</div></div>';
+    if (id) invoke('get_workflow_variables', { id }).then(snapshot => {
+      if (S.view !== 'editor' || S.tab !== 'variables' || S.editId !== id || !$('#dock-body')) return;
+      const root = $('#dock-body');
+      const vars = snapshot.variables || [];
+      root.innerHTML = `<div class="variable-inspector"><div class="variable-inspector-head"><span class="mu">${snapshot.running ? 'Live run variables' : 'Last-run variables'} · values with sensitive-looking names are redacted</span><button class="btn" id="variables-refresh">Refresh</button></div>${vars.length ? `<div class="variable-grid">${vars.map(v => `<div class="variable-row"><code>${esc(v.name)}</code><span class="variable-type">${esc(v.type)}</span><span class="variable-value">${esc(v.value)}</span></div>`).join('')}</div>` : '<div class="empty">No variables have been set for this automation yet.</div>'}</div>`;
+      $('#variables-refresh')?.addEventListener('click', renderDock);
+    }).catch(err => {
+      if (S.view === 'editor' && S.tab === 'variables' && S.editId === id) $('#dock-body').textContent = 'Could not load workflow variables: ' + String(err?.message || err);
+    });
   } else el.innerHTML = HELP;
 }
 
