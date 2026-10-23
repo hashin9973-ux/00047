@@ -61,6 +61,8 @@ struct PersistedState {
     require_trusted_signature: bool,
     #[serde(default)]
     pending_signature_unloads: HashSet<String>,
+    #[serde(default)]
+    pending_safe_unloads: HashSet<String>,
 }
 
 #[derive(Serialize)]
@@ -140,6 +142,7 @@ pub struct NativeModList {
     pub errors: Vec<String>,
     pub require_trusted_signature: bool,
     pub pending_signature_unloads: Vec<String>,
+    pub pending_safe_unloads: Vec<String>,
 }
 
 struct ReadPackage {
@@ -426,6 +429,44 @@ impl NativeModManager {
             .unwrap_or_default()
     }
 
+    fn pending_safe_unloads_snapshot(&self) -> HashSet<String> {
+        self.state
+            .lock()
+            .map(|state| state.pending_safe_unloads.clone())
+            .unwrap_or_default()
+    }
+
+    fn mark_pending_safe_unload(&self, id: &str) -> Result<(), String> {
+        if !valid_id(id) {
+            return Err("Cannot record safe-unload work for an invalid mod ID.".into());
+        }
+        let mut state = self.state
+            .lock()
+            .map_err(|_| "Native mod state is unavailable.".to_string())?;
+        if !state.pending_safe_unloads.insert(id.to_string()) {
+            return Ok(());
+        }
+        if let Err(error) = self.persist_state(&state) {
+            state.pending_safe_unloads.remove(id);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn clear_pending_safe_unload(&self, id: &str) -> Result<(), String> {
+        let mut state = self.state
+            .lock()
+            .map_err(|_| "Native mod state is unavailable.".to_string())?;
+        if !state.pending_safe_unloads.remove(id) {
+            return Ok(());
+        }
+        if let Err(error) = self.persist_state(&state) {
+            state.pending_safe_unloads.insert(id.to_string());
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn clear_pending_signature_unload(&self, id: &str) -> Result<(), String> {
         let mut state = self.state
             .lock()
@@ -440,31 +481,40 @@ impl NativeModManager {
         Ok(())
     }
 
-    fn retry_pending_signature_unloads(&self) {
-        // A pending unload is required for safe lifecycle recovery even when
-        // the user has turned signature enforcement back off.
-        let pending = self.pending_signature_unloads_snapshot();
+    fn retry_pending_safe_unloads(&self) {
+        // Include the signature-specific set for state files written by earlier
+        // builds; all newly detected uncertain unloads use the general safe set.
+        let mut pending = self.pending_safe_unloads_snapshot();
+        pending.extend(self.pending_signature_unloads_snapshot());
         for id in pending {
             let Ok(_transition) = self.lifecycle_gate.lock() else {
                 return;
             };
-            if !self.pending_signature_unloads_snapshot().contains(&id) {
+            if !self.pending_safe_unloads_snapshot().contains(&id)
+                && !self.pending_signature_unloads_snapshot().contains(&id) {
                 continue;
             }
 
             match self.disable_inner(&id) {
-                Ok(status) => match self.clear_pending_signature_unload(&id) {
-                    Ok(()) => self.set_status(&id, format!(
-                        "Trusted-signature cleanup completed during background scan. {status}"
-                    )),
-                    Err(error) => self.set_status(&id, format!(
-                        "DLL unload completed, but cleanup state remains pending because persistence failed: {error}"
-                    )),
-                },
+                Ok(status) => {
+                    // Evaluate both writes so a failure clearing one marker
+                    // cannot accidentally skip clearing the other.
+                    let safe_clear = self.clear_pending_safe_unload(&id);
+                    let signature_clear = self.clear_pending_signature_unload(&id);
+                    match safe_clear.and(signature_clear) {
+                        Ok(()) => self.set_status(&id, format!(
+                            "Deferred safe-unload cleanup completed during background scan. {status}"
+                        )),
+                        Err(error) => self.set_status(&id, format!(
+                            "DLL unload completed, but cleanup state remains pending because persistence failed: {error}"
+                        )),
+                    }
+                }
                 Err(error) => {
+                    let _ = self.mark_pending_safe_unload(&id);
                     self.mark_running_targets_indeterminate(&id, &error);
                     self.set_status(&id, format!(
-                        "Trusted-signature cleanup is still pending; 00047 will retry it during later scans: {error}"
+                        "Safe-unload cleanup is still pending; 00047 will retry during later scans: {error}"
                     ));
                 }
             }
@@ -473,7 +523,8 @@ impl NativeModManager {
 
     fn persist_state(&self, state: &PersistedState) -> Result<(), String> {
         if state.enabled.iter().any(|id| !valid_id(id))
-            || state.pending_signature_unloads.iter().any(|id| !valid_id(id)) {
+            || state.pending_signature_unloads.iter().any(|id| !valid_id(id))
+            || state.pending_safe_unloads.iter().any(|id| !valid_id(id)) {
             return Err("Native mod state contains an invalid mod ID.".into());
         }
         let bytes = serde_json::to_vec_pretty(state)
@@ -579,6 +630,9 @@ impl NativeModManager {
         let mut pending_signature_unloads: Vec<String> =
             self.pending_signature_unloads_snapshot().into_iter().collect();
         pending_signature_unloads.sort();
+        let mut pending_safe_unloads: Vec<String> =
+            self.pending_safe_unloads_snapshot().into_iter().collect();
+        pending_safe_unloads.sort();
         let statuses = self.statuses.lock().map(|s| s.clone()).unwrap_or_default();
         let mut mods = Vec::new();
         let mut errors = Vec::new();
@@ -661,6 +715,7 @@ impl NativeModManager {
             errors,
             require_trusted_signature,
             pending_signature_unloads,
+            pending_safe_unloads,
         }
     }
 
@@ -690,7 +745,8 @@ impl NativeModManager {
         if self.enabled_snapshot().contains(&id) {
             return Err("Disable this native mod before updating its files.".into());
         }
-        if self.pending_signature_unloads_snapshot().contains(&id) {
+        if self.pending_signature_unloads_snapshot().contains(&id)
+            || self.pending_safe_unloads_snapshot().contains(&id) {
             return Err(
                 "This mod has a pending safe-unload operation. Let 00047 complete cleanup before updating its files."
                     .into(),
@@ -753,7 +809,8 @@ impl NativeModManager {
             .lock()
             .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
         let folder = self.package_dir(id)?;
-        if self.pending_signature_unloads_snapshot().contains(id) {
+        if self.pending_signature_unloads_snapshot().contains(id)
+            || self.pending_safe_unloads_snapshot().contains(id) {
             return Err(
                 "A previous DLL image is still pending safe unload. Wait for 00047 to confirm cleanup before enabling this mod."
                     .into(),
@@ -804,51 +861,102 @@ impl NativeModManager {
     }
 
     fn disable_inner(&self, id: &str) -> Result<String, String> {
-        let folder = self.package_dir(id)?;
-        let manifest = load_manifest(&folder)?;
+        // Persist disabled intent before touching package files. A damaged or
+        // temporarily inaccessible manifest must not keep the background
+        // reconciler repeatedly trying to load a mod the user disabled.
         {
             let mut state = self.state.lock().map_err(|_| "Native mod state is unavailable.")?;
             let was_enabled = state.enabled.remove(id);
-            if let Err(e) = self.persist_state(&state) {
+            if let Err(error) = self.persist_state(&state) {
                 if was_enabled {
                     state.enabled.insert(id.to_string());
                 }
-                return Err(e);
+                return Err(error);
             }
         }
 
-        let dll = match module_file_path(&folder, &manifest.module) {
-            Ok(path) => path,
-            Err(e) => {
-                let status = format!("Disabled; unload skipped because the module path is unsafe: {e}");
-                self.mark_running_targets_indeterminate(id, &e);
+        let folder = match self.package_dir(id) {
+            Ok(folder) => folder,
+            Err(error) => {
+                let pending_error = self.mark_pending_safe_unload(id).err();
+                self.mark_running_targets_indeterminate(id, &error);
+                let mut status = format!(
+                    "Disabled intent persisted; safe unload remains pending because the package path is unavailable: {error}"
+                );
+                if let Some(persist_error) = pending_error {
+                    status.push_str(&format!("; could not persist pending safe-unload work: {persist_error}"));
+                }
                 self.set_status(id, status.clone());
                 return Err(status);
             }
         };
+        let manifest = match load_manifest(&folder) {
+            Ok(manifest) => manifest,
+            Err(error) => {
+                let pending_error = self.mark_pending_safe_unload(id).err();
+                self.mark_running_targets_indeterminate(id, &error);
+                let mut status = format!("Disabled; cannot confirm unload because manifest validation failed: {error}");
+                if let Some(persist_error) = pending_error {
+                    status.push_str(&format!("; could not persist pending safe-unload work: {persist_error}"));
+                }
+                self.set_status(id, status.clone());
+                return Err(status);
+            }
+        };
+
+        let dll = match module_file_path(&folder, &manifest.module) {
+            Ok(path) => path,
+            Err(error) => {
+                let pending_error = self.mark_pending_safe_unload(id).err();
+                self.mark_running_targets_indeterminate(id, &error);
+                let mut status = format!("Disabled; unload skipped because the module path is unsafe: {error}");
+                if let Some(persist_error) = pending_error {
+                    status.push_str(&format!("; could not persist pending safe-unload work: {persist_error}"));
+                }
+                self.set_status(id, status.clone());
+                return Err(status);
+            }
+        };
+
         self.mark_loaded_targets_stopping(id);
         match unload_from_targets(&manifest.targets, &dll) {
             Ok(report) => {
                 self.set_target_statuses(id, report.target_statuses);
                 if report.errors.is_empty() {
+                    if let Err(error) = self.clear_pending_safe_unload(id) {
+                        let status = format!(
+                            "Disabled and unloaded from {} process(es), but pending cleanup could not be cleared: {error}",
+                            report.unloaded
+                        );
+                        self.set_status(id, status.clone());
+                        return Err(status);
+                    }
                     let status = format!("Disabled; unloaded from {} process(es)", report.unloaded);
                     self.set_status(id, status.clone());
                     Ok(status)
                 } else {
                     let details = report.errors.join("; ");
+                    let pending_error = self.mark_pending_safe_unload(id).err();
                     self.mark_running_targets_indeterminate(id, &details);
-                    let status = format!(
+                    let mut status = format!(
                         "Disabled; unloaded from {} process(es); unload warning: {}",
                         report.unloaded,
                         details
                     );
+                    if let Some(error) = pending_error {
+                        status.push_str(&format!("; could not persist pending safe-unload work: {error}"));
+                    }
                     self.set_status(id, status.clone());
                     Err(status)
                 }
             }
-            Err(e) => {
-                self.mark_running_targets_indeterminate(id, &e);
-                let status = format!("Disabled; unload warning: {e}");
+            Err(error) => {
+                let pending_error = self.mark_pending_safe_unload(id).err();
+                self.mark_running_targets_indeterminate(id, &error);
+                let mut status = format!("Disabled; unload warning: {error}");
+                if let Some(persist_error) = pending_error {
+                    status.push_str(&format!("; could not persist pending safe-unload work: {persist_error}"));
+                }
                 self.set_status(id, status.clone());
                 Err(status)
             }
@@ -860,9 +968,12 @@ impl NativeModManager {
             .lock()
             .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
         let folder = self.package_dir(id)?;
-        if self.enabled_snapshot().contains(id) || self.pending_signature_unloads_snapshot().contains(id) {
+        if self.enabled_snapshot().contains(id)
+            || self.pending_signature_unloads_snapshot().contains(id)
+            || self.pending_safe_unloads_snapshot().contains(id) {
             self.disable_inner(id)?;
             self.clear_pending_signature_unload(id)?;
+            self.clear_pending_safe_unload(id)?;
         }
         if folder.exists() {
             fs::remove_dir_all(&folder).map_err(|e| format!("remove native mod package: {e}"))?;
@@ -877,7 +988,7 @@ impl NativeModManager {
     }
 
     pub fn apply_enabled_mods(&self) {
-        self.retry_pending_signature_unloads();
+        self.retry_pending_safe_unloads();
         // Serialize each reconciliation with install/enable/disable/uninstall.
         // Re-check persisted intent after acquiring the gate, so a stale scan
         // cannot load a mod the user disabled while this scan was queued.
@@ -905,8 +1016,8 @@ impl NativeModManager {
             if queue_signature_cleanup {
                 state.pending_signature_unloads.insert(id.to_string());
             }
-            if let Err(e) = self.persist_state(&state) {
-                persistence_warning = Some(format!("could not persist disabled state: {e}"));
+            if let Err(error) = self.persist_state(&state) {
+                persistence_warning = Some(format!("could not persist disabled state: {error}"));
             }
         } else {
             persistence_warning = Some("native mod state lock is unavailable".into());
@@ -937,8 +1048,28 @@ impl NativeModManager {
             },
             Err(error) => Some(error),
         };
+
         if let Some(warning) = cleanup_warning.as_deref() {
+            if let Err(error) = self.mark_pending_safe_unload(id) {
+                persistence_warning = Some(match persistence_warning {
+                    Some(previous) => format!("{previous}; could not persist pending safe-unload work: {error}"),
+                    None => format!("could not persist pending safe-unload work: {error}"),
+                });
+            }
             self.mark_running_targets_indeterminate(id, warning);
+        } else {
+            if let Err(error) = self.clear_pending_safe_unload(id) {
+                persistence_warning = Some(match persistence_warning {
+                    Some(previous) => format!("{previous}; could not clear pending safe-unload work: {error}"),
+                    None => format!("could not clear pending safe-unload work: {error}"),
+                });
+            }
+            if let Err(error) = self.clear_pending_signature_unload(id) {
+                persistence_warning = Some(match persistence_warning {
+                    Some(previous) => format!("{previous}; could not clear signature-cleanup state: {error}"),
+                    None => format!("could not clear signature-cleanup state: {error}"),
+                });
+            }
         }
 
         let mut status = format!("Disabled after load failure: {reason}");
@@ -1088,6 +1219,10 @@ fn load_persisted_state(path: &Path) -> PersistedState {
         enabled: state.enabled.into_iter().filter(|id| valid_id(id)).collect(),
         require_trusted_signature: state.require_trusted_signature,
         pending_signature_unloads: state.pending_signature_unloads
+            .into_iter()
+            .filter(|id| valid_id(id))
+            .collect(),
+        pending_safe_unloads: state.pending_safe_unloads
             .into_iter()
             .filter(|id| valid_id(id))
             .collect(),
@@ -2881,6 +3016,34 @@ mod tests {
         assert!(!manager.pending_signature_unloads_snapshot().contains("com.example.pending"));
         assert!(!load_persisted_state(&root.join("enabled.json"))
             .pending_signature_unloads.contains("com.example.pending"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_mod_safe_unload_queue_is_durable_until_cleared() {
+        let root = state_test_root("pending-safe-unload");
+        let manager = NativeModManager::new(root.clone());
+
+        manager.mark_pending_safe_unload("com.example.pending").unwrap();
+        assert!(manager.pending_safe_unloads_snapshot().contains("com.example.pending"));
+        assert!(load_persisted_state(&root.join("enabled.json"))
+            .pending_safe_unloads.contains("com.example.pending"));
+
+        // New state fields must preserve signature-specific cleanup markers too.
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.pending_signature_unloads.insert("com.example.signature-pending".into());
+            manager.persist_state(&state).unwrap();
+        }
+        let reloaded = load_persisted_state(&root.join("enabled.json"));
+        assert!(reloaded.pending_safe_unloads.contains("com.example.pending"));
+        assert!(reloaded.pending_signature_unloads.contains("com.example.signature-pending"));
+
+        manager.clear_pending_safe_unload("com.example.pending").unwrap();
+        assert!(!manager.pending_safe_unloads_snapshot().contains("com.example.pending"));
+        assert!(!load_persisted_state(&root.join("enabled.json"))
+            .pending_safe_unloads.contains("com.example.pending"));
 
         fs::remove_dir_all(root).unwrap();
     }
