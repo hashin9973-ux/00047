@@ -637,7 +637,7 @@ impl Block for TryCatch {
         if a==b{return Err("Try and catch must reference different automations".into())}
         if !valid_name(&txt(c,"errorVar")){return Err("Error variable name is invalid".into())}
         for key in ["tryInputMapJson","tryOutputMapJson","catchInputMapJson","catchOutputMapJson"] {
-            let value:Value=serde_json::from_str(&raw(c,key)).map_err(|e|format!("{key} must be valid JSON: {e}"))?;
+            let value:Value=serde_json::from_str(c.get(key).and_then(Value::as_str).filter(|s|!s.trim().is_empty()).unwrap_or("{}")).map_err(|e|format!("{key} must be valid JSON: {e}"))?;
             if !value.is_object(){return Err(format!("{key} must be a JSON object"))}
             for (child,parent) in value.as_object().unwrap() {
                 if !valid_name(child)||!parent.as_str().is_some_and(valid_name){return Err(format!("{key} must map valid variable names to variable names"))}
