@@ -59,6 +59,8 @@ struct PersistedState {
     enabled: HashSet<String>,
     #[serde(default)]
     require_trusted_signature: bool,
+    #[serde(default)]
+    pending_signature_unloads: HashSet<String>,
 }
 
 #[derive(Serialize)]
@@ -236,13 +238,61 @@ impl NativeModManager {
             .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
 
         // Enabling policy removes untrusted mod IDs from persisted enable intent
-        // before attempting remote unload. If an unload is uncertain, the app
-        // will not retry loading the untrusted DLL; it reports the retained image.
-        let enabled = self.enabled_snapshot();
+        // before attempting remote unload. Any uncertain unload is stored as
+        // durable cleanup work so subsequent scans and app restarts can retry it.
+        let previously_pending = self.pending_signature_unloads_snapshot();
+        let mut candidates = self.enabled_snapshot();
+        candidates.extend(previously_pending.iter().cloned());
+        let mut package_scan_warning = None;
+        if required {
+            match fs::read_dir(self.packages_dir()) {
+                Ok(entries) => {
+                    for entry in entries {
+                        match entry {
+                            Ok(entry) => {
+                                let file_type = match entry.file_type() {
+                                    Ok(file_type) => file_type,
+                                    Err(error) => {
+                                        package_scan_warning = Some(format!(
+                                            "could not inspect every installed package directory: {error}"
+                                        ));
+                                        continue;
+                                    }
+                                };
+                                if !file_type.is_dir() || file_type.is_symlink() {
+                                    continue;
+                                }
+                                let package_name = entry.file_name();
+                                if let Some(id) = package_name.to_str() {
+                                    // Stage/backup directories intentionally use leading dots
+                                    // and are excluded by the same ID validation as package APIs.
+                                    if valid_id(id) {
+                                        candidates.insert(id.to_string());
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                package_scan_warning = Some(format!(
+                                    "could not enumerate every installed package directory: {error}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    package_scan_warning = Some(format!(
+                        "could not enumerate the installed package directory: {error}"
+                    ));
+                }
+            }
+        }
+
+        // Include disabled packages as well: a prior failed/uncertain unload may
+        // leave an untrusted DLL mapped even though its enable intent is already off.
         let untrusted: Vec<String> = if required {
-            enabled
+            candidates
                 .iter()
-                .filter(|id| !self.package_has_trusted_signature(id))
+                .filter(|id| previously_pending.contains(*id) || !self.package_has_trusted_signature(id))
                 .cloned()
                 .collect()
         } else {
@@ -254,8 +304,15 @@ impl NativeModManager {
                 .map_err(|_| "Native mod state is unavailable.".to_string())?;
             let previous = state.clone();
             state.require_trusted_signature = required;
-            for id in &untrusted {
-                state.enabled.remove(id);
+            if required {
+                for id in &untrusted {
+                    state.enabled.remove(id);
+                    state.pending_signature_unloads.insert(id.clone());
+                }
+            } else {
+                // Turning the policy off is an explicit opt-out from cleanup
+                // retries. Persisted enabled intent remains disabled.
+                state.pending_signature_unloads.clear();
             }
             if let Err(error) = self.persist_state(&state) {
                 *state = previous;
@@ -264,18 +321,28 @@ impl NativeModManager {
         }
 
         let mut unload_warnings = Vec::new();
+        if let Some(warning) = package_scan_warning {
+            unload_warnings.push(warning);
+        }
         if required {
             for id in &untrusted {
                 match self.disable_inner(id) {
                     Ok(status) => {
-                        self.set_status(id, format!(
-                            "Signature policy enabled; untrusted mod disabled. {status}"
-                        ));
+                        if let Err(error) = self.clear_pending_signature_unload(id) {
+                            self.set_status(id, format!(
+                                "Untrusted mod was unloaded, but cleanup state could not be cleared and will be retried: {error}"
+                            ));
+                            unload_warnings.push(format!("{id}: could not persist cleanup completion: {error}"));
+                        } else {
+                            self.set_status(id, format!(
+                                "Signature policy enabled; untrusted mod disabled. {status}"
+                            ));
+                        }
                     }
                     Err(error) => {
                         self.mark_running_targets_indeterminate(id, &error);
                         self.set_status(id, format!(
-                            "Signature policy enabled; untrusted mod is disabled but unload is uncertain: {error}"
+                            "Signature policy enabled; unload remains pending and will be retried during later scans: {error}"
                         ));
                         unload_warnings.push(format!("{id}: {error}"));
                     }
@@ -290,7 +357,7 @@ impl NativeModManager {
             ))
         } else if required && !untrusted.is_empty() {
             Ok(format!(
-                "Trusted Authenticode enforcement is ON. Disabled {} untrusted native mod(s).",
+                "Trusted Authenticode enforcement is ON. Checked and disabled {} unsigned, untrusted, or unverifiable native mod(s).",
                 untrusted.len()
             ))
         } else if required {
@@ -352,8 +419,63 @@ impl NativeModManager {
         self.state.lock().map(|s| s.enabled.clone()).unwrap_or_default()
     }
 
+    fn pending_signature_unloads_snapshot(&self) -> HashSet<String> {
+        self.state
+            .lock()
+            .map(|state| state.pending_signature_unloads.clone())
+            .unwrap_or_default()
+    }
+
+    fn clear_pending_signature_unload(&self, id: &str) -> Result<(), String> {
+        let mut state = self.state
+            .lock()
+            .map_err(|_| "Native mod state is unavailable.".to_string())?;
+        if !state.pending_signature_unloads.remove(id) {
+            return Ok(());
+        }
+        if let Err(error) = self.persist_state(&state) {
+            state.pending_signature_unloads.insert(id.to_string());
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn retry_pending_signature_unloads(&self) {
+        if !self.signature_policy_enabled() {
+            return;
+        }
+        let pending = self.pending_signature_unloads_snapshot();
+        for id in pending {
+            let Ok(_transition) = self.lifecycle_gate.lock() else {
+                return;
+            };
+            if !self.signature_policy_enabled()
+                || !self.pending_signature_unloads_snapshot().contains(&id) {
+                continue;
+            }
+
+            match self.disable_inner(&id) {
+                Ok(status) => match self.clear_pending_signature_unload(&id) {
+                    Ok(()) => self.set_status(&id, format!(
+                        "Trusted-signature cleanup completed during background scan. {status}"
+                    )),
+                    Err(error) => self.set_status(&id, format!(
+                        "DLL unload completed, but cleanup state remains pending because persistence failed: {error}"
+                    )),
+                },
+                Err(error) => {
+                    self.mark_running_targets_indeterminate(&id, &error);
+                    self.set_status(&id, format!(
+                        "Trusted-signature cleanup is still pending; 00047 will retry it during later scans: {error}"
+                    ));
+                }
+            }
+        }
+    }
+
     fn persist_state(&self, state: &PersistedState) -> Result<(), String> {
-        if state.enabled.iter().any(|id| !valid_id(id)) {
+        if state.enabled.iter().any(|id| !valid_id(id))
+            || state.pending_signature_unloads.iter().any(|id| !valid_id(id)) {
             return Err("Native mod state contains an invalid mod ID.".into());
         }
         let bytes = serde_json::to_vec_pretty(state)
@@ -566,6 +688,12 @@ impl NativeModManager {
         if self.enabled_snapshot().contains(&id) {
             return Err("Disable this native mod before updating its files.".into());
         }
+        if self.pending_signature_unloads_snapshot().contains(&id) {
+            return Err(
+                "This mod has a pending safe-unload operation. Let 00047 complete cleanup before updating its files."
+                    .into(),
+            );
+        }
 
         let packages = self.packages_dir();
         fs::create_dir_all(&packages).map_err(|e| e.to_string())?;
@@ -616,6 +744,12 @@ impl NativeModManager {
             .lock()
             .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
         let folder = self.package_dir(id)?;
+        if self.pending_signature_unloads_snapshot().contains(id) {
+            return Err(
+                "A previous DLL image is still pending safe unload. Wait for 00047 to confirm cleanup before enabling this mod."
+                    .into(),
+            );
+        }
         let manifest = load_manifest(&folder)?;
         if manifest.id != id {
             return Err("Mod ID does not match its package directory.".into());
@@ -717,8 +851,9 @@ impl NativeModManager {
             .lock()
             .map_err(|_| "Native-mod lifecycle gate is unavailable.".to_string())?;
         let folder = self.package_dir(id)?;
-        if self.enabled_snapshot().contains(id) {
+        if self.enabled_snapshot().contains(id) || self.pending_signature_unloads_snapshot().contains(id) {
             self.disable_inner(id)?;
+            self.clear_pending_signature_unload(id)?;
         }
         if folder.exists() {
             fs::remove_dir_all(&folder).map_err(|e| format!("remove native mod package: {e}"))?;
@@ -733,6 +868,7 @@ impl NativeModManager {
     }
 
     pub fn apply_enabled_mods(&self) {
+        self.retry_pending_signature_unloads();
         // Serialize each reconciliation with install/enable/disable/uninstall.
         // Re-check persisted intent after acquiring the gate, so a stale scan
         // cannot load a mod the user disabled while this scan was queued.
@@ -752,9 +888,14 @@ impl NativeModManager {
     }
 
     fn disable_after_load_failure(&self, id: &str, reason: &str) {
+        let queue_signature_cleanup = self.signature_policy_enabled()
+            && reason.contains("Trusted Authenticode signature is required");
         let mut persistence_warning = None;
         if let Ok(mut state) = self.state.lock() {
             state.enabled.remove(id);
+            if queue_signature_cleanup {
+                state.pending_signature_unloads.insert(id.to_string());
+            }
             if let Err(e) = self.persist_state(&state) {
                 persistence_warning = Some(format!("could not persist disabled state: {e}"));
             }
@@ -937,6 +1078,10 @@ fn load_persisted_state(path: &Path) -> PersistedState {
     PersistedState {
         enabled: state.enabled.into_iter().filter(|id| valid_id(id)).collect(),
         require_trusted_signature: state.require_trusted_signature,
+        pending_signature_unloads: state.pending_signature_unloads
+            .into_iter()
+            .filter(|id| valid_id(id))
+            .collect(),
     }
 }
 
@@ -2666,12 +2811,14 @@ mod tests {
         let mut state = PersistedState::default();
         state.enabled.insert("com.example.first".into());
         state.require_trusted_signature = true;
+        state.pending_signature_unloads.insert("com.example.pending".into());
         manager.persist_state(&state).unwrap();
 
         let path = root.join("enabled.json");
         let first_load = load_persisted_state(&path);
         assert!(first_load.enabled.contains("com.example.first"));
         assert!(first_load.require_trusted_signature);
+        assert!(first_load.pending_signature_unloads.contains("com.example.pending"));
 
         state.enabled.clear();
         state.enabled.insert("com.example.second".into());
@@ -2680,6 +2827,29 @@ mod tests {
         assert_eq!(reloaded.enabled, HashSet::from(["com.example.second".to_string()]));
         assert!(!fs::read_dir(&root).unwrap().filter_map(Result::ok)
             .any(|entry| entry.file_name().to_string_lossy().ends_with(".tmp")));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_mod_pending_signature_cleanup_is_durable_until_cleared() {
+        let root = state_test_root("pending-signature-cleanup");
+        let manager = NativeModManager::new(root.clone());
+        {
+            let mut state = manager.state.lock().unwrap();
+            state.require_trusted_signature = true;
+            state.pending_signature_unloads.insert("com.example.pending".into());
+            manager.persist_state(&state).unwrap();
+        }
+
+        assert!(manager.pending_signature_unloads_snapshot().contains("com.example.pending"));
+        assert!(load_persisted_state(&root.join("enabled.json"))
+            .pending_signature_unloads.contains("com.example.pending"));
+
+        manager.clear_pending_signature_unload("com.example.pending").unwrap();
+        assert!(!manager.pending_signature_unloads_snapshot().contains("com.example.pending"));
+        assert!(!load_persisted_state(&root.join("enabled.json"))
+            .pending_signature_unloads.contains("com.example.pending"));
 
         fs::remove_dir_all(root).unwrap();
     }
@@ -2694,6 +2864,7 @@ mod tests {
         let state = load_persisted_state(&path);
         assert!(state.enabled.contains("com.example.valid"));
         assert!(!state.require_trusted_signature);
+        assert!(state.pending_signature_unloads.is_empty());
 
         fs::remove_dir_all(root).unwrap();
     }

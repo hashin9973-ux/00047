@@ -40,7 +40,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         (signatureRequired ? 'Enforced' : 'Optional') +
         '</span></div><p class="mu">' +
         (signatureRequired
-          ? 'Only DLLs trusted by Windows Authenticode validation are eligible to load. Verification uses cached trust and revocation data; missing or invalid trust data fails closed. Unsigned and untrusted enabled mods are disabled, and unload is attempted without forcing unsafe unmapping.'
+          ? 'Only DLLs trusted by Windows Authenticode validation are eligible to load. Verification uses cached trust and revocation data; missing or invalid trust data fails closed. Installed DLLs that do not pass verification are blocked from loading, and safe unload is attempted. If a DLL may still be mapped, cleanup is persisted and retried during later background scans; 00047 never forces unsafe unmapping.'
           : 'Off by default for backwards compatibility. Turning this on blocks unsigned, untrusted, revoked, or unverifiable DLLs. Verification uses cached Windows trust and revocation data only and does not contact a network service.') +
         '</p><small class="mu">Signatures do not sandbox native code or guarantee that a signed DLL is safe.</small></div>' +
         '<button class="btn ' + (signatureRequired ? '' : 'primary') +
@@ -119,7 +119,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         const answer = await modal({
           title: required ? 'Require trusted signatures?' : 'Disable signature enforcement?',
           body: required
-            ? '00047 will validate the Authenticode signature and cached certificate trust/revocation status before loading native DLLs. Enabled mods that do not pass will be disabled and safe unload will be attempted. If the host cannot confirm unload safety, it keeps the DLL mapped and reports the affected target; restart that shell process rather than forcing an unload. No network retrieval is used for verification.'
+            ? '00047 will validate the Authenticode signature and cached certificate trust/revocation status before loading native DLLs. Installed mods that do not pass will be removed from enabled intent and safe unload will be attempted. If the host cannot confirm unload safety, the DLL remains mapped and cleanup is persisted for retry during later background scans; restart that shell process rather than forcing an unload if it remains stuck. No network retrieval is used for verification.'
             : 'This allows unsigned or untrusted native DLLs to be enabled again. Native DLLs remain unsandboxed and can crash or hang Explorer, Start, or search. Only disable enforcement when you understand and accept that risk.',
           buttons: [['cancel', 'Cancel'], ['go', required ? 'Enable enforcement' : 'Disable enforcement', 'danger']]
         });

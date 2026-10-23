@@ -45,7 +45,7 @@ Mods using either `void Wh_ModSettingsChanged(void)` or `BOOL Wh_ModSettingsChan
 
 ## Native DLL publisher trust
 
-The 00047 application can optionally require Trusted Authenticode signatures for native mods. This policy is OFF by default. When enabled, load-time verification calls Windows `WinVerifyTrust` using cached certificate/revocation data only; missing or invalid trust data fails closed, and verification does not perform network retrieval. The UI exposes the policy switch, persists it, disables enabled packages that do not verify, and never forces unload when hook quiescence is uncertain. Signed code is still native unsandboxed code and should be reviewed.
+The 00047 application can optionally require Trusted Authenticode signatures for native mods. This policy is OFF by default. When enabled, load-time verification calls Windows `WinVerifyTrust` using cached certificate/revocation data only; missing or invalid trust data fails closed, and verification does not perform network retrieval. The UI exposes the policy switch, persists it, disables all installed packages that do not verify (including ones previously marked disabled), and records unload retries durably. Pending cleanup is retried during background scans and blocks re-enable or package replacement until safe unload succeeds. The loader never forces unload when hook quiescence is uncertain. Signed code is still native unsandboxed code and should be reviewed.
 
 ## CI
 
