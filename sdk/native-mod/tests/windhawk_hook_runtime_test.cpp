@@ -100,7 +100,38 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(begin() == TRUE);
     CHECK(install() == TRUE);
     CHECK(target(5) == 7); // registering a hook is deferred until apply
-    CHECK(apply() == TRUE);
+
+    wchar_t registryMutexName[96]{};
+    CHECK(swprintf_s(registryMutexName, _countof(registryMutexName),
+        L"Local\\00047NativeHookRegistryLock-%lu",
+        static_cast<unsigned long>(GetCurrentProcessId())) > 0);
+    HANDLE registryMutex = CreateMutexW(nullptr, FALSE, registryMutexName);
+    CHECK(registryMutex != nullptr);
+    CHECK(WaitForSingleObject(registryMutex, 5000) == WAIT_OBJECT_0);
+    std::atomic<bool> applyStarted{false};
+    std::atomic<bool> applyCompleted{false};
+    std::atomic<BOOL> applyResult{FALSE};
+    std::thread applying([&] {
+        applyStarted.store(true, std::memory_order_release);
+        applyResult.store(apply(), std::memory_order_release);
+        applyCompleted.store(true, std::memory_order_release);
+    });
+    for (int i = 0; i < 2000 &&
+            !applyStarted.load(std::memory_order_acquire); ++i) {
+        Sleep(1);
+    }
+    Sleep(50);
+    const bool applyWasBlocked = applyStarted.load(std::memory_order_acquire) &&
+        !applyCompleted.load(std::memory_order_acquire);
+    const int resultBeforeSessionRelease = target(5);
+    const BOOL releasedRegistryMutex = ReleaseMutex(registryMutex);
+    applying.join();
+    CloseHandle(registryMutex);
+    CHECK(releasedRegistryMutex != FALSE);
+    CHECK(applyWasBlocked);
+    CHECK(resultBeforeSessionRelease == 7);
+    CHECK(applyCompleted.load(std::memory_order_acquire));
+    CHECK(applyResult.load(std::memory_order_acquire) == TRUE);
     CHECK(target(5) == 17);
 
     // A second mod DLL must not be able to claim the same target address.

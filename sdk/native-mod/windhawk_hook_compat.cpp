@@ -105,6 +105,18 @@ public:
         return success;
     }
 
+    // Hold the same process-wide mutex used by Claim/Release for an entire
+    // patch batch or unload-quiescence scan. Windows mutexes are recursive, so
+    // this thread can perform short registry operations while other mod DLLs
+    // remain excluded from changing the shared hook set.
+    bool BeginOperationSession() noexcept {
+        return LockTable();
+    }
+
+    void EndOperationSession() noexcept {
+        ReleaseTable();
+    }
+
     bool ReferencesModule(HMODULE module) noexcept {
         if (!module || !LockTable()) return true;
         MODULEINFO info{};
@@ -240,6 +252,27 @@ ProcessHookRegistry& SharedHookRegistry() {
     static ProcessHookRegistry registry;
     return registry;
 }
+
+
+class HookOperationSessionGuard final {
+public:
+    HookOperationSessionGuard() noexcept
+        : acquired_(SharedHookRegistry().BeginOperationSession()) {}
+
+    HookOperationSessionGuard(const HookOperationSessionGuard&) = delete;
+    HookOperationSessionGuard& operator=(const HookOperationSessionGuard&) = delete;
+
+    ~HookOperationSessionGuard() {
+        if (acquired_) SharedHookRegistry().EndOperationSession();
+    }
+
+    explicit operator bool() const noexcept {
+        return acquired_;
+    }
+
+private:
+    bool acquired_ = false;
+};
 
 HMODULE CurrentHookOwnerModule() noexcept {
     HMODULE module = nullptr;
@@ -716,6 +749,8 @@ BOOL Wh_RemoveFunctionHook(void* targetFunction) {
 BOOL Wh_ApplyHookOperations(void) {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_accepting && !g_hooks.empty()) return FALSE;
+    HookOperationSessionGuard operationSession;
+    if (!operationSession) return FALSE;
     return ApplyLocked();
 }
 
@@ -736,6 +771,8 @@ BOOL CanUnload() noexcept {
             // all removals, and left no MinHook entries registered.
             if (g_accepting || !g_hooks.empty() || g_initialized) return FALSE;
         }
+        HookOperationSessionGuard operationSession;
+        if (!operationSession) return FALSE;
         HMODULE module = CurrentHookOwnerModule();
         if (!module || SharedHookRegistry().ReferencesModule(module)) return FALSE;
         return HasNoInFlightModuleFrames() ? TRUE : FALSE;
@@ -747,6 +784,8 @@ BOOL CanUnload() noexcept {
 BOOL ApplyHookOperations() noexcept {
     try {
         std::lock_guard<std::mutex> lock(g_mutex);
+        HookOperationSessionGuard operationSession;
+        if (!operationSession) return FALSE;
         return ApplyLocked();
     } catch (...) {
         return FALSE;
@@ -757,6 +796,11 @@ void ShutdownHookOperations() noexcept {
     std::lock_guard<std::mutex> lock(g_mutex);
     for (auto& entry : g_hooks) entry.second.removeQueued = true;
     g_accepting = false;
+    HookOperationSessionGuard operationSession;
+    if (!operationSession) {
+        OutputDebugStringW(L"00047: unable to acquire shared hook session for shutdown; retaining hook state.\\n");
+        return;
+    }
     if (!ApplyLocked()) {
         // Best-effort retry, but never discard bookkeeping if Windows refuses
         // to remove a hook. CanUnload() stays false and the host retains the DLL.
