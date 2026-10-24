@@ -27,6 +27,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -715,6 +716,123 @@ inline bool WriteLocalHookCache(
     }
 }
 
+
+inline bool BuildWindhawkRegistryCacheSubkey(
+    std::wstring_view modId, std::wstring& subkey) noexcept {
+    subkey.clear();
+    if (modId.empty() || modId.size() > 255) return false;
+    for (wchar_t c : modId) {
+        const bool valid = (c >= L'a' && c <= L'z') ||
+            (c >= L'A' && c <= L'Z') ||
+            (c >= L'0' && c <= L'9') ||
+            c == L'.' || c == L'_' || c == L'-' || c == L'@';
+        if (!valid) return false;
+    }
+    try {
+        subkey = L"SOFTWARE\\Windhawk\\Engine\\ModsWritable\\";
+        subkey.append(modId);
+        subkey += L"\\SymbolCache";
+        return true;
+    } catch (...) {
+        subkey.clear();
+        return false;
+    }
+}
+
+// Registry values are untrusted cache data. Require a bounded REG_SZ with a
+// terminator and reject embedded NULs rather than accepting truncated records.
+constexpr DWORD kMaxWindhawkRegistryCacheBytes = 1024 * 1024;
+
+inline bool ReadRegistryHookCacheValue(
+    HKEY root, std::wstring_view subkey, std::wstring_view valueName,
+    std::wstring& cacheText) noexcept {
+    cacheText.clear();
+    if (!root || subkey.empty() || subkey.size() > 32767 ||
+        valueName.empty() || valueName.size() > 255 ||
+        subkey.find(L'\0') != std::wstring_view::npos ||
+        valueName.find(L'\0') != std::wstring_view::npos) {
+        return false;
+    }
+
+    HKEY key = nullptr;
+    try {
+        const std::wstring keyPath(subkey);
+        const std::wstring name(valueName);
+        if (RegOpenKeyExW(root, keyPath.c_str(), 0,
+                KEY_QUERY_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) {
+            return false;
+        }
+
+        DWORD type = 0;
+        DWORD byteCount = 0;
+        LONG status = RegQueryValueExW(
+            key, name.c_str(), nullptr, &type, nullptr, &byteCount);
+        if (status != ERROR_SUCCESS || type != REG_SZ ||
+            byteCount < sizeof(wchar_t) ||
+            byteCount > kMaxWindhawkRegistryCacheBytes ||
+            byteCount % sizeof(wchar_t) != 0) {
+            RegCloseKey(key);
+            return false;
+        }
+
+        std::vector<wchar_t> buffer(byteCount / sizeof(wchar_t));
+        DWORD bytesRead = byteCount;
+        status = RegQueryValueExW(key, name.c_str(), nullptr, &type,
+            reinterpret_cast<BYTE*>(buffer.data()), &bytesRead);
+        RegCloseKey(key);
+        key = nullptr;
+        if (status != ERROR_SUCCESS || type != REG_SZ ||
+            bytesRead != byteCount || buffer.empty() ||
+            buffer.back() != L'\0' ||
+            std::find(buffer.begin(), buffer.end() - 1, L'\0') != buffer.end() - 1) {
+            return false;
+        }
+
+        cacheText.assign(buffer.data(), buffer.size() - 1);
+        return !cacheText.empty();
+    } catch (...) {
+        if (key) RegCloseKey(key);
+        cacheText.clear();
+        return false;
+    }
+}
+
+inline bool WriteRegistryHookCacheValue(
+    HKEY root, std::wstring_view subkey, std::wstring_view valueName,
+    std::wstring_view cacheText) noexcept {
+    if (!root || subkey.empty() || subkey.size() > 32767 ||
+        valueName.empty() || valueName.size() > 255 || cacheText.empty() ||
+        cacheText.find(L'\0') != std::wstring_view::npos ||
+        subkey.find(L'\0') != std::wstring_view::npos ||
+        valueName.find(L'\0') != std::wstring_view::npos ||
+        cacheText.size() >= kMaxWindhawkRegistryCacheBytes / sizeof(wchar_t)) {
+        return false;
+    }
+
+    HKEY key = nullptr;
+    try {
+        const std::wstring keyPath(subkey);
+        const std::wstring name(valueName);
+        const std::wstring terminated(cacheText);
+        // Open, but never create, Windhawk's key. A missing or non-writable
+        // key leaves the independent per-user cache fully functional.
+        if (RegOpenKeyExW(root, keyPath.c_str(), 0,
+                KEY_SET_VALUE | KEY_WOW64_64KEY, &key) != ERROR_SUCCESS) {
+            return false;
+        }
+
+        const DWORD byteCount = static_cast<DWORD>(
+            (terminated.size() + 1) * sizeof(wchar_t));
+        const LONG status = RegSetValueExW(key, name.c_str(), 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(terminated.c_str()), byteCount);
+        RegCloseKey(key);
+        return status == ERROR_SUCCESS;
+    } catch (...) {
+        if (key) RegCloseKey(key);
+        return false;
+    }
+}
+
 inline std::wstring HookCacheText(
     const HookCacheIdentity& identity, const WH_SYMBOL_HOOK* hooks,
     size_t count, const std::vector<bool>& found,
@@ -812,6 +930,162 @@ inline bool ResolveHookCacheText(
     } catch (...) {
         found.clear();
         resolved.clear();
+        return false;
+    }
+}
+
+
+inline bool ParseHookCachePairs(
+    std::wstring_view cacheText, const HookCacheIdentity& identity,
+    std::map<std::wstring, std::wstring>& entries) noexcept {
+    entries.clear();
+    try {
+        if (cacheText.empty() || cacheText.size() > 4 * 1024 * 1024) return false;
+        std::vector<std::wstring_view> fields;
+        fields.reserve(64);
+        size_t start = 0;
+        for (;;) {
+            const size_t separator = cacheText.find(L'#', start);
+            if (separator == std::wstring_view::npos) {
+                fields.push_back(cacheText.substr(start));
+                break;
+            }
+            fields.push_back(cacheText.substr(start, separator - start));
+            start = separator + 1;
+            if (fields.size() > 100000) return false;
+        }
+        if (fields.size() < 3 || fields[0] != L"1" ||
+            fields[1] != identity.headerModuleName ||
+            fields[2] != identity.version ||
+            ((fields.size() - 3) % 2) != 0) return false;
+
+        std::map<std::wstring, std::wstring> staged;
+        for (size_t i = 3; i + 1 < fields.size(); i += 2) {
+            const auto symbol = fields[i];
+            const auto offsetText = fields[i + 1];
+            if (symbol.empty() || symbol.size() > kMaxSymbolNameChars ||
+                symbol.find(L'\0') != std::wstring_view::npos ||
+                offsetText.find(L'\0') != std::wstring_view::npos) return false;
+
+            if (!offsetText.empty()) {
+                for (wchar_t c : offsetText) {
+                    if (c < L'0' || c > L'9') return false;
+                }
+                const std::wstring offsetString(offsetText);
+                errno = 0;
+                wchar_t* end = nullptr;
+                const unsigned long long offset =
+                    std::wcstoull(offsetString.c_str(), &end, 10);
+                void* target = nullptr;
+                if (errno == ERANGE || end == offsetString.c_str() ||
+                    !end || *end != L'\0' ||
+                    !HookCacheExecutableTarget(identity, offset, target)) {
+                    return false;
+                }
+            }
+
+            const std::wstring name(symbol);
+            const std::wstring offset(offsetText);
+            const auto existing = staged.find(name);
+            if (existing != staged.end() && existing->second != offset) return false;
+            staged[name] = offset;
+        }
+        entries = std::move(staged);
+        return true;
+    } catch (...) {
+        entries.clear();
+        return false;
+    }
+}
+
+inline bool MergeWindhawkHookCacheText(
+    const HookCacheIdentity& identity, std::wstring_view existingText,
+    std::wstring_view newText, std::wstring& mergedText) noexcept {
+    mergedText.clear();
+    try {
+        std::map<std::wstring, std::wstring> mergedEntries;
+        if (!existingText.empty() &&
+            existingText.rfind(L"error:", 0) != 0 &&
+            !ParseHookCachePairs(existingText, identity, mergedEntries)) {
+            // A stale image-identity record is refreshed from the validated
+            // current record rather than copied into the active cache.
+            mergedEntries.clear();
+        }
+
+        std::map<std::wstring, std::wstring> newEntries;
+        if (!ParseHookCachePairs(newText, identity, newEntries)) return false;
+        for (const auto& item : newEntries) {
+            auto existing = mergedEntries.find(item.first);
+            if (existing == mergedEntries.end()) {
+                mergedEntries.emplace(item.first, item.second);
+            } else if (!item.second.empty() || existing->second.empty()) {
+                // A newly resolved offset beats an unresolved optional entry;
+                // an empty new entry never erases a known good offset.
+                existing->second = item.second;
+            }
+        }
+
+        std::wstring output =
+            L"1#" + identity.headerModuleName + L"#" + identity.version;
+        for (const auto& item : mergedEntries) {
+            if (item.first.empty() || item.first.find(L'#') != std::wstring::npos ||
+                item.second.find(L'#') != std::wstring::npos) return false;
+            output += L"#" + item.first + L"#" + item.second;
+        }
+        if (output.empty() ||
+            output.size() >= kMaxWindhawkRegistryCacheBytes / sizeof(wchar_t)) {
+            return false;
+        }
+        mergedText = std::move(output);
+        return true;
+    } catch (...) {
+        mergedText.clear();
+        return false;
+    }
+}
+
+inline bool ReadWindhawkRegistryHookCache(
+    const HookCacheIdentity& identity, std::wstring& cacheText) noexcept {
+    cacheText.clear();
+    try {
+        const auto package = wmod::PackageDirectory();
+        if (package.empty()) return false;
+        std::wstring subkey;
+        if (!BuildWindhawkRegistryCacheSubkey(package.filename().wstring(), subkey)) {
+            return false;
+        }
+        return ReadRegistryHookCacheValue(
+            HKEY_LOCAL_MACHINE, subkey, identity.cacheKey, cacheText);
+    } catch (...) {
+        cacheText.clear();
+        return false;
+    }
+}
+
+inline bool WriteWindhawkRegistryHookCache(
+    const HookCacheIdentity& identity, std::wstring_view cacheText) noexcept {
+    try {
+        const auto package = wmod::PackageDirectory();
+        if (package.empty()) return false;
+        std::wstring subkey;
+        if (!BuildWindhawkRegistryCacheSubkey(package.filename().wstring(), subkey)) {
+            return false;
+        }
+
+        std::wstring existing;
+        const bool hasReadableValue = ReadRegistryHookCacheValue(
+            HKEY_LOCAL_MACHINE, subkey, identity.cacheKey, existing);
+        std::wstring merged;
+        // When readable cache text exists, preserve other valid symbol records.
+        // Error-throttle strings are replaced after a successful resolution.
+        if (!MergeWindhawkHookCacheText(
+                identity, hasReadableValue ? std::wstring_view(existing) : std::wstring_view(),
+                cacheText, merged)) {
+            return false;
+        }
+        return WriteRegistryHookCacheValue(
+            HKEY_LOCAL_MACHINE, subkey, identity.cacheKey, merged);
+    } catch (...) {
         return false;
     }
 }
@@ -986,6 +1260,7 @@ inline BOOL Wh_HookSymbols(HMODULE module,
         : std::filesystem::path{};
     bool cacheHit = false;
     bool onlineCacheHit = false;
+    bool registryCacheHit = false;
     bool enumerationSucceeded = false;
     if (!cachePath.empty()) {
         std::wstring cached;
@@ -994,6 +1269,20 @@ inline BOOL Wh_HookSymbols(HMODULE module,
                 cached, cacheIdentity, symbolHooks, symbolHooksCount, found, resolved)) {
             cacheHit = true;
             wmod::windhawk_symbol_compat::HookCacheHitsCounter().fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (!cacheHit && identityAvailable) {
+        std::wstring cached;
+        if (wmod::windhawk_symbol_compat::ReadWindhawkRegistryHookCache(
+                cacheIdentity, cached) &&
+            wmod::windhawk_symbol_compat::ResolveHookCacheText(
+                cached, cacheIdentity, symbolHooks, symbolHooksCount, found, resolved)) {
+            cacheHit = true;
+            registryCacheHit = true;
+            wmod::windhawk_symbol_compat::HookCacheHitsCounter().fetch_add(1, std::memory_order_relaxed);
+            if (!cachePath.empty()) {
+                (void)wmod::windhawk_symbol_compat::WriteLocalHookCache(cachePath, cached);
+            }
         }
     }
     if (!cacheHit && identityAvailable) {
@@ -1078,14 +1367,20 @@ inline BOOL Wh_HookSymbols(HMODULE module,
             if (!hook.hookFunction && hook.pOriginalFunction) *hook.pOriginalFunction = match.target;
         }
 
-        if ((!cacheHit || onlineCacheHit) &&
-            (enumerationSucceeded || onlineCacheHit) &&
-            identityAvailable && !cachePath.empty()) {
+        if (identityAvailable) {
             try {
                 const auto cacheText = wmod::windhawk_symbol_compat::HookCacheText(
                     cacheIdentity, symbolHooks, symbolHooksCount, found, resolved);
                 if (!cacheText.empty()) {
-                    (void)wmod::windhawk_symbol_compat::WriteLocalHookCache(cachePath, cacheText);
+                    if ((!cacheHit || onlineCacheHit || registryCacheHit) &&
+                        (enumerationSucceeded || onlineCacheHit || registryCacheHit) &&
+                        !cachePath.empty()) {
+                        (void)wmod::windhawk_symbol_compat::WriteLocalHookCache(
+                            cachePath, cacheText);
+                    }
+                    // Opportunistic write-through to an existing Windhawk key.
+                    (void)wmod::windhawk_symbol_compat::WriteWindhawkRegistryHookCache(
+                        cacheIdentity, cacheText);
                 }
             } catch (...) {
                 // Cache I/O is opportunistic and never changes hook registration success.

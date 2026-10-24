@@ -135,6 +135,67 @@ int wmain() {
     CHECK(wmod::windhawk_symbol_compat::ResolveHookCacheText(
         invalidOffsetCache, cacheIdentity, &lookupHook, 1, cacheFound, cacheResolved) == FALSE);
 
+    // Windhawk registry cache interoperability uses a disposable HKCU key.
+    std::wstring windhawkSubkey;
+    CHECK(wmod::windhawk_symbol_compat::BuildWindhawkRegistryCacheSubkey(
+        L"com.example.symbol-cache-test", windhawkSubkey) == TRUE);
+    CHECK(windhawkSubkey ==
+        L"SOFTWARE\\Windhawk\\Engine\\ModsWritable\\com.example.symbol-cache-test\\SymbolCache");
+    CHECK(wmod::windhawk_symbol_compat::BuildWindhawkRegistryCacheSubkey(
+        L"bad\\subkey", windhawkSubkey) == FALSE);
+
+    const std::wstring registryTestKey =
+        L"Software\\00047Tests\\SymbolCache\\" + std::to_wstring(GetCurrentProcessId());
+    RegDeleteTreeW(HKEY_CURRENT_USER, registryTestKey.c_str());
+    HKEY registryTestHandle = nullptr;
+    CHECK(RegCreateKeyExW(HKEY_CURRENT_USER, registryTestKey.c_str(), 0, nullptr, 0,
+        KEY_SET_VALUE | KEY_QUERY_VALUE | KEY_WOW64_64KEY, nullptr,
+        &registryTestHandle, nullptr) == ERROR_SUCCESS);
+    RegCloseKey(registryTestHandle);
+
+    const std::wstring validRegistryCache =
+        L"1#" + cacheIdentity.headerModuleName + L"#" + cacheIdentity.version +
+        L"#CompatibilityProbeSymbol#" +
+        std::to_wstring(reinterpret_cast<std::uintptr_t>(&CompatibilityProbeSymbol) -
+            cacheIdentity.moduleBase);
+    CHECK(wmod::windhawk_symbol_compat::WriteRegistryHookCacheValue(
+        HKEY_CURRENT_USER, registryTestKey, L"pdb_test", validRegistryCache) == TRUE);
+    std::wstring loadedRegistryCache;
+    CHECK(wmod::windhawk_symbol_compat::ReadRegistryHookCacheValue(
+        HKEY_CURRENT_USER, registryTestKey, L"pdb_test", loadedRegistryCache) == TRUE);
+    CHECK(loadedRegistryCache == validRegistryCache);
+    CHECK(wmod::windhawk_symbol_compat::ResolveHookCacheText(
+        loadedRegistryCache, cacheIdentity, &lookupHook, 1, cacheFound, cacheResolved) == TRUE);
+
+    const std::wstring embeddedNul(L"invalid\0cache", 13);
+    CHECK(wmod::windhawk_symbol_compat::WriteRegistryHookCacheValue(
+        HKEY_CURRENT_USER, registryTestKey, L"pdb_bad", embeddedNul) == FALSE);
+    std::wstring oversizedRegistryCache(
+        wmod::windhawk_symbol_compat::kMaxWindhawkRegistryCacheBytes / sizeof(wchar_t), L'x');
+    CHECK(wmod::windhawk_symbol_compat::WriteRegistryHookCacheValue(
+        HKEY_CURRENT_USER, registryTestKey, L"pdb_large", oversizedRegistryCache) == FALSE);
+
+    DWORD badRegistryType = 7;
+    CHECK(RegOpenKeyExW(HKEY_CURRENT_USER, registryTestKey.c_str(), 0,
+        KEY_SET_VALUE | KEY_WOW64_64KEY, &registryTestHandle) == ERROR_SUCCESS);
+    CHECK(RegSetValueExW(registryTestHandle, L"pdb_wrong_type", 0, REG_DWORD,
+        reinterpret_cast<const BYTE*>(&badRegistryType), sizeof(badRegistryType)) == ERROR_SUCCESS);
+    RegCloseKey(registryTestHandle);
+    CHECK(wmod::windhawk_symbol_compat::ReadRegistryHookCacheValue(
+        HKEY_CURRENT_USER, registryTestKey, L"pdb_wrong_type", loadedRegistryCache) == FALSE);
+
+    std::wstring mergedRegistryCache;
+    const std::wstring additionalCache =
+        L"1#" + cacheIdentity.headerModuleName + L"#" + cacheIdentity.version +
+        L"#AnotherSymbolForMerge#" +
+        std::to_wstring(reinterpret_cast<std::uintptr_t>(&CompatibilityProbeSymbol) -
+            cacheIdentity.moduleBase);
+    CHECK(wmod::windhawk_symbol_compat::MergeWindhawkHookCacheText(
+        cacheIdentity, validRegistryCache, additionalCache, mergedRegistryCache) == TRUE);
+    CHECK(mergedRegistryCache.find(L"#CompatibilityProbeSymbol#") != std::wstring::npos);
+    CHECK(mergedRegistryCache.find(L"#AnotherSymbolForMerge#") != std::wstring::npos);
+    RegDeleteTreeW(HKEY_CURRENT_USER, registryTestKey.c_str());
+
     // Missing required names fail without publishing partial symbol results.
     struct MissingSelector {
         PCWSTR string;
