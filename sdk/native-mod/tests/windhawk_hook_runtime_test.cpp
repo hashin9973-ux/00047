@@ -153,15 +153,14 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(apply() == TRUE);
     CHECK(target(5) == 7);
     CHECK(canUnload() == FALSE); // lifecycle still accepts new hooks
-    shutdown();
-    CHECK(canUnload() == TRUE);
 
-    // Once the first DLL releases the target claim, the second DLL can claim
-    // it. The first module must remain mapped while another mod hooks its code.
+    // A second mod may claim the first DLL's target while it is live. Once
+    // shutdown begins, that existing claim must keep the first DLL mapped.
     CHECK(externalInstall(targetFunction, &externalOriginal) == TRUE);
     CHECK(externalOriginal != nullptr);
     CHECK(externalApply() == TRUE);
     CHECK(target(5) == 17);
+    shutdown();
     CHECK(canUnload() == FALSE);
 
     CHECK(externalRemove(targetFunction) == TRUE);
@@ -169,20 +168,31 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(target(5) == 7);
     externalShutdown();
     CHECK(externalCanUnload() == TRUE);
-    CHECK(FreeLibrary(secondModule) != FALSE);
-    secondModule = nullptr;
-    CHECK(DeleteFileW(duplicatePath) != FALSE);
 
-    // Re-claiming the exact target from the first DLL confirms the cross-mod
-    // registry entry was released after the second DLL removed its hook.
+    // Re-claiming the exact target now succeeds because the external claim has
+    // been released, before the first DLL's final unload-safety query.
     CHECK(begin() == TRUE);
     CHECK(install() == TRUE);
     CHECK(apply() == TRUE);
     CHECK(target(5) == 17);
     CHECK(remove() == TRUE);
     CHECK(apply() == TRUE);
+    CHECK(target(5) == 7);
     shutdown();
     CHECK(canUnload() == TRUE);
+
+    // Once the first DLL is approved for unload, late claims into its image
+    // must fail until a fresh lifecycle clears the retirement marker.
+    CHECK(externalBegin() == TRUE);
+    externalOriginal = nullptr;
+    CHECK(externalInstall(targetFunction, &externalOriginal) == FALSE);
+    CHECK(externalOriginal == nullptr);
+    externalShutdown();
+    CHECK(externalCanUnload() == TRUE);
+
+    CHECK(FreeLibrary(secondModule) != FALSE);
+    secondModule = nullptr;
+    CHECK(DeleteFileW(duplicatePath) != FALSE);
 
     // Re-enter an initialized hook lifecycle and hold a detour on a second
     // thread while shutdown runs. The module must not become unloadable until

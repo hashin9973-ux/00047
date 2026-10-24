@@ -34,6 +34,99 @@ constexpr size_t kMaxSharedHookEntries = 4096;
 // conservatively across independently linked mod DLLs.
 constexpr std::uintptr_t kHookConflictDistance = 10;
 
+
+// A retiring-module record is encoded in an impossible user-mode function
+// address (top 16 bits set). The owner field stores the module base; the marker
+// payload fingerprints its path and PE identity without changing the shared
+// table layout, so old table readers don't confuse the record with a hook target.
+constexpr std::uintptr_t kRetiringModuleMarkerMask =
+    static_cast<std::uintptr_t>(0xFFFF000000000000ull);
+constexpr std::uintptr_t kRetiringModuleMarkerPrefix =
+    static_cast<std::uintptr_t>(0xFFFF000000000000ull);
+constexpr std::uintptr_t kRetiringModuleFingerprintMask =
+    static_cast<std::uintptr_t>(0x0000FFFFFFFFFFFFull);
+
+bool IsRetiringModuleMarker(std::uintptr_t target) noexcept {
+    return (target & kRetiringModuleMarkerMask) == kRetiringModuleMarkerPrefix;
+}
+
+bool ModuleRetirementMarker(HMODULE module, const MODULEINFO& info,
+    std::uintptr_t& marker) noexcept {
+    marker = 0;
+    try {
+        if (!module || info.lpBaseOfDll != module ||
+            info.SizeOfImage < sizeof(IMAGE_DOS_HEADER)) {
+            return false;
+        }
+
+        const auto* base = static_cast<const BYTE*>(info.lpBaseOfDll);
+        IMAGE_DOS_HEADER dos{};
+        SIZE_T read = 0;
+        if (!ReadProcessMemory(GetCurrentProcess(), base, &dos, sizeof(dos), &read) ||
+            read != sizeof(dos) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+            dos.e_lfanew <= 0) {
+            return false;
+        }
+        const size_t ntOffset = static_cast<size_t>(dos.e_lfanew);
+        if (ntOffset > info.SizeOfImage ||
+            sizeof(IMAGE_NT_HEADERS64) > info.SizeOfImage - ntOffset) {
+            return false;
+        }
+
+        IMAGE_NT_HEADERS64 nt{};
+        read = 0;
+        if (!ReadProcessMemory(GetCurrentProcess(), base + ntOffset,
+                &nt, sizeof(nt), &read) || read != sizeof(nt) ||
+            nt.Signature != IMAGE_NT_SIGNATURE ||
+            nt.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
+            nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+            nt.OptionalHeader.SizeOfImage != info.SizeOfImage) {
+            return false;
+        }
+
+        std::vector<wchar_t> pathBuffer(32768);
+        const DWORD pathLength = GetModuleFileNameW(
+            module, pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
+        if (!pathLength || pathLength >= pathBuffer.size()) return false;
+        std::wstring path(pathBuffer.data(), pathLength);
+        std::transform(path.begin(), path.end(), path.begin(),
+            [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+
+        std::uint64_t hash = 14695981039346656037ull;
+        auto addByte = [&hash](unsigned char value) {
+            hash ^= value;
+            hash *= 1099511628211ull;
+        };
+        for (wchar_t c : path) {
+            const auto code = static_cast<std::uint16_t>(c);
+            addByte(static_cast<unsigned char>(code & 0xff));
+            addByte(static_cast<unsigned char>((code >> 8) & 0xff));
+        }
+        for (unsigned i = 0; i < sizeof(nt.FileHeader.TimeDateStamp); ++i) {
+            addByte(static_cast<unsigned char>(
+                (nt.FileHeader.TimeDateStamp >> (i * 8)) & 0xff));
+        }
+        const auto imageSize = static_cast<std::uint64_t>(info.SizeOfImage);
+        for (unsigned i = 0; i < sizeof(imageSize); ++i) {
+            addByte(static_cast<unsigned char>((imageSize >> (i * 8)) & 0xff));
+        }
+        marker = kRetiringModuleMarkerPrefix |
+            (static_cast<std::uintptr_t>(hash) & kRetiringModuleFingerprintMask);
+        return true;
+    } catch (...) {
+        marker = 0;
+        return false;
+    }
+}
+
+bool AddressInsideModule(std::uintptr_t address,
+    const MODULEINFO& info) noexcept {
+    if (!info.lpBaseOfDll || info.SizeOfImage == 0) return false;
+    const auto start = reinterpret_cast<std::uintptr_t>(info.lpBaseOfDll);
+    const auto end = start + info.SizeOfImage;
+    return end >= start && address >= start && address < end;
+}
+
 struct SharedHookEntry {
     std::uintptr_t target = 0;
     std::uintptr_t owner = 0;
@@ -68,8 +161,45 @@ public:
         const auto targetValue = reinterpret_cast<std::uintptr_t>(target);
         const auto ownerValue = reinterpret_cast<std::uintptr_t>(owner);
         bool alreadyClaimed = false;
-        for (DWORD i = 0; i < table_->count; ++i) {
-            const auto claimedTarget = table_->entries[i].target;
+        for (DWORD i = 0; i < table_->count;) {
+            const auto entry = table_->entries[i];
+            if (IsRetiringModuleMarker(entry.target)) {
+                HMODULE retiringModule = reinterpret_cast<HMODULE>(entry.owner);
+                MODULEINFO retiringInfo{};
+                if (!retiringModule ||
+                    !GetModuleInformation(GetCurrentProcess(), retiringModule,
+                        &retiringInfo, sizeof(retiringInfo)) ||
+                    retiringInfo.lpBaseOfDll != retiringModule ||
+                    retiringInfo.SizeOfImage == 0) {
+                    RemoveEntryAtLocked(i);
+                    continue;
+                }
+
+                std::uintptr_t currentMarker = 0;
+                if (!ModuleRetirementMarker(
+                        retiringModule, retiringInfo, currentMarker)) {
+                    // If identity validation fails but bounds remain readable,
+                    // fail closed for targets within this image.
+                    if (AddressInsideModule(targetValue, retiringInfo)) {
+                        alreadyClaimed = true;
+                        break;
+                    }
+                    ++i;
+                    continue;
+                }
+                if (currentMarker != entry.target) {
+                    RemoveEntryAtLocked(i);
+                    continue;
+                }
+                if (AddressInsideModule(targetValue, retiringInfo)) {
+                    alreadyClaimed = true;
+                    break;
+                }
+                ++i;
+                continue;
+            }
+
+            const auto claimedTarget = entry.target;
             const auto distance = targetValue >= claimedTarget
                 ? targetValue - claimedTarget
                 : claimedTarget - targetValue;
@@ -77,6 +207,7 @@ public:
                 alreadyClaimed = true;
                 break;
             }
+            ++i;
         }
         if (!alreadyClaimed && table_->count < kMaxSharedHookEntries) {
             table_->entries[table_->count] = {targetValue, ownerValue};
@@ -117,6 +248,51 @@ public:
         ReleaseTable();
     }
 
+    bool MarkModuleRetiring(HMODULE module) noexcept {
+        MODULEINFO info{};
+        if (!module ||
+            !GetModuleInformation(GetCurrentProcess(), module, &info, sizeof(info))) {
+            return false;
+        }
+        std::uintptr_t marker = 0;
+        if (!ModuleRetirementMarker(module, info, marker)) return false;
+
+        if (!LockTable()) return false;
+        const auto base = reinterpret_cast<std::uintptr_t>(module);
+        for (DWORD i = 0; i < table_->count; ++i) {
+            if (!IsRetiringModuleMarker(table_->entries[i].target) ||
+                table_->entries[i].owner != base) {
+                continue;
+            }
+            // A fresh image loaded at the same base replaces the old identity.
+            table_->entries[i].target = marker;
+            ReleaseTable();
+            return true;
+        }
+        if (table_->count >= kMaxSharedHookEntries) {
+            ReleaseTable();
+            return false;
+        }
+        table_->entries[table_->count++] = {marker, base};
+        ReleaseTable();
+        return true;
+    }
+
+    bool ClearModuleRetiring(HMODULE module) noexcept {
+        if (!module || !LockTable()) return false;
+        const auto base = reinterpret_cast<std::uintptr_t>(module);
+        for (DWORD i = 0; i < table_->count;) {
+            if (IsRetiringModuleMarker(table_->entries[i].target) &&
+                table_->entries[i].owner == base) {
+                RemoveEntryAtLocked(i);
+                continue;
+            }
+            ++i;
+        }
+        ReleaseTable();
+        return true;
+    }
+
     bool ReferencesModule(HMODULE module) noexcept {
         if (!module || !LockTable()) return true;
         MODULEINFO info{};
@@ -135,6 +311,7 @@ public:
         bool found = false;
         for (DWORD i = 0; i < table_->count; ++i) {
             const auto target = table_->entries[i].target;
+            if (IsRetiringModuleMarker(target)) continue;
             if (table_->entries[i].owner == ownerValue || (target >= start && target < end)) {
                 found = true;
                 break;
@@ -145,6 +322,13 @@ public:
     }
 
 private:
+    void RemoveEntryAtLocked(DWORD index) noexcept {
+        if (!table_ || index >= table_->count) return;
+        table_->entries[index] = table_->entries[table_->count - 1];
+        --table_->count;
+        table_->entries[table_->count] = {};
+    }
+
     bool EnsureReady() noexcept {
         try {
             std::lock_guard<std::mutex> guard(initMutex_);
@@ -693,7 +877,9 @@ BOOL Wh_SetFunctionHook(void* targetFunction, void* hookFunction, void** origina
     if (!g_accepting || g_hooks.find(targetFunction) != g_hooks.end()) return FALSE;
 
     HMODULE ownerModule = CurrentHookOwnerModule();
-    if (!ownerModule || !SharedHookRegistry().Claim(targetFunction, ownerModule)) {
+    if (!ownerModule ||
+        !SharedHookRegistry().ClearModuleRetiring(ownerModule) ||
+        !SharedHookRegistry().Claim(targetFunction, ownerModule)) {
         return FALSE;
     }
     if (!EnsureInitializedLocked()) {
@@ -758,6 +944,8 @@ namespace wmod::windhawk_hook_compat {
 BOOL BeginHookOperations() noexcept {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_hooks.empty()) return FALSE;
+    HMODULE module = CurrentHookOwnerModule();
+    if (!module || !SharedHookRegistry().ClearModuleRetiring(module)) return FALSE;
     g_accepting = true;
     return TRUE;
 }
@@ -775,7 +963,8 @@ BOOL CanUnload() noexcept {
         if (!operationSession) return FALSE;
         HMODULE module = CurrentHookOwnerModule();
         if (!module || SharedHookRegistry().ReferencesModule(module)) return FALSE;
-        return HasNoInFlightModuleFrames() ? TRUE : FALSE;
+        if (!HasNoInFlightModuleFrames()) return FALSE;
+        return SharedHookRegistry().MarkModuleRetiring(module) ? TRUE : FALSE;
     } catch (...) {
         return FALSE;
     }
