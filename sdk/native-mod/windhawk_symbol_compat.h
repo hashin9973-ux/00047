@@ -833,6 +833,169 @@ inline bool WriteRegistryHookCacheValue(
     }
 }
 
+
+constexpr ULONGLONG kHookSymbolFailureThrottleMs = 60'000;
+constexpr ULONGLONG kFileTimeTicksPerMillisecond = 10'000;
+constexpr wchar_t kHookSymbolFailureThrottlePrefix[] =
+    L"00047-hook-symbol-error-v1";
+
+inline ULONGLONG CurrentUtcFileTimeTicks() noexcept {
+    FILETIME fileTime{};
+    GetSystemTimeAsFileTime(&fileTime);
+    ULARGE_INTEGER ticks{};
+    ticks.LowPart = fileTime.dwLowDateTime;
+    ticks.HighPart = fileTime.dwHighDateTime;
+    return ticks.QuadPart;
+}
+
+inline std::wstring HookSymbolFailureThrottleText(
+    std::wstring_view modBinaryStamp, ULONGLONG recordedFileTime) {
+    if (modBinaryStamp.empty() || modBinaryStamp.size() > 64 ||
+        modBinaryStamp.find(L'#') != std::wstring_view::npos ||
+        modBinaryStamp.find(L'\0') != std::wstring_view::npos ||
+        recordedFileTime == 0) {
+        return {};
+    }
+    return std::wstring(kHookSymbolFailureThrottlePrefix) + L"#" +
+        std::wstring(modBinaryStamp) + L"#" +
+        std::to_wstring(recordedFileTime);
+}
+
+inline bool WriteHookSymbolFailureThrottle(
+    const std::filesystem::path& path, std::wstring_view modBinaryStamp,
+    ULONGLONG recordedFileTime) noexcept {
+    try {
+        const auto text = HookSymbolFailureThrottleText(
+            modBinaryStamp, recordedFileTime);
+        return !text.empty() && WriteLocalHookCache(path, text);
+    } catch (...) {
+        return false;
+    }
+}
+
+// The sidecar is scoped by the mod package, target PE/PDB identity, and symbol
+// selector set through HookCachePath. It also embeds an identity for the
+// currently loaded mod binary, so recompiling/replacing the mod clears failures.
+inline bool ShouldThrottleHookSymbolFailure(
+    const std::filesystem::path& path, std::wstring_view modBinaryStamp,
+    ULONGLONG currentFileTime, ULONGLONG throttleMilliseconds) noexcept {
+    if (path.empty() || modBinaryStamp.empty() || currentFileTime == 0 ||
+        throttleMilliseconds == 0 ||
+        throttleMilliseconds >
+            (std::numeric_limits<ULONGLONG>::max() / kFileTimeTicksPerMillisecond)) {
+        return false;
+    }
+
+    try {
+        std::wstring text;
+        if (!ReadLocalHookCache(path, text)) return false;
+
+        const size_t first = text.find(L'#');
+        const size_t second = first == std::wstring::npos
+            ? std::wstring::npos : text.find(L'#', first + 1);
+        if (first == std::wstring::npos || second == std::wstring::npos ||
+            text.find(L'#', second + 1) != std::wstring::npos ||
+            std::wstring_view(text).substr(0, first) !=
+                kHookSymbolFailureThrottlePrefix) {
+            DeleteFileW(path.c_str());
+            return false;
+        }
+
+        const std::wstring_view cachedStamp(text.data() + first + 1,
+            second - first - 1);
+        const std::wstring_view timestampText(text.data() + second + 1,
+            text.size() - second - 1);
+        if (cachedStamp != modBinaryStamp || timestampText.empty()) {
+            DeleteFileW(path.c_str());
+            return false;
+        }
+
+        for (wchar_t c : timestampText) {
+            if (c < L'0' || c > L'9') {
+                DeleteFileW(path.c_str());
+                return false;
+            }
+        }
+
+        const std::wstring timestampString(timestampText);
+        errno = 0;
+        wchar_t* end = nullptr;
+        const unsigned long long recordedFileTime =
+            std::wcstoull(timestampString.c_str(), &end, 10);
+        if (errno == ERANGE || end == timestampString.c_str() ||
+            !end || *end != L'\0' || recordedFileTime == 0 ||
+            currentFileTime < recordedFileTime) {
+            DeleteFileW(path.c_str());
+            return false;
+        }
+
+        const ULONGLONG age = currentFileTime - recordedFileTime;
+        const ULONGLONG throttleTicks =
+            throttleMilliseconds * kFileTimeTicksPerMillisecond;
+        if (age > throttleTicks) {
+            DeleteFileW(path.c_str());
+            return false;
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline bool CurrentModBinaryStamp(std::wstring& stamp) noexcept {
+    stamp.clear();
+    HMODULE owner = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&HookCachePath), &owner) || !owner) {
+        return false;
+    }
+
+    HANDLE file = INVALID_HANDLE_VALUE;
+    try {
+        const std::wstring imagePath = ModuleImagePath(owner);
+        if (imagePath.empty()) return false;
+        file = CreateFileW(imagePath.c_str(), FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            nullptr);
+        if (file == INVALID_HANDLE_VALUE) return false;
+
+        BY_HANDLE_FILE_INFORMATION info{};
+        const BOOL readInfo = GetFileInformationByHandle(file, &info);
+        CloseHandle(file);
+        file = INVALID_HANDLE_VALUE;
+        if (!readInfo ||
+            (info.dwFileAttributes &
+                (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+            return false;
+        }
+
+        std::wstring material = imagePath;
+        std::transform(material.begin(), material.end(), material.begin(),
+            [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+        auto appendNumber = [&material](ULONGLONG value) {
+            material.push_back(L'#');
+            material += std::to_wstring(value);
+        };
+        appendNumber(info.dwVolumeSerialNumber);
+        appendNumber(info.nFileIndexHigh);
+        appendNumber(info.nFileIndexLow);
+        appendNumber(info.nFileSizeHigh);
+        appendNumber(info.nFileSizeLow);
+        appendNumber(info.ftLastWriteTime.dwHighDateTime);
+        appendNumber(info.ftLastWriteTime.dwLowDateTime);
+
+        stamp = HashText(HashWide(material));
+        return !stamp.empty();
+    } catch (...) {
+        if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+        stamp.clear();
+        return false;
+    }
+}
+
 inline std::wstring HookCacheText(
     const HookCacheIdentity& identity, const WH_SYMBOL_HOOK* hooks,
     size_t count, const std::vector<bool>& found,
@@ -1258,6 +1421,20 @@ inline BOOL Wh_HookSymbols(HMODULE module,
         ? wmod::windhawk_symbol_compat::HookCachePath(
             cacheIdentity, symbolHooks, symbolHooksCount, noUndecoratedSymbols)
         : std::filesystem::path{};
+    std::filesystem::path failureThrottlePath;
+    std::wstring modBinaryStamp;
+    if (!cachePath.empty() &&
+        wmod::windhawk_symbol_compat::CurrentModBinaryStamp(modBinaryStamp)) {
+        failureThrottlePath = cachePath;
+        failureThrottlePath += L".error";
+    }
+    auto recordSymbolResolutionFailure = [&]() noexcept {
+        if (!failureThrottlePath.empty() && !modBinaryStamp.empty()) {
+            (void)wmod::windhawk_symbol_compat::WriteHookSymbolFailureThrottle(
+                failureThrottlePath, modBinaryStamp,
+                wmod::windhawk_symbol_compat::CurrentUtcFileTimeTicks());
+        }
+    };
     bool cacheHit = false;
     bool onlineCacheHit = false;
     bool registryCacheHit = false;
@@ -1285,6 +1462,14 @@ inline BOOL Wh_HookSymbols(HMODULE module,
             }
         }
     }
+    if (!cacheHit && identityAvailable &&
+        !failureThrottlePath.empty() &&
+        wmod::windhawk_symbol_compat::ShouldThrottleHookSymbolFailure(
+            failureThrottlePath, modBinaryStamp,
+            wmod::windhawk_symbol_compat::CurrentUtcFileTimeTicks(),
+            wmod::windhawk_symbol_compat::kHookSymbolFailureThrottleMs)) {
+        return FALSE;
+    }
     if (!cacheHit && identityAvailable) {
         std::wstring onlineCacheText;
         if (wmod::windhawk_symbol_compat::FetchOnlineHookCache(
@@ -1304,7 +1489,10 @@ inline BOOL Wh_HookSymbols(HMODULE module,
         HANDLE search = Wh_FindFirstSymbol(module, &findOptions, &current);
         if (!search) {
             for (size_t i = 0; i < symbolHooksCount; ++i) {
-                if (!symbolHooks[i].optional) return FALSE;
+                if (!symbolHooks[i].optional) {
+                    recordSymbolResolutionFailure();
+                    return FALSE;
+                }
             }
         } else {
             enumerationSucceeded = true;
@@ -1336,9 +1524,16 @@ inline BOOL Wh_HookSymbols(HMODULE module,
             Wh_FindCloseSymbol(search);
         }
         for (size_t i = 0; i < symbolHooksCount; ++i) {
-            if (!found[i] && !symbolHooks[i].optional) return FALSE;
+            if (!found[i] && !symbolHooks[i].optional) {
+                recordSymbolResolutionFailure();
+                return FALSE;
+            }
         }
     }
+
+    // A successful resolution means the prior failure marker is stale, even
+    // if subsequent hook registration fails for an unrelated runtime reason.
+    if (!failureThrottlePath.empty()) DeleteFileW(failureThrottlePath.c_str());
 
     struct RegisteredHook {
         void* target = nullptr;

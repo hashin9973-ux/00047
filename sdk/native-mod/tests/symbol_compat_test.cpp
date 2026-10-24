@@ -196,6 +196,47 @@ int wmain() {
     CHECK(mergedRegistryCache.find(L"#AnotherSymbolForMerge#") != std::wstring::npos);
     RegDeleteTreeW(HKEY_CURRENT_USER, registryTestKey.c_str());
 
+    // Repeated required-symbol failures are throttled briefly, but expired,
+    // corrupt, clock-reversed, or different-mod markers must not suppress retry.
+    std::wstring currentModStamp;
+    CHECK(wmod::windhawk_symbol_compat::CurrentModBinaryStamp(currentModStamp) == TRUE);
+    CHECK(currentModStamp.size() == 16);
+
+    const auto throttleDirectory = std::filesystem::temp_directory_path() /
+        (L"00047-symbol-throttle-" + std::to_wstring(GetCurrentProcessId()));
+    std::filesystem::create_directories(throttleDirectory);
+    const auto throttlePath = throttleDirectory / L"symbol-error.txt";
+    DeleteFileW(throttlePath.c_str());
+    constexpr ULONGLONG kTestFileTime = 132500000000000000ull;
+    constexpr ULONGLONG kTestThrottleMs = 60'000;
+    CHECK(wmod::windhawk_symbol_compat::ShouldThrottleHookSymbolFailure(
+        throttlePath, currentModStamp, kTestFileTime, kTestThrottleMs) == FALSE);
+    CHECK(wmod::windhawk_symbol_compat::WriteHookSymbolFailureThrottle(
+        throttlePath, currentModStamp, kTestFileTime) == TRUE);
+    CHECK(wmod::windhawk_symbol_compat::ShouldThrottleHookSymbolFailure(
+        throttlePath, currentModStamp, kTestFileTime + 10'000'000ull,
+        kTestThrottleMs) == TRUE);
+    CHECK(wmod::windhawk_symbol_compat::ShouldThrottleHookSymbolFailure(
+        throttlePath, L"different-mod-build", kTestFileTime + 10'000'000ull,
+        kTestThrottleMs) == FALSE);
+    CHECK(wmod::windhawk_symbol_compat::WriteHookSymbolFailureThrottle(
+        throttlePath, currentModStamp, kTestFileTime) == TRUE);
+    CHECK(wmod::windhawk_symbol_compat::ShouldThrottleHookSymbolFailure(
+        throttlePath, currentModStamp,
+        kTestFileTime + kTestThrottleMs * 10'000ull + 1,
+        kTestThrottleMs) == FALSE);
+    CHECK(wmod::windhawk_symbol_compat::WriteHookSymbolFailureThrottle(
+        throttlePath, currentModStamp, kTestFileTime) == TRUE);
+    CHECK(wmod::windhawk_symbol_compat::ShouldThrottleHookSymbolFailure(
+        throttlePath, currentModStamp, kTestFileTime - 1,
+        kTestThrottleMs) == FALSE);
+    CHECK(wmod::windhawk_symbol_compat::WriteLocalHookCache(
+        throttlePath, L"corrupt-throttle-marker") == TRUE);
+    CHECK(wmod::windhawk_symbol_compat::ShouldThrottleHookSymbolFailure(
+        throttlePath, currentModStamp, kTestFileTime + 10'000'000ull,
+        kTestThrottleMs) == FALSE);
+    std::filesystem::remove_all(throttleDirectory);
+
     // Missing required names fail without publishing partial symbol results.
     struct MissingSelector {
         PCWSTR string;
