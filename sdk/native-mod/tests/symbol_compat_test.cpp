@@ -248,8 +248,18 @@ int wmain() {
     missingHook.symbolsCount = 1;
     missingHook.pOriginalFunction = &untouched;
     missingHook.optional = false;
+    auto missingFailurePath = wmod::windhawk_symbol_compat::HookCachePath(
+        cacheIdentity, &missingHook, 1, hookOptions.noUndecoratedSymbols);
+    missingFailurePath += L".error";
+    DeleteFileW(missingFailurePath.c_str());
     CHECK(Wh_HookSymbols(GetModuleHandleW(nullptr), &missingHook, 1, &hookOptions) == FALSE);
     CHECK(untouched == reinterpret_cast<void*>(static_cast<ULONG_PTR>(1)));
+    CHECK(wmod::windhawk_symbol_compat::ShouldThrottleHookSymbolFailure(
+        missingFailurePath, currentModStamp,
+        wmod::windhawk_symbol_compat::CurrentUtcFileTimeTicks(),
+        wmod::windhawk_symbol_compat::kHookSymbolFailureThrottleMs) == TRUE);
+    // The same required selector is suppressed for the short retry window.
+    CHECK(Wh_HookSymbols(GetModuleHandleW(nullptr), &missingHook, 1, &hookOptions) == FALSE);
 
     // An absent optional hook is a success and leaves its output untouched.
     missingHook.optional = true;
