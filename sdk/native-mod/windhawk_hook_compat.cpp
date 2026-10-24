@@ -798,7 +798,7 @@ void ShutdownHookOperations() noexcept {
     g_accepting = false;
     HookOperationSessionGuard operationSession;
     if (!operationSession) {
-        OutputDebugStringW(L"00047: unable to acquire shared hook session for shutdown; retaining hook state.\\n");
+        OutputDebugStringW(L"00047: unable to acquire shared hook session for shutdown; retaining hook state.\n");
         return;
     }
     if (!ApplyLocked()) {
