@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <mutex>
 #include <TlHelp32.h>
 #include <Psapi.h>
