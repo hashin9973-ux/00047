@@ -63,6 +63,7 @@ constexpr size_t kMaxSymbolNameChars = 4096;
 constexpr size_t kMaxSymbolCount = 100000;
 constexpr size_t kMaxStoredNameChars = 4 * 1024 * 1024;
 constexpr DWORD kDbgHelpLockTimeoutMs = 10000;
+constexpr DWORD kSymbolCacheLoadLockWaitMs = 2500;
 
 struct SymbolRecord {
     void* address = nullptr;
@@ -594,6 +595,75 @@ inline std::filesystem::path HookCachePath(
         return {};
     }
 }
+
+
+inline std::wstring HookSymbolCacheMutexName(
+    const HookCacheIdentity& identity) noexcept {
+    try {
+        std::wstring scope;
+        const auto package = wmod::PackageDirectory();
+        if (!package.empty()) scope = package.filename().wstring();
+        if (scope.empty()) {
+            HMODULE owner = nullptr;
+            if (GetModuleHandleExW(
+                    GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                    reinterpret_cast<LPCWSTR>(&HookSymbolCacheMutexName),
+                    &owner) && owner) {
+                scope = ModuleImagePath(owner);
+            }
+        }
+        if (scope.empty() || identity.cacheKey.empty()) return {};
+        return L"Local\\00047SymbolGetOnlineCacheMutex-" +
+            HashText(HashWide(scope)) + L"-" +
+            HashText(HashWide(identity.cacheKey));
+    } catch (...) {
+        return {};
+    }
+}
+
+class HookSymbolCacheLoadLock final {
+public:
+    HookSymbolCacheLoadLock() = default;
+    HookSymbolCacheLoadLock(const HookSymbolCacheLoadLock&) = delete;
+    HookSymbolCacheLoadLock& operator=(const HookSymbolCacheLoadLock&) = delete;
+
+    ~HookSymbolCacheLoadLock() {
+        if (handle_) {
+            if (acquired_) ReleaseMutex(handle_);
+            CloseHandle(handle_);
+        }
+    }
+
+    bool Acquire(const HookCacheIdentity& identity, DWORD timeoutMs) noexcept {
+        if (handle_ || acquired_) return acquired_;
+        try {
+            const auto name = HookSymbolCacheMutexName(identity);
+            if (name.empty()) return false;
+            handle_ = CreateMutexW(nullptr, FALSE, name.c_str());
+            if (!handle_) return false;
+            const DWORD wait = WaitForSingleObject(handle_, timeoutMs);
+            if (wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED) {
+                acquired_ = true;
+                return true;
+            }
+            CloseHandle(handle_);
+            handle_ = nullptr;
+            return false;
+        } catch (...) {
+            if (handle_) CloseHandle(handle_);
+            handle_ = nullptr;
+            acquired_ = false;
+            return false;
+        }
+    }
+
+    explicit operator bool() const noexcept { return acquired_; }
+
+private:
+    HANDLE handle_ = nullptr;
+    bool acquired_ = false;
+};
 
 inline bool HookCacheExecutableTarget(
     const HookCacheIdentity& identity, std::uint64_t offset,
@@ -1664,6 +1734,41 @@ inline BOOL Wh_HookSymbols(HMODULE module,
         }
     }
     if (!cacheHit && identityAvailable) {
+        std::wstring cached;
+        if (wmod::windhawk_symbol_compat::ReadWindhawkRegistryHookCache(
+                cacheIdentity, cached)) {
+            if (wmod::windhawk_symbol_compat::ResolveHookCacheText(
+                    cached, cacheIdentity, symbolHooks, symbolHooksCount, found, resolved)) {
+                cacheHit = true;
+                registryCacheHit = true;
+                wmod::windhawk_symbol_compat::HookCacheHitsCounter().fetch_add(1, std::memory_order_relaxed);
+                if (!cachePath.empty()) {
+                    (void)wmod::windhawk_symbol_compat::WriteLocalHookCache(cachePath, cached);
+                }
+            } else if (registryErrorContextAvailable &&
+                wmod::windhawk_symbol_compat::IsWindhawkErrorThrottleRecordActive(
+                    cached, registryErrorContext,
+                    wmod::windhawk_symbol_compat::CurrentUtcFileTimeTicks(),
+                    wmod::windhawk_symbol_compat::kWindhawkErrorThrottleMs)) {
+                return FALSE;
+            }
+        }
+    }
+    wmod::windhawk_symbol_compat::HookSymbolCacheLoadLock symbolCacheLoadLock;
+    if (!cacheHit && identityAvailable) {
+        (void)symbolCacheLoadLock.Acquire(
+            cacheIdentity, wmod::windhawk_symbol_compat::kSymbolCacheLoadLockWaitMs);
+    }
+    if (!cacheHit && symbolCacheLoadLock && !cachePath.empty()) {
+        std::wstring cached;
+        if (wmod::windhawk_symbol_compat::ReadLocalHookCache(cachePath, cached) &&
+            wmod::windhawk_symbol_compat::ResolveHookCacheText(
+                cached, cacheIdentity, symbolHooks, symbolHooksCount, found, resolved)) {
+            cacheHit = true;
+            wmod::windhawk_symbol_compat::HookCacheHitsCounter().fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    if (!cacheHit && symbolCacheLoadLock && identityAvailable) {
         std::wstring cached;
         if (wmod::windhawk_symbol_compat::ReadWindhawkRegistryHookCache(
                 cacheIdentity, cached)) {

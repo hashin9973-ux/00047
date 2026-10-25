@@ -1,5 +1,7 @@
 #include <Windows.h>
 #include <iostream>
+#include <atomic>
+#include <thread>
 #include "windhawk_nonhook_compat.h"
 
 #if defined(_MSC_VER)
@@ -127,6 +129,31 @@ int wmain() {
     wmod::windhawk_symbol_compat::HookCacheIdentity cacheIdentity{};
     CHECK(wmod::windhawk_symbol_compat::BuildHookCacheIdentity(
         GetModuleHandleW(nullptr), cacheModuleInfo, cacheIdentity));
+    const auto symbolMutexName =
+        wmod::windhawk_symbol_compat::HookSymbolCacheMutexName(cacheIdentity);
+    CHECK(!symbolMutexName.empty());
+    CHECK(symbolMutexName.find(L"Local\\00047SymbolGetOnlineCacheMutex-") == 0);
+    CHECK(symbolMutexName.size() < 256);
+    CHECK(symbolMutexName ==
+        wmod::windhawk_symbol_compat::HookSymbolCacheMutexName(cacheIdentity));
+
+    {
+        wmod::windhawk_symbol_compat::HookSymbolCacheLoadLock ownerLock;
+        CHECK(ownerLock.Acquire(cacheIdentity, 1000) == TRUE);
+        std::atomic<bool> contenderAcquired{true};
+        std::thread contender([&] {
+            wmod::windhawk_symbol_compat::HookSymbolCacheLoadLock contenderLock;
+            contenderAcquired.store(contenderLock.Acquire(cacheIdentity, 75),
+                std::memory_order_release);
+        });
+        contender.join();
+        CHECK(contenderAcquired.load(std::memory_order_acquire) == FALSE);
+    }
+    {
+        wmod::windhawk_symbol_compat::HookSymbolCacheLoadLock releasedLock;
+        CHECK(releasedLock.Acquire(cacheIdentity, 1000) == TRUE);
+    }
+
     const std::wstring invalidOffsetCache =
         L"1#" + cacheIdentity.headerModuleName + L"#" + cacheIdentity.version +
         L"#CompatibilityProbeSymbol#" + std::to_wstring(cacheIdentity.imageSize + 1);
