@@ -144,6 +144,46 @@ int wmain(int argc, wchar_t** argv) {
     void* externalOriginal = nullptr;
     CHECK(targetFunction != nullptr);
     CHECK(externalBegin() == TRUE);
+
+    // Hook creation in another mod must also wait for the shared operation
+    // session, not merely its short-lived target-claim section.
+    wchar_t createMutexName[96]{};
+    CHECK(swprintf_s(createMutexName, _countof(createMutexName),
+        L"Local\\00047NativeHookRegistryLock-%lu",
+        static_cast<unsigned long>(GetCurrentProcessId())) > 0);
+    HANDLE createMutex = CreateMutexW(nullptr, FALSE, createMutexName);
+    CHECK(createMutex != nullptr);
+    CHECK(WaitForSingleObject(createMutex, 5000) == WAIT_OBJECT_0);
+    void* blockedCreationOriginal = nullptr;
+    std::atomic<bool> creationStarted{false};
+    std::atomic<bool> creationCompleted{false};
+    std::atomic<BOOL> creationResult{TRUE};
+    std::thread creating([&] {
+        creationStarted.store(true, std::memory_order_release);
+        creationResult.store(
+            externalInstall(targetFunction, &blockedCreationOriginal),
+            std::memory_order_release);
+        creationCompleted.store(true, std::memory_order_release);
+    });
+    for (int i = 0; i < 2000 &&
+            !creationStarted.load(std::memory_order_acquire); ++i) {
+        Sleep(1);
+    }
+    Sleep(50);
+    const bool creationWasBlocked =
+        creationStarted.load(std::memory_order_acquire) &&
+        !creationCompleted.load(std::memory_order_acquire);
+    const int resultBeforeCreationRelease = target(5);
+    const BOOL createMutexReleased = ReleaseMutex(createMutex);
+    creating.join();
+    CloseHandle(createMutex);
+    CHECK(createMutexReleased != FALSE);
+    CHECK(creationWasBlocked);
+    CHECK(resultBeforeCreationRelease == 17);
+    CHECK(creationCompleted.load(std::memory_order_acquire));
+    CHECK(creationResult.load(std::memory_order_acquire) == FALSE);
+    CHECK(blockedCreationOriginal == nullptr);
+
     CHECK(externalInstall(targetFunction, &externalOriginal) == FALSE);
     CHECK(externalOriginal == nullptr);
     void* overlappingOriginal = nullptr;
