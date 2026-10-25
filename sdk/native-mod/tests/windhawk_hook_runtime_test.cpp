@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <string>
+#include <vector>
 
 struct TestDisasmResult { size_t length; char text[96]; };
 using TargetFn = int (WINAPI*)(int);
@@ -14,6 +16,7 @@ using VoidFn = void (WINAPI*)();
 using HoldFn = void (WINAPI*)(BOOL);
 using InsideFn = BOOL (WINAPI*)();
 using AddressFn = void* (WINAPI*)();
+using MarkerCountFn = DWORD (WINAPI*)();
 using ExternalInstallFn = BOOL (WINAPI*)(void*, void**);
 using ExternalRemoveFn = BOOL (WINAPI*)(void*);
 
@@ -49,9 +52,11 @@ int wmain(int argc, wchar_t** argv) {
         GetProcAddress(module, "HookRuntimeStartPersistentWorker"));
     auto stopPersistentWorker = reinterpret_cast<SimpleBoolFn>(
         GetProcAddress(module, "HookRuntimeStopPersistentWorker"));
+    auto retiringMarkerCount = reinterpret_cast<MarkerCountFn>(
+        GetProcAddress(module, "HookRuntimeRetiringMarkerCount"));
     CHECK(target && disasm && disasmAddress && begin && install && apply && remove &&
           shutdown && canUnload && holdDetour && insideDetour && targetAddress &&
-          startPersistentWorker && stopPersistentWorker);
+          startPersistentWorker && stopPersistentWorker && retiringMarkerCount);
 
     // Load a second copy of the same test DLL under a different path to model
     // two independently linked mod DLLs in one shell process.
@@ -250,6 +255,47 @@ int wmain(int argc, wchar_t** argv) {
     CHECK(canUnload() == FALSE);
     CHECK(stopPersistentWorker() == TRUE);
     CHECK(canUnload() == TRUE);
+
+    // Retiring-module markers must be retained while the modules remain mapped,
+    // then reclaimed when a later module performs its unload-safety check.
+    const DWORD markerCountBefore = retiringMarkerCount();
+    CHECK(markerCountBefore != MAXDWORD);
+    CHECK(markerCountBefore >= 1);
+    constexpr size_t kRetiringMarkerStressCount = 32;
+    std::vector<HMODULE> retirementModules;
+    std::vector<std::wstring> retirementPaths;
+    retirementModules.reserve(kRetiringMarkerStressCount);
+    retirementPaths.reserve(kRetiringMarkerStressCount);
+    wchar_t retirementPath[MAX_PATH]{};
+    for (size_t i = 0; i < kRetiringMarkerStressCount; ++i) {
+        CHECK(swprintf_s(retirementPath, _countof(retirementPath),
+            L"%s00047-retirement-%lu-%zu.dll", tempDirectory,
+            static_cast<unsigned long>(GetCurrentProcessId()), i) > 0);
+        CHECK(CopyFileW(argv[1], retirementPath, FALSE) != FALSE);
+        HMODULE retirementModule = LoadLibraryW(retirementPath);
+        CHECK(retirementModule != nullptr);
+        auto retirementBegin = reinterpret_cast<SimpleBoolFn>(
+            GetProcAddress(retirementModule, "HookRuntimeExternalBegin"));
+        auto retirementShutdown = reinterpret_cast<VoidFn>(
+            GetProcAddress(retirementModule, "HookRuntimeExternalShutdown"));
+        auto retirementCanUnload = reinterpret_cast<SimpleBoolFn>(
+            GetProcAddress(retirementModule, "HookRuntimeExternalCanUnload"));
+        CHECK(retirementBegin && retirementShutdown && retirementCanUnload);
+        CHECK(retirementBegin() == TRUE);
+        retirementShutdown();
+        CHECK(retirementCanUnload() == TRUE);
+        retirementModules.push_back(retirementModule);
+        retirementPaths.emplace_back(retirementPath);
+    }
+    const DWORD markerCountWhileMapped = retiringMarkerCount();
+    CHECK(markerCountWhileMapped >= markerCountBefore + kRetiringMarkerStressCount);
+
+    for (size_t i = 0; i < retirementModules.size(); ++i) {
+        CHECK(FreeLibrary(retirementModules[i]) != FALSE);
+        CHECK(DeleteFileW(retirementPaths[i].c_str()) != FALSE);
+    }
+    CHECK(canUnload() == TRUE); // sweeps stale markers for the unloaded copies
+    CHECK(retiringMarkerCount() == 1);
 
     CHECK(FreeLibrary(module) != FALSE);
     return 0;

@@ -72,6 +72,15 @@ extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeExternalCanUnload(void) 
     return wmod::windhawk_hook_compat::CanUnload();
 }
 
+#ifdef WMOD_HOOK_RUNTIME_TESTING
+namespace wmod::windhawk_hook_compat {
+DWORD RetiringMarkerCountForTesting() noexcept;
+}
+extern "C" __declspec(dllexport) DWORD WINAPI HookRuntimeRetiringMarkerCount(void) {
+    return wmod::windhawk_hook_compat::RetiringMarkerCountForTesting();
+}
+#endif
+
 extern "C" __declspec(dllexport) BOOL WINAPI HookRuntimeDisasm(WH_DISASM_RESULT* result) {
     return Wh_Disasm(reinterpret_cast<void*>(&HookTestTarget), result);
 }

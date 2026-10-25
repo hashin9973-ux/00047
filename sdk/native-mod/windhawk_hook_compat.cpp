@@ -249,6 +249,16 @@ public:
         ReleaseTable();
     }
 
+    DWORD RetiringMarkerCountForTesting() noexcept {
+        if (!LockTable()) return MAXDWORD;
+        DWORD count = 0;
+        for (DWORD i = 0; i < table_->count; ++i) {
+            if (IsRetiringModuleMarker(table_->entries[i].target)) ++count;
+        }
+        ReleaseTable();
+        return count;
+    }
+
     bool MarkModuleRetiring(HMODULE module) noexcept {
         MODULEINFO info{};
         if (!module ||
@@ -995,6 +1005,12 @@ BOOL BeginHookOperations() noexcept {
     return TRUE;
 }
 
+
+#ifdef WMOD_HOOK_RUNTIME_TESTING
+DWORD RetiringMarkerCountForTesting() noexcept {
+    return SharedHookRegistry().RetiringMarkerCountForTesting();
+}
+#endif
 
 BOOL CanUnload() noexcept {
     try {
