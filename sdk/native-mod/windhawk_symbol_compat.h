@@ -1253,6 +1253,211 @@ inline bool WriteWindhawkRegistryHookCache(
     }
 }
 
+
+constexpr ULONGLONG kWindhawkErrorThrottleMs = 60'000;
+constexpr wchar_t kWindhawkErrorCachePrefix[] = L"error:3#";
+
+struct WindhawkErrorThrottleContext {
+    DWORD processId = 0;
+    ULONGLONG processCreationTime = 0;
+    std::wstring modVersion;
+    std::wstring libraryFileName;
+    std::wstring targetModuleStamp;
+};
+
+inline bool BuildWindhawkErrorThrottleContext(
+    const HookCacheIdentity& identity,
+    WindhawkErrorThrottleContext& context) noexcept {
+    context = {};
+    try {
+        const auto package = wmod::PackageDirectory();
+        if (package.empty()) return false;
+
+        std::wstring manifest;
+        if (!wmod::windhawk_compat::ReadUtf8File(
+                package / L"manifest.json", manifest)) {
+            return false;
+        }
+
+        auto readManifestString = [&manifest](
+            std::wstring_view name, std::wstring& value) -> bool {
+            std::wstring raw;
+            if (!wmod::windhawk_compat::ExtractJsonProperty(
+                    manifest, name, raw)) {
+                return false;
+            }
+            const auto token = wmod::windhawk_compat::TrimJson(raw);
+            size_t end = 0;
+            return wmod::windhawk_compat::ParseStringToken(
+                    token, 0, end, &value) && end == token.size();
+        };
+
+        std::wstring moduleRelativePath;
+        if (!readManifestString(L"version", context.modVersion) ||
+            !readManifestString(L"module", moduleRelativePath) ||
+            context.modVersion.empty() || moduleRelativePath.empty()) {
+            context = {};
+            return false;
+        }
+
+        context.libraryFileName =
+            std::filesystem::path(moduleRelativePath).filename().wstring();
+        if (context.libraryFileName.empty() ||
+            context.modVersion.find(L'#') != std::wstring::npos ||
+            context.libraryFileName.find(L'#') != std::wstring::npos ||
+            context.modVersion.find(L'\0') != std::wstring::npos ||
+            context.libraryFileName.find(L'\0') != std::wstring::npos) {
+            context = {};
+            return false;
+        }
+
+        FILETIME creation{}, exit{}, kernel{}, user{};
+        if (!GetProcessTimes(GetCurrentProcess(),
+                &creation, &exit, &kernel, &user)) {
+            context = {};
+            return false;
+        }
+        ULARGE_INTEGER creationTicks{};
+        creationTicks.LowPart = creation.dwLowDateTime;
+        creationTicks.HighPart = creation.dwHighDateTime;
+        if (creationTicks.QuadPart == 0) {
+            context = {};
+            return false;
+        }
+
+        context.processId = GetCurrentProcessId();
+        context.processCreationTime = creationTicks.QuadPart;
+        context.targetModuleStamp = identity.headerModuleName + L"-" +
+            std::to_wstring(identity.timestamp) + L"-" +
+            std::to_wstring(identity.imageSize);
+        if (context.processId == 0 || context.targetModuleStamp.empty() ||
+            context.targetModuleStamp.find(L'#') != std::wstring::npos) {
+            context = {};
+            return false;
+        }
+        return true;
+    } catch (...) {
+        context = {};
+        return false;
+    }
+}
+
+inline std::wstring BuildWindhawkErrorThrottleRecord(
+    const WindhawkErrorThrottleContext& context,
+    ULONGLONG errorFileTime) {
+    if (context.processId == 0 || context.processCreationTime == 0 ||
+        errorFileTime == 0 || context.modVersion.empty() ||
+        context.libraryFileName.empty() || context.targetModuleStamp.empty() ||
+        context.modVersion.find(L'#') != std::wstring::npos ||
+        context.libraryFileName.find(L'#') != std::wstring::npos ||
+        context.targetModuleStamp.find(L'#') != std::wstring::npos) {
+        return {};
+    }
+
+    return std::wstring(kWindhawkErrorCachePrefix) +
+        std::to_wstring(context.processId) + L"#" +
+        std::to_wstring(context.processCreationTime) + L"#" +
+        std::to_wstring(errorFileTime) + L"#" +
+        context.modVersion + L"#" +
+        context.libraryFileName + L"#" +
+        context.targetModuleStamp;
+}
+
+inline bool ParseUnsignedDecimal(
+    std::wstring_view text, ULONGLONG& value) noexcept {
+    value = 0;
+    if (text.empty() || text.size() > 20) return false;
+    ULONGLONG parsed = 0;
+    for (wchar_t c : text) {
+        if (c < L'0' || c > L'9') return false;
+        const ULONGLONG digit = static_cast<ULONGLONG>(c - L'0');
+        if (parsed > (std::numeric_limits<ULONGLONG>::max() - digit) / 10) {
+            return false;
+        }
+        parsed = parsed * 10 + digit;
+    }
+    value = parsed;
+    return true;
+}
+
+// Windhawk's registry error record is "error:3#pid#process-creation-time#
+// error-time#mod-version#library-file-name#target-module-timestamp". The
+// compatibility bridge uses the target process identity as its session scope,
+// since 00047's DLL is running inside the target rather than the manager process.
+inline bool IsWindhawkErrorThrottleRecordActive(
+    std::wstring_view record,
+    const WindhawkErrorThrottleContext& expected,
+    ULONGLONG currentFileTime, ULONGLONG throttleMilliseconds) noexcept {
+    if (record.size() > 4096 ||
+        record.rfind(kWindhawkErrorCachePrefix, 0) != 0 ||
+        expected.processId == 0 || expected.processCreationTime == 0 ||
+        currentFileTime == 0 || throttleMilliseconds == 0 ||
+        throttleMilliseconds >
+            (std::numeric_limits<ULONGLONG>::max() /
+                kFileTimeTicksPerMillisecond)) {
+        return false;
+    }
+
+    try {
+        const auto remainder = record.substr(
+            std::char_traits<wchar_t>::length(kWindhawkErrorCachePrefix));
+        std::array<std::wstring_view, 6> fields{};
+        size_t start = 0;
+        for (size_t i = 0; i < fields.size(); ++i) {
+            const size_t separator = remainder.find(L'#', start);
+            if (i + 1 < fields.size()) {
+                if (separator == std::wstring_view::npos) return false;
+                fields[i] = remainder.substr(start, separator - start);
+                start = separator + 1;
+            } else {
+                if (separator != std::wstring_view::npos) return false;
+                fields[i] = remainder.substr(start);
+            }
+        }
+
+        ULONGLONG processId = 0;
+        ULONGLONG processCreationTime = 0;
+        ULONGLONG errorFileTime = 0;
+        if (!ParseUnsignedDecimal(fields[0], processId) ||
+            !ParseUnsignedDecimal(fields[1], processCreationTime) ||
+            !ParseUnsignedDecimal(fields[2], errorFileTime) ||
+            processId != expected.processId ||
+            processCreationTime != expected.processCreationTime ||
+            fields[3] != expected.modVersion ||
+            fields[4] != expected.libraryFileName ||
+            fields[5] != expected.targetModuleStamp ||
+            errorFileTime == 0 || currentFileTime < errorFileTime) {
+            return false;
+        }
+
+        const ULONGLONG age = currentFileTime - errorFileTime;
+        return age <= throttleMilliseconds * kFileTimeTicksPerMillisecond;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline bool WriteWindhawkRegistryErrorThrottle(
+    const HookCacheIdentity& identity,
+    const WindhawkErrorThrottleContext& context,
+    ULONGLONG errorFileTime) noexcept {
+    try {
+        const auto package = wmod::PackageDirectory();
+        if (package.empty()) return false;
+        std::wstring subkey;
+        if (!BuildWindhawkRegistryCacheSubkey(
+                package.filename().wstring(), subkey)) {
+            return false;
+        }
+        const auto record = BuildWindhawkErrorThrottleRecord(
+            context, errorFileTime);
+        return !record.empty() && WriteRegistryHookCacheValue(
+            HKEY_LOCAL_MACHINE, subkey, identity.cacheKey, record);
+    } catch (...) {
+        return false;
+    }
+}
+
 inline bool IsSafeOnlineCacheBase(std::wstring_view base) noexcept {
     if (base.empty() || base.size() > kMaxSearchPathChars ||
         base.rfind(L"https://", 0) != 0) return false;
@@ -1421,6 +1626,10 @@ inline BOOL Wh_HookSymbols(HMODULE module,
         ? wmod::windhawk_symbol_compat::HookCachePath(
             cacheIdentity, symbolHooks, symbolHooksCount, noUndecoratedSymbols)
         : std::filesystem::path{};
+    wmod::windhawk_symbol_compat::WindhawkErrorThrottleContext registryErrorContext{};
+    const bool registryErrorContextAvailable = identityAvailable &&
+        wmod::windhawk_symbol_compat::BuildWindhawkErrorThrottleContext(
+            cacheIdentity, registryErrorContext);
     std::filesystem::path failureThrottlePath;
     std::wstring modBinaryStamp;
     if (!cachePath.empty() &&
@@ -1429,10 +1638,15 @@ inline BOOL Wh_HookSymbols(HMODULE module,
         failureThrottlePath += L".error";
     }
     auto recordSymbolResolutionFailure = [&]() noexcept {
+        const ULONGLONG errorTime =
+            wmod::windhawk_symbol_compat::CurrentUtcFileTimeTicks();
         if (!failureThrottlePath.empty() && !modBinaryStamp.empty()) {
             (void)wmod::windhawk_symbol_compat::WriteHookSymbolFailureThrottle(
-                failureThrottlePath, modBinaryStamp,
-                wmod::windhawk_symbol_compat::CurrentUtcFileTimeTicks());
+                failureThrottlePath, modBinaryStamp, errorTime);
+        }
+        if (registryErrorContextAvailable) {
+            (void)wmod::windhawk_symbol_compat::WriteWindhawkRegistryErrorThrottle(
+                cacheIdentity, registryErrorContext, errorTime);
         }
     };
     bool cacheHit = false;
@@ -1451,14 +1665,21 @@ inline BOOL Wh_HookSymbols(HMODULE module,
     if (!cacheHit && identityAvailable) {
         std::wstring cached;
         if (wmod::windhawk_symbol_compat::ReadWindhawkRegistryHookCache(
-                cacheIdentity, cached) &&
-            wmod::windhawk_symbol_compat::ResolveHookCacheText(
-                cached, cacheIdentity, symbolHooks, symbolHooksCount, found, resolved)) {
-            cacheHit = true;
-            registryCacheHit = true;
-            wmod::windhawk_symbol_compat::HookCacheHitsCounter().fetch_add(1, std::memory_order_relaxed);
-            if (!cachePath.empty()) {
-                (void)wmod::windhawk_symbol_compat::WriteLocalHookCache(cachePath, cached);
+                cacheIdentity, cached)) {
+            if (wmod::windhawk_symbol_compat::ResolveHookCacheText(
+                    cached, cacheIdentity, symbolHooks, symbolHooksCount, found, resolved)) {
+                cacheHit = true;
+                registryCacheHit = true;
+                wmod::windhawk_symbol_compat::HookCacheHitsCounter().fetch_add(1, std::memory_order_relaxed);
+                if (!cachePath.empty()) {
+                    (void)wmod::windhawk_symbol_compat::WriteLocalHookCache(cachePath, cached);
+                }
+            } else if (registryErrorContextAvailable &&
+                wmod::windhawk_symbol_compat::IsWindhawkErrorThrottleRecordActive(
+                    cached, registryErrorContext,
+                    wmod::windhawk_symbol_compat::CurrentUtcFileTimeTicks(),
+                    wmod::windhawk_symbol_compat::kWindhawkErrorThrottleMs)) {
+                return FALSE;
             }
         }
     }

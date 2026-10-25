@@ -196,6 +196,42 @@ int wmain() {
     CHECK(mergedRegistryCache.find(L"#AnotherSymbolForMerge#") != std::wstring::npos);
     RegDeleteTreeW(HKEY_CURRENT_USER, registryTestKey.c_str());
 
+    wmod::windhawk_symbol_compat::WindhawkErrorThrottleContext windhawkErrorContext{};
+    windhawkErrorContext.processId = 3210;
+    windhawkErrorContext.processCreationTime = 132500000000000000ull;
+    windhawkErrorContext.modVersion = L"1.4.2";
+    windhawkErrorContext.libraryFileName = L"example-mod.dll";
+    windhawkErrorContext.targetModuleStamp = L"explorer.exe-123456-7654321";
+    const ULONGLONG windhawkErrorTime = 132600000000000000ull;
+    const auto windhawkErrorRecord =
+        wmod::windhawk_symbol_compat::BuildWindhawkErrorThrottleRecord(
+            windhawkErrorContext, windhawkErrorTime);
+    CHECK(windhawkErrorRecord.rfind(L"error:3#", 0) == 0);
+    CHECK(wmod::windhawk_symbol_compat::IsWindhawkErrorThrottleRecordActive(
+        windhawkErrorRecord, windhawkErrorContext,
+        windhawkErrorTime + 30'000'000ull, 60'000) == TRUE);
+    CHECK(wmod::windhawk_symbol_compat::IsWindhawkErrorThrottleRecordActive(
+        windhawkErrorRecord, windhawkErrorContext,
+        windhawkErrorTime + 60'000ull * 10'000ull + 1, 60'000) == FALSE);
+    auto wrongSession = windhawkErrorContext;
+    ++wrongSession.processId;
+    CHECK(wmod::windhawk_symbol_compat::IsWindhawkErrorThrottleRecordActive(
+        windhawkErrorRecord, wrongSession,
+        windhawkErrorTime + 30'000'000ull, 60'000) == FALSE);
+    auto wrongModBuild = windhawkErrorContext;
+    wrongModBuild.libraryFileName = L"rebuilt-mod.dll";
+    CHECK(wmod::windhawk_symbol_compat::IsWindhawkErrorThrottleRecordActive(
+        windhawkErrorRecord, wrongModBuild,
+        windhawkErrorTime + 30'000'000ull, 60'000) == FALSE);
+    auto wrongTarget = windhawkErrorContext;
+    wrongTarget.targetModuleStamp = L"explorer.exe-123457-7654321";
+    CHECK(wmod::windhawk_symbol_compat::IsWindhawkErrorThrottleRecordActive(
+        windhawkErrorRecord, wrongTarget,
+        windhawkErrorTime + 30'000'000ull, 60'000) == FALSE);
+    CHECK(wmod::windhawk_symbol_compat::IsWindhawkErrorThrottleRecordActive(
+        L"error:2#3210#bad", windhawkErrorContext,
+        windhawkErrorTime + 30'000'000ull, 60'000) == FALSE);
+
     // Repeated required-symbol failures are throttled briefly, but expired,
     // corrupt, clock-reversed, or different-mod markers must not suppress retry.
     std::wstring currentModStamp;
