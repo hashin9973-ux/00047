@@ -18,6 +18,7 @@
 #include "00047_mod_services.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
