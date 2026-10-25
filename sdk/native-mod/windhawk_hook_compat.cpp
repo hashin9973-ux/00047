@@ -260,13 +260,51 @@ public:
 
         if (!LockTable()) return false;
         const auto base = reinterpret_cast<std::uintptr_t>(module);
-        for (DWORD i = 0; i < table_->count; ++i) {
-            if (!IsRetiringModuleMarker(table_->entries[i].target) ||
-                table_->entries[i].owner != base) {
+        bool existingMarkerUpdated = false;
+        for (DWORD i = 0; i < table_->count;) {
+            const auto entry = table_->entries[i];
+            if (!IsRetiringModuleMarker(entry.target)) {
+                ++i;
                 continue;
             }
-            // A fresh image loaded at the same base replaces the old identity.
-            table_->entries[i].target = marker;
+
+            HMODULE retiringModule = reinterpret_cast<HMODULE>(entry.owner);
+            MODULEINFO retiringInfo{};
+            if (!retiringModule ||
+                !GetModuleInformation(GetCurrentProcess(), retiringModule,
+                    &retiringInfo, sizeof(retiringInfo)) ||
+                retiringInfo.lpBaseOfDll != retiringModule ||
+                retiringInfo.SizeOfImage == 0) {
+                // The old module has been unloaded (or the base no longer
+                // names a module); reclaim its record before adding new ones.
+                RemoveEntryAtLocked(i);
+                continue;
+            }
+
+            if (entry.owner == base) {
+                // The same base has a fresh live image. Update the fingerprint
+                // in place rather than accumulating a second retiring record.
+                table_->entries[i].target = marker;
+                existingMarkerUpdated = true;
+                ++i;
+                continue;
+            }
+
+            std::uintptr_t liveMarker = 0;
+            if (!ModuleRetirementMarker(retiringModule, retiringInfo, liveMarker)) {
+                // Unable to validate this marker: retain it fail-closed.
+                ++i;
+                continue;
+            }
+            if (liveMarker != entry.target) {
+                // The address was reused by a different image; its old marker
+                // must not consume capacity or restrict the new image.
+                RemoveEntryAtLocked(i);
+                continue;
+            }
+            ++i;
+        }
+        if (existingMarkerUpdated) {
             ReleaseTable();
             return true;
         }
