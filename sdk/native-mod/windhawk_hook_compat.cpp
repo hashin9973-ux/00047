@@ -85,21 +85,23 @@ bool ModuleRetirementMarker(HMODULE module, const MODULEINFO& info,
             return false;
         }
 
-        std::vector<wchar_t> pathBuffer(32768);
+        // This helper can run while the shared registry mutex is held.
+        // Use a fixed buffer and hash the lowercase path in place so it does
+        // not allocate from the process heap under that cross-mod lock.
+        std::array<wchar_t, 32768> pathBuffer{};
         const DWORD pathLength = GetModuleFileNameW(
             module, pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
         if (!pathLength || pathLength >= pathBuffer.size()) return false;
-        std::wstring path(pathBuffer.data(), pathLength);
-        std::transform(path.begin(), path.end(), path.begin(),
-            [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
 
         std::uint64_t hash = 14695981039346656037ull;
         auto addByte = [&hash](unsigned char value) {
             hash ^= value;
             hash *= 1099511628211ull;
         };
-        for (wchar_t c : path) {
-            const auto code = static_cast<std::uint16_t>(c);
+        for (DWORD i = 0; i < pathLength; ++i) {
+            const auto lower = static_cast<wchar_t>(
+                std::towlower(pathBuffer[i]));
+            const auto code = static_cast<std::uint16_t>(lower);
             addByte(static_cast<unsigned char>(code & 0xff));
             addByte(static_cast<unsigned char>((code >> 8) & 0xff));
         }
