@@ -877,6 +877,12 @@ BOOL Wh_SetFunctionHook(void* targetFunction, void* hookFunction, void** origina
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_accepting || g_hooks.find(targetFunction) != g_hooks.end()) return FALSE;
 
+    // Serialize the entire create/claim transaction, not only Claim itself.
+    // MinHook may allocate executable trampolines here; another mod must not
+    // be suspended halfway through its own backend mutation/heap work.
+    HookOperationSessionGuard operationSession;
+    if (!operationSession) return FALSE;
+
     HMODULE ownerModule = CurrentHookOwnerModule();
     if (!ownerModule ||
         !SharedHookRegistry().ClearModuleRetiring(ownerModule) ||
