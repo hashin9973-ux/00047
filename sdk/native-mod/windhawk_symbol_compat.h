@@ -1797,7 +1797,11 @@ inline BOOL Wh_HookSymbols(HMODULE module,
             wmod::windhawk_symbol_compat::kHookSymbolFailureThrottleMs)) {
         return FALSE;
     }
-    if (!cacheHit && identityAvailable) {
+    // Do not issue a duplicate online-cache request when another process owns
+    // the cache-load mutex and the bounded wait expired. Continue to DbgHelp
+    // fallback instead; a caller only fetches this endpoint while holding the
+    // per-mod/module lock and after rechecking local and registry caches.
+    if (!cacheHit && identityAvailable && symbolCacheLoadLock) {
         std::wstring onlineCacheText;
         if (wmod::windhawk_symbol_compat::FetchOnlineHookCache(
                 options, cacheIdentity, symbolHooks, symbolHooksCount,
