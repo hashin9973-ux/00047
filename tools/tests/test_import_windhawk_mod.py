@@ -97,7 +97,7 @@ class WindhawkImportTests(unittest.TestCase):
             root = Path(temp)
             source_text = SOURCE.replace(
                 "$showIf: {Enabled: true}",
-                "$showIf:\\n    #! Enabled: true",
+                "$showIf:\n    #! Enabled: true",
             )
             project, _ = import_project(self.source(root, source_text), root / "out")
             manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
@@ -115,7 +115,7 @@ class WindhawkImportTests(unittest.TestCase):
             with self.assertRaisesRegex(ImportError, "cycle"):
                 import_project(self.source(root, cycle), root / "out2")
 
-    def test_nonstandard_source_filename_is_normalized_for_wrapper):
+    def test_nonstandard_source_filename_is_normalized_for_wrapper(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "windhawk-import-smoke.cpp"
