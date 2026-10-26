@@ -513,7 +513,7 @@ def cmake_project(module: str, standard: int, definitions: list[str], libraries:
     def args(items):
         return "\n".join('  "' + item + '"' for item in items)
     result = f'''cmake_minimum_required(VERSION 3.21)
-project({module} LANGUAGES CXX)
+project({module} LANGUAGES C CXX)
 
 set(WMOD_SDK_DIR "" CACHE PATH "Path to the 00047 repository sdk/native-mod directory")
 if(NOT EXISTS "@WMOD_SDK_DIR@/00047_mod_api.h")

@@ -68,6 +68,7 @@ class WindhawkImportTests(unittest.TestCase):
             self.assertIn("WMOD_DEFINE_WINDHAWK_LIFECYCLE_WITH_SETTINGS_CHANGED", (project / "windhawk_entry.cpp").read_text())
             cmake = (project / "CMakeLists.txt").read_text()
             self.assertIn("cxx_std_20", cmake)
+            self.assertIn("LANGUAGES C CXX", cmake)
             self.assertIn('"comctl32"', cmake)
             self.assertIn('"TEST_FLAG=1"', cmake)
             self.assertIn("range limits are not represented", " ".join(warnings))
