@@ -16,15 +16,20 @@
 
 #define WMOD_00047_ABI_VERSION 2u
 
-// Keep the export declarations consumable from both C and C++ translation units.
+// Preserve explicit C linkage on every C++ declaration/definition while keeping
+// the same header valid for plain C translation units.
 #ifdef __cplusplus
-extern "C" {
+#ifdef WMOD_BUILD_DLL
+#define WMOD_00047_EXPORT extern "C" __declspec(dllexport)
+#else
+#define WMOD_00047_EXPORT extern "C" __declspec(dllimport)
 #endif
-
+#else
 #ifdef WMOD_BUILD_DLL
 #define WMOD_00047_EXPORT __declspec(dllexport)
 #else
 #define WMOD_00047_EXPORT __declspec(dllimport)
+#endif
 #endif
 
 WMOD_00047_EXPORT uint32_t WINAPI WmodGetApiVersion(void);
@@ -33,9 +38,5 @@ WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void);
 // The host uses these lifecycle queries to safely retry enable and unload operations.
 WMOD_00047_EXPORT BOOL WINAPI WmodIsInitializedV1(void);
 WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void);
-
-#ifdef __cplusplus
-} // extern "C"
-#endif
 
 #endif // WMOD_00047_MOD_API_H
