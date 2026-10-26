@@ -91,7 +91,7 @@ class WindhawkImportTests(unittest.TestCase):
     def test_rejects_invalid_init_signature(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            with self.assertRaisesRegex(ImportError, "must define BOOL Wh_ModInit"):
+            with self.assertRaisesRegex(ImportError, "Wh_ModInit is present but its signature is not supported"):
                 import_project(self.source(root, SOURCE.replace("BOOL Wh_ModInit()", "void Wh_ModInit()")), root / "out")
 
     def test_refuses_to_overwrite_destination(self):
