@@ -57,10 +57,10 @@ A no-op C++ sample is in samples/native-mod. It writes debug output only, so it 
 The repository includes a standard-library-only project scaffold generator, package builder, and validator. Start by generating an example project (choose an ID and name appropriate for your mod):
 
     python tools/new_native_mod.py --id com.example.my-mod --name "My Mod" --output-dir mods
-# For a Rust cdylib starter, add --language rust
-python tools/new_native_mod.py --id com.example.my-rust-mod --name "My Rust Mod" --output-dir mods --language rust
+    python tools/new_native_mod.py --id com.example.my-c-mod --name "My C Mod" --output-dir mods --language c
+    python tools/new_native_mod.py --id com.example.my-rust-mod --name "My Rust Mod" --output-dir mods --language rust
 
-The generator creates a manifest, C++ lifecycle exports, CMake configuration, and build/package instructions. With `--language rust`, it instead creates a Cargo project, lockfile, Rust lifecycle exports, and matching package instructions. It will refuse to overwrite an existing project directory. This starter DLL only logs lifecycle messages; it does not patch Windows UI.
+The default generator creates a C++ lifecycle project with CMake configuration and build/package instructions. With `--language c`, it instead creates a C-only CMake project using the C-compatible `00047_mod_api.h` header and atomic lifecycle-state checks; it does not link the C++ Windhawk compatibility shims. With `--language rust`, it creates a Cargo project, lockfile, Rust lifecycle exports, and matching package instructions. It refuses to overwrite an existing project directory. All three starter projects demonstrate lifecycle behavior only and do not patch Windows UI.
 
 Build the generated project with the x64 Visual Studio C++ toolchain, pointing CMake to the SDK headers:
 

@@ -243,6 +243,37 @@ class NativeModValidatorTests(unittest.TestCase):
         self.assertIn("Wh_Log(", source)
         self.assertIn("x64 function-hook registration/application", open(os.path.join(destination, "README.md"), encoding="utf-8").read())
 
+    def test_c_scaffold_creates_c_only_lifecycle_project(self):
+        destination = create_project(
+            "com.example.c_generated",
+            "Generated C Mod",
+            self.temp_dir.name,
+            language="c",
+        )
+        expected = {"manifest.json", "mod.c", "CMakeLists.txt", "README.md"}
+        self.assertEqual({name for name in os.listdir(destination)}, expected)
+        with open(os.path.join(destination, "manifest.json"), encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        self.assertEqual(manifest["module"], "bin/com_example_c_generated.dll")
+        with open(os.path.join(destination, "CMakeLists.txt"), encoding="utf-8") as handle:
+            cmake = handle.read()
+        self.assertIn("project(com_example_c_generated LANGUAGES C)", cmake)
+        self.assertIn("add_library(com_example_c_generated SHARED mod.c)", cmake)
+        self.assertIn("${WMOD_SDK_DIR}", cmake)
+        self.assertNotIn("windhawk_hook_compat.cpp", cmake)
+        with open(os.path.join(destination, "mod.c"), encoding="utf-8") as handle:
+            source = handle.read()
+        for symbol in EXPORTS:
+            self.assertIn(symbol, source)
+        self.assertIn("WMOD_00047_ABI_VERSION", source)
+        self.assertIn("InterlockedExchange", source)
+        self.assertNotIn("std::", source)
+        self.assertNotIn('extern "C"', source)
+        with open(os.path.join(destination, "README.md"), encoding="utf-8") as handle:
+            readme = handle.read()
+        self.assertIn("C lifecycle ABI", readme)
+        self.assertIn("without a sandbox", readme)
+
     def test_rust_scaffold_creates_language_neutral_cdylib_project(self):
         destination = create_project(
             "com.example.rust_generated",
@@ -292,7 +323,7 @@ class NativeModValidatorTests(unittest.TestCase):
         self.assertIn('name = "leading"', lock)
 
     def test_scaffold_rejects_unknown_language(self):
-        with self.assertRaisesRegex(ValidationError, "language must be cpp or rust"):
+        with self.assertRaisesRegex(ValidationError, "language must be cpp, c, or rust"):
             create_project("com.example.badlang", "Bad Language", self.temp_dir.name, language="python")
 
     def test_scaffold_refuses_invalid_id(self):

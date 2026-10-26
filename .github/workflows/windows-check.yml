@@ -108,6 +108,19 @@ jobs:
           python tools/package_native_mod.py --manifest (Join-Path $project "manifest.json") --dll $generatedDll --output $generatedZip
           python tools/validate_native_mod.py $generatedZip
 
+          # Exercise the new plain-C starter through configure, compilation,
+          # packaging, export validation, and the shared lifecycle ABI smoke test.
+          $generatedCRoot = Join-Path $env:RUNNER_TEMP "00047-generated-c-mods"
+          python tools/new_native_mod.py --id com.example.ci-c-generated --name "CI Generated C Mod" --language c --output-dir $generatedCRoot
+          $generatedC = Join-Path $generatedCRoot "com.example.ci-c-generated"
+          $generatedCBuild = Join-Path $generatedC "build"
+          cmake -S $generatedC -B $generatedCBuild -A x64 "-DWMOD_SDK_DIR=$sdk"
+          cmake --build $generatedCBuild --config Release
+          $generatedCDll = Join-Path $generatedCBuild "bin/Release/com_example_ci_c_generated.dll"
+          $generatedCZip = Join-Path $env:RUNNER_TEMP "00047-generated-c-native-mod.zip"
+          python tools/package_native_mod.py --manifest (Join-Path $generatedC "manifest.json") --dll $generatedCDll --output $generatedCZip
+          python tools/validate_native_mod.py $generatedCZip
+
       - name: Compile and run non-hook Windhawk-style compatibility tests
         shell: pwsh
         run: |
@@ -171,6 +184,10 @@ jobs:
           if (-not (Test-Path $cDll)) { throw "C native-mod ABI fixture was not created." }
           & $abiTest $cDll
           if ($LASTEXITCODE -ne 0) { throw "C native-mod ABI smoke test failed with exit code $LASTEXITCODE." }
+          $generatedCDll = Join-Path $env:RUNNER_TEMP "00047-generated-c-mods/com.example.ci-c-generated/build/bin/Release/com_example_ci_c_generated.dll"
+          if (-not (Test-Path $generatedCDll)) { throw "Generated C native-mod DLL was not created: $generatedCDll" }
+          & $abiTest $generatedCDll
+          if ($LASTEXITCODE -ne 0) { throw "Generated C native-mod ABI smoke test failed with exit code $LASTEXITCODE." }
           & $abiTest $dll
           if ($LASTEXITCODE -ne 0) { throw "Rust native-mod ABI smoke test failed with exit code $LASTEXITCODE." }
 

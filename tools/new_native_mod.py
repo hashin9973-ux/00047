@@ -27,8 +27,8 @@ def create_project(mod_id: str, name: str, output_dir: str, target: str = "explo
         raise ValidationError("name is required and must be no longer than 100 characters")
     if not isinstance(description, str) or len(description) > 1000:
         raise ValidationError("description must be text no longer than 1000 characters")
-    if language not in {"cpp", "rust"}:
-        raise ValidationError("language must be cpp or rust")
+    if language not in {"cpp", "c", "rust"}:
+        raise ValidationError("language must be cpp, c, or rust")
     canonical_target = CANONICAL_TARGETS.get(target.casefold()) if isinstance(target, str) else None
     if canonical_target is None:
         raise ValidationError("target is not in the supported native-mod process allow-list")
@@ -163,8 +163,8 @@ Native mods execute inside their target process without a sandbox. This template
 ''',
     }
 
-    # Keep the default C++ template byte-for-byte as defined above. Rust
-    # projects use the same manifest but build a standalone cdylib with Cargo.
+    # Keep the default C++ template byte-for-byte as defined above. Rust and C
+    # projects replace it with language-specific sources and build instructions.
     if language == "rust":
         package_name = module_name.strip("_").replace("_", "-") or "native-mod"
         project_version = manifest["version"]
@@ -242,6 +242,77 @@ Native mods run inside their target process without a sandbox. These exports onl
 ''',
         }
 
+    elif language == "c":
+        files = {
+            "manifest.json": json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            "mod.c": r'''#include "00047_mod_api.h"
+
+static volatile LONG g_initialized = 0;
+
+WMOD_00047_EXPORT uint32_t WINAPI WmodGetApiVersion(void) {
+    return WMOD_00047_ABI_VERSION;
+}
+
+WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void) {
+    InterlockedExchange(&g_initialized, 1);
+    return TRUE;
+}
+
+WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) {
+    InterlockedExchange(&g_initialized, 0);
+}
+
+WMOD_00047_EXPORT BOOL WINAPI WmodIsInitializedV1(void) {
+    return InterlockedCompareExchange(&g_initialized, 0, 0) != 0 ? TRUE : FALSE;
+}
+
+WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) {
+    return InterlockedCompareExchange(&g_initialized, 0, 0) == 0 ? TRUE : FALSE;
+}
+''',
+            "CMakeLists.txt": f'''cmake_minimum_required(VERSION 3.21)
+project({module_name} LANGUAGES C)
+
+set(WMOD_SDK_DIR "" CACHE PATH "Path to the 00047 repository sdk/native-mod directory")
+if(NOT EXISTS "${{WMOD_SDK_DIR}}/00047_mod_api.h")
+  message(FATAL_ERROR "Set WMOD_SDK_DIR to the 00047 sdk/native-mod directory")
+endif()
+
+add_library({module_name} SHARED mod.c)
+target_compile_definitions({module_name} PRIVATE WMOD_BUILD_DLL WIN32_LEAN_AND_MEAN NOMINMAX)
+target_include_directories({module_name} PRIVATE "${{WMOD_SDK_DIR}}")
+set_target_properties({module_name} PROPERTIES
+  PREFIX ""
+  OUTPUT_NAME "{module_name}"
+  RUNTIME_OUTPUT_DIRECTORY "${{CMAKE_BINARY_DIR}}/bin"
+)
+''',
+            "README.md": f'''# {name.strip()} (C)
+
+Starter project for the 00047 native-mod lifecycle ABI. The generated C DLL tracks initialized state only; it does not patch or modify the Windows shell.
+
+## Build (Windows x64)
+
+Install the Visual Studio x64 C build tools and CMake. From this directory, point CMake at the repository's `sdk/native-mod` directory:
+
+    cmake -S . -B build -A x64 -DWMOD_SDK_DIR=C:/path/to/00047/sdk/native-mod
+    cmake --build build --config Release
+
+The DLL is normally produced at build/bin/Release/{module_name}.dll.
+
+## Package and validate
+
+    python C:/path/to/00047/tools/package_native_mod.py --manifest manifest.json --dll build/bin/Release/{module_name}.dll --output dist/{module_name}.zip
+    python C:/path/to/00047/tools/validate_native_mod.py dist/{module_name}.zip
+
+The package contains the manifest and primary DLL. The lifecycle-only C starter does not include the C++ Windhawk compatibility adapters.
+
+## Native code warning
+
+Native mods execute inside their target process without a sandbox. The lifecycle functions here are a minimal reference; a real mod must release any resources it acquires and must not approve unload while code can still execute from the DLL. Only build and enable code you trust.
+''',
+        }
+
     root.mkdir(parents=True, exist_ok=True)
     destination.mkdir()
     try:
@@ -264,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target", default="explorer.exe", choices=sorted(CANONICAL_TARGETS),
                         help="allow-listed Windows shell process (default: explorer.exe)")
     parser.add_argument("--description", default="A starter 00047 native mod.")
-    parser.add_argument("--language", choices=("cpp", "rust"), default="cpp", help="starter implementation language (default: cpp)")
+    parser.add_argument("--language", choices=("cpp", "c", "rust"), default="cpp", help="starter implementation language (default: cpp)")
     args = parser.parse_args(argv)
     try:
         path = create_project(args.mod_id, args.name, args.output_dir, args.target, args.description, args.language)
