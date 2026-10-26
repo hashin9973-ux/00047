@@ -111,7 +111,7 @@ class WindhawkImportTests(unittest.TestCase):
             with self.assertRaisesRegex(ImportError, "references unknown setting"):
                 import_project(self.source(root, unknown), root / "out1")
             cycle = SOURCE.replace("$showIf: {Enabled: true}", "$showIf: {Mode: prefixed}")
-            cycle = cycle.replace("$hideIf: {Enabled: false}", "$hideIf: {Opacity: 0.85}")
+            cycle = cycle.replace("$hideIf: {Enabled: false}", '$hideIf: {Opacity: "0.85"}')
             with self.assertRaisesRegex(ImportError, "cycle"):
                 import_project(self.source(root, cycle), root / "out2")
 

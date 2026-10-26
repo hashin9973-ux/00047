@@ -474,14 +474,14 @@ def make_entry(source: str) -> str:
     uninit_arg = "Wh_ModUninit" if uninit else "::wmod::windhawk_adapter::NoopCallback"
     if setting_void or setting_reload:
         macro = (
-            "WMOD_DEFINE_WINDHAWK_LIFECYCLE_WITH_SETTINGS_CHANGED(\\n"
-            f"    Wh_ModInit, {after_arg}, Wh_ModSettingsChanged,\\n"
-            f"    {before_arg}, {uninit_arg}\\n)"
+            "WMOD_DEFINE_WINDHAWK_LIFECYCLE_WITH_SETTINGS_CHANGED(\n"
+            f"    Wh_ModInit, {after_arg}, Wh_ModSettingsChanged,\n"
+            f"    {before_arg}, {uninit_arg}\n)"
         )
     else:
         macro = (
-            "WMOD_DEFINE_WINDHAWK_LIFECYCLE(\\n"
-            f"    Wh_ModInit, {after_arg}, {before_arg}, {uninit_arg}\\n)"
+            "WMOD_DEFINE_WINDHAWK_LIFECYCLE(\n"
+            f"    Wh_ModInit, {after_arg}, {before_arg}, {uninit_arg}\n)"
         )
     return '#include "windhawk_api.h"\n#include "windhawk_settings_changed_adapter.h"\n#include "mod.cpp"\n\n' + macro + "\n"
 
