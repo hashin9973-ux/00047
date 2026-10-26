@@ -81,7 +81,7 @@ class WindhawkImportTests(unittest.TestCase):
                 "$showIf: {Enabled: true}",
                 "$showIf: {Enabled: true}\n  $format: slider",
             ).replace(
-                "*/\\n// ==/WindhawkModSettings==",
+                "*/\n// ==/WindhawkModSettings==",
                 '- Overlay: "#80FFFFFF"\n  $format: colorArgb\n*/\n// ==/WindhawkModSettings==',
             )
             project, warnings = import_project(self.source(root, source_text), root / "out")
