@@ -55,6 +55,9 @@ jobs:
       - name: Cache Rust build outputs
         uses: Swatinem/rust-cache@v2
         with:
+          # Rotate the cache after Cargo restored invalid .rmeta/build-script artifacts
+          # on the native-font-list build. Keep this prefix until one clean run saves it.
+          prefix-key: v1-windhawk-native-font-cache-reset
           workspaces: src-tauri -> target
 
       - name: Format Rust sources before compilation
