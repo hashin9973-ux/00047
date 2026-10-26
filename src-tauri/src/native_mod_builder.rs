@@ -658,6 +658,84 @@ WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) {
 
     #[cfg(windows)]
     #[tokio::test]
+    async fn in_app_builder_builds_c_dll_and_installs_disabled() {
+        let _serial = lock_source_build_tests();
+        const MOD_ID: &str = "com.example.inapp-c-builder-smoke";
+        const MODULE_NAME: &str = "com_example_inapp_c_builder_smoke";
+        let root = std::env::temp_dir().join(format!(
+            "00047-native-mod-c-builder-smoke-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let project = root.join("source");
+        fs::create_dir_all(&project).unwrap();
+
+        let manifest = serde_json::json!({
+            "manifestVersion": 1,
+            "id": MOD_ID,
+            "name": "In-app C Builder Smoke Test",
+            "version": "1.0.0",
+            "description": "Windows CI exercise for the in-app C source builder",
+            "architecture": "x64",
+            "module": format!("bin/{MODULE_NAME}.dll"),
+            "targets": ["explorer.exe"]
+        });
+        fs::write(
+            project.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        ).unwrap();
+        fs::write(project.join("CMakeLists.txt"), r#"cmake_minimum_required(VERSION 3.21)
+project(inapp_c_builder_smoke LANGUAGES C)
+
+set(WMOD_SDK_DIR "" CACHE PATH "Path to the 00047 native-mod SDK")
+add_library(com_example_inapp_c_builder_smoke SHARED mod.c)
+target_compile_definitions(com_example_inapp_c_builder_smoke PRIVATE WMOD_BUILD_DLL WIN32_LEAN_AND_MEAN NOMINMAX)
+target_include_directories(com_example_inapp_c_builder_smoke PRIVATE "${WMOD_SDK_DIR}")
+set_target_properties(com_example_inapp_c_builder_smoke PROPERTIES
+  PREFIX ""
+  OUTPUT_NAME "com_example_inapp_c_builder_smoke"
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)
+"#).unwrap();
+        fs::write(project.join("mod.c"), r#"#include "00047_mod_api.h"
+
+static volatile LONG g_initialized = 0;
+
+WMOD_00047_EXPORT uint32_t WINAPI WmodGetApiVersion(void) {
+    return WMOD_00047_ABI_VERSION;
+}
+WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void) {
+    InterlockedExchange(&g_initialized, 1);
+    return TRUE;
+}
+WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void) {
+    InterlockedExchange(&g_initialized, 0);
+}
+WMOD_00047_EXPORT BOOL WINAPI WmodIsInitializedV1(void) {
+    return InterlockedCompareExchange(&g_initialized, 0, 0) != 0 ? TRUE : FALSE;
+}
+WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) {
+    return InterlockedCompareExchange(&g_initialized, 0, 0) == 0 ? TRUE : FALSE;
+}
+"#).unwrap();
+
+        let sdk = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../sdk/native-mod");
+        let manager = Arc::new(NativeModManager::new(root.join("managed")));
+        let report = build_and_install(project, sdk, manager.clone()).await.unwrap();
+        assert_eq!(report.id, MOD_ID);
+        assert!(report.build_output.contains("=== Configure ==="));
+        assert!(report.build_output.contains("=== Build ==="));
+        assert!(report.message.contains("disabled"));
+        assert!(!manager.enabled_snapshot().contains(MOD_ID));
+        let package = manager.package_dir(MOD_ID).unwrap();
+        assert!(package.join("manifest.json").is_file());
+        assert!(package.join("bin").join(format!("{MODULE_NAME}.dll")).is_file());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     async fn in_app_builder_builds_rust_cdylib_and_installs_disabled() {
         let _serial = lock_source_build_tests();
         const MOD_ID: &str = "com.example.inapp-rust-builder-smoke";
