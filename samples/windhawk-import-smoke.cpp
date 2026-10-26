@@ -40,6 +40,10 @@
       - mica: Mica
       - acrylic: Acrylic
     $showIf: {UseVisualStyles: true}
+- WindowNames: ["Explorer", "Cabinet"]
+  $name: Window names
+- KeyCodes: [13, 27, 65]
+  $name: Key codes
 - Overlay: "#80FFFFFF"
   $format: colorArgb
 */
@@ -65,6 +69,17 @@ BOOL Wh_ModInit() {
     if (!Wh_GetIntSetting(L"Enabled")) {
         Wh_Log(L"Smoke mod is disabled by settings.");
         return TRUE;
+    }
+    if (Wh_GetIntSetting(L"KeyCodes[%d]", 1) != 27) {
+        Wh_Log(L"Numeric array index lookup returned the wrong default.");
+        return FALSE;
+    }
+    PCWSTR windowName = Wh_GetStringSetting(L"WindowNames[%d]", 0);
+    const bool validWindowName = windowName && wcscmp(windowName, L"Explorer") == 0;
+    Wh_FreeStringSetting(windowName);
+    if (!validWindowName) {
+        Wh_Log(L"String array index lookup returned the wrong default.");
+        return FALSE;
     }
     PCWSTR prefix = Wh_GetStringSetting(L"CaptionPrefix");
     Wh_Log(L"Imported caption prefix: %ls", prefix ? prefix : L"(null)");

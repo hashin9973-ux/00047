@@ -109,9 +109,13 @@ def parse_scalar(value: str):
         raise ImportError("empty defaults and nested settings groups are not supported")
     if value.startswith("[") and value.endswith("]"):
         result = [parse_scalar(part) for part in split_array(value)]
-        if result and not all(isinstance(item, str) for item in result):
-            raise ImportError("only arrays of strings are supported by the current settings schema")
-        return result
+        if not result:
+            return result
+        if all(type(item) is str for item in result):
+            return result
+        if all(type(item) is int for item in result):
+            return result
+        raise ImportError("arrays must contain only strings or only integers; mixed and floating-point arrays are unsupported")
     if value.startswith("{") or value.casefold() in ("null", "~"):
         raise ImportError("mapping and null setting defaults are not supported")
     if value.startswith('"'):
@@ -446,7 +450,12 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                 raise ImportError(f"setting {entry['id']}: decimal defaults require $float: true")
             kind, default = "string", str(default)
         elif isinstance(default, list):
-            kind = "stringArray"
+            if not default or all(type(value) is str for value in default):
+                kind = "stringArray"
+            elif all(type(value) is int for value in default):
+                kind = "numberArray"
+            else:
+                raise ImportError(f"setting {entry['id']}: arrays must contain only strings or only integers")
         elif isinstance(default, str):
             kind = "string"
         else:
@@ -462,6 +471,8 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                 warnings.append(f"setting {entry['id']}: floating-point range limits are not represented in the 00047 text field")
         if options and kind == "string" and not dynamic:
             kind = "select"
+        if kind == "numberArray" and (options or dynamic or floating or format_hint):
+            raise ImportError(f"setting {entry['id']}: numeric arrays do not support options, $float, $dynamicSelect, or $format")
         item = {"id": entry["id"], "label": props.get("$name", entry["id"]), "type": kind, "default": default}
         if format_hint:
             item["format"] = format_hint

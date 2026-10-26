@@ -75,6 +75,26 @@ class WindhawkImportTests(unittest.TestCase):
             self.assertTrue(json.loads((project / "windhawk-import.json").read_text())["settingsBlock"])
             self.assertTrue((project / "WINDHAWK_README.md").exists())
 
+    def test_imports_string_and_numeric_arrays_and_rejects_mixed_arrays(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_text = SOURCE.replace(
+                "*/\\n// ==/WindhawkModSettings==",
+                '- KeyCodes: [13, 27, 65]\\n  $name: Key codes\\n'
+                '- WindowNames: ["Explorer", "Cabinet"]\\n  $name: Window names\\n'
+                '*/\\n// ==/WindhawkModSettings==',
+            )
+            project, _ = import_project(self.source(root, source_text), root / "out")
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            settings = {item["id"]: item for item in manifest["settings"]}
+            self.assertEqual(settings["KeyCodes"]["type"], "numberArray")
+            self.assertEqual(settings["KeyCodes"]["default"], [13, 27, 65])
+            self.assertEqual(settings["WindowNames"]["type"], "stringArray")
+            self.assertEqual(settings["WindowNames"]["default"], ["Explorer", "Cabinet"])
+            mixed = source_text.replace("[13, 27, 65]", '[13, "not a number"]')
+            with self.assertRaisesRegex(ImportError, "arrays must contain only strings or only integers"):
+                import_project(self.source(root, mixed), root / "mixed")
+
     def test_import_preserves_slider_and_color_formats(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
