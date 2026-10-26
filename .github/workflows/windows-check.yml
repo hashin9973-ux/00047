@@ -121,6 +121,25 @@ jobs:
           python tools/package_native_mod.py --manifest (Join-Path $generatedC "manifest.json") --dll $generatedCDll --output $generatedCZip
           python tools/validate_native_mod.py $generatedCZip
 
+      - name: Build and test Explorer title-prefix native mod
+        shell: pwsh
+        run: |
+          $sample = Join-Path $env:GITHUB_WORKSPACE "samples/native-mod-explorer-title"
+          python tools/audit_windhawk_mod.py (Join-Path $sample "explorer_title_prefix.cpp") --fail-on-unsupported
+          $build = Join-Path $env:RUNNER_TEMP "00047-explorer-title-prefix"
+          cmake -S $sample -B $build -A x64 -DWMOD_BUILD_TESTS=ON
+          cmake --build $build --config Release --target 00047_explorer_title_prefix_mod 00047_explorer_title_prefix_runtime_test
+          $dll = Join-Path $build "bin/Release/00047_explorer_title_prefix_mod.dll"
+          $testExe = Join-Path $build "Release/00047_explorer_title_prefix_runtime_test.exe"
+          if (-not (Test-Path $dll)) { throw "Explorer title-prefix mod DLL was not built: $dll" }
+          if (-not (Test-Path $testExe)) { throw "Explorer title-prefix runtime test was not built: $testExe" }
+          & $testExe $dll (Join-Path $sample "manifest.json")
+          if ($LASTEXITCODE -ne 0) { throw "Explorer title-prefix runtime test failed with exit code $LASTEXITCODE." }
+          $zip = Join-Path $env:RUNNER_TEMP "00047-explorer-title-prefix-mod.zip"
+          python tools/package_native_mod.py --manifest (Join-Path $sample "manifest.json") --dll $dll --output $zip
+          python tools/validate_native_mod.py $zip
+          if (-not (Test-Path $zip)) { throw "Explorer title-prefix mod package was not created." }
+
       - name: Compile and run non-hook Windhawk-style compatibility tests
         shell: pwsh
         run: |
@@ -232,5 +251,13 @@ jobs:
         with:
           name: 00047-sample-native-mod
           path: ${{ runner.temp }}/00047-sample-native-mod.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Explorer title-prefix native mod sample
+        uses: actions/upload-artifact@v4
+        with:
+          name: 00047-explorer-title-prefix-mod
+          path: ${{ runner.temp }}/00047-explorer-title-prefix-mod.zip
           if-no-files-found: error
           retention-days: 14

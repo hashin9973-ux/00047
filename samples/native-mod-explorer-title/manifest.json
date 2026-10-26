@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.00047-explorer-title-prefix",
+  "name": "Explorer Title Prefix (Sample)",
+  "version": "1.0.0",
+  "description": "A hook demonstration that prefixes top-level File Explorer window captions with [00047] and attempts to restore them when disabled.",
+  "architecture": "x64",
+  "module": "bin/00047_explorer_title_prefix_mod.dll",
+  "targets": [
+    "explorer.exe"
+  ]
+}
