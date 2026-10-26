@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "com.example.rust-native-mod",
+  "name": "Rust Native Mod Sample",
+  "version": "1.0.0",
+  "description": "A minimal Rust DLL demonstrating the 00047 native-mod lifecycle ABI without modifying the desktop.",
+  "architecture": "x64",
+  "module": "bin/example_rust_native_mod.dll",
+  "targets": [
+    "explorer.exe"
+  ]
+}

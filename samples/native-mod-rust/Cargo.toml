@@ -1,0 +1,12 @@
+[package]
+name = "00047-native-mod-rust-sample"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "example_rust_native_mod"
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
