@@ -23,6 +23,7 @@ use crate::native_mods::NativeModManager;
 
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_SOURCE_CMAKE_BYTES: u64 = 1024 * 1024;
+const MAX_SOURCE_CARGO_BYTES: u64 = 1024 * 1024;
 const MAX_BUILT_DLL_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_CAPTURE_BYTES: usize = 256 * 1024;
 const BUILD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -105,60 +106,103 @@ pub async fn build_and_install(
     manager: Arc<NativeModManager>,
 ) -> Result<BuildInstallReport, String> {
     let _permit = BuildPermit::acquire()?;
-    let (project_root, manifest_bytes, module_relative) = inspect_project(&project_dir)?;
-    let sdk_root = checked_sdk_directory(&sdk_dir)?;
+    let (project_root, manifest_bytes, module_relative, build_system) =
+        inspect_project(&project_dir)?;
+    let sdk_root = if build_system == SourceBuildSystem::CMake {
+        Some(checked_sdk_directory(&sdk_dir)?)
+    } else {
+        None
+    };
     let module_name = module_relative
         .file_name()
         .ok_or("Manifest module path has no DLL filename.")?
         .to_owned();
 
     let workspace = BuildWorkspace::create()?;
-    let build_dir = workspace.path.join("build");
+    let (dll, build_log) = match build_system {
+        SourceBuildSystem::CMake => {
+            let sdk_root = sdk_root
+                .as_ref()
+                .ok_or("The CMake build is missing its SDK directory.")?;
+            let build_dir = workspace.path.join("build");
 
-    // Canonicalize for security checks above, but pass ordinary DOS/UNC paths
-    // to CMake/MSBuild. Their generated project files can mis-handle the
-    // Windows `\\?\\` verbatim prefix (e.g. turn it into `///?/C:/...`).
-    let cmake_project_root = cmake_tool_path(&project_root)?;
-    let cmake_sdk_root = cmake_tool_path(&sdk_root)?;
-    let cmake_build_dir = cmake_tool_path(&build_dir)?;
-    let sdk_argument = format!("-DWMOD_SDK_DIR={}", cmake_sdk_root.display());
+            // Canonicalize for security checks above, but pass ordinary DOS/UNC paths
+            // to CMake/MSBuild. Their generated project files can mis-handle the
+            // Windows `\\?\\` verbatim prefix (e.g. turn it into `///?/C:/...`).
+            let cmake_project_root = cmake_tool_path(&project_root)?;
+            let cmake_sdk_root = cmake_tool_path(sdk_root)?;
+            let cmake_build_dir = cmake_tool_path(&build_dir)?;
+            let sdk_argument = format!("-DWMOD_SDK_DIR={}", cmake_sdk_root.display());
 
-    let configure_args = vec![
-        "-S".into(),
-        cmake_project_root.as_os_str().to_os_string(),
-        "-B".into(),
-        cmake_build_dir.as_os_str().to_os_string(),
-        "-A".into(),
-        "x64".into(),
-        sdk_argument.into(),
-    ];
-    let configure_output = run_command(
-        "cmake",
-        configure_args,
-        &cmake_project_root,
-        BUILD_TIMEOUT,
-        "CMake configure",
-    )
-    .await?;
+            let configure_args = vec![
+                "-S".into(),
+                cmake_project_root.as_os_str().to_os_string(),
+                "-B".into(),
+                cmake_build_dir.as_os_str().to_os_string(),
+                "-A".into(),
+                "x64".into(),
+                sdk_argument.into(),
+            ];
+            let configure_output = run_command(
+                "cmake",
+                configure_args,
+                &cmake_project_root,
+                BUILD_TIMEOUT,
+                "CMake configure",
+            )
+            .await?;
 
-    let build_args = vec![
-        "--build".into(),
-        cmake_build_dir.as_os_str().to_os_string(),
-        "--config".into(),
-        "Release".into(),
-        "--parallel".into(),
-        "2".into(),
-    ];
-    let build_output = run_command(
-        "cmake",
-        build_args,
-        &cmake_project_root,
-        BUILD_TIMEOUT,
-        "CMake build",
-    )
-    .await?;
+            let build_args = vec![
+                "--build".into(),
+                cmake_build_dir.as_os_str().to_os_string(),
+                "--config".into(),
+                "Release".into(),
+                "--parallel".into(),
+                "2".into(),
+            ];
+            let build_output = run_command(
+                "cmake",
+                build_args,
+                &cmake_project_root,
+                BUILD_TIMEOUT,
+                "CMake build",
+            )
+            .await?;
+            let dll = locate_built_dll(&cmake_build_dir, &module_name)?;
+            let log = format!(
+                "=== Configure ===\n{}\n=== Build ===\n{}",
+                configure_output, build_output
+            );
+            (dll, log)
+        }
+        SourceBuildSystem::Cargo => {
+            let target_dir = workspace.path.join("cargo-target");
+            let manifest_path = project_root.join("Cargo.toml");
+            let build_args = vec![
+                "build".into(),
+                "--manifest-path".into(),
+                manifest_path.as_os_str().to_os_string(),
+                "--target".into(),
+                "x86_64-pc-windows-msvc".into(),
+                "--release".into(),
+                "--locked".into(),
+                "--lib".into(),
+                "--target-dir".into(),
+                target_dir.as_os_str().to_os_string(),
+            ];
+            let build_output = run_command(
+                "cargo",
+                build_args,
+                &project_root,
+                BUILD_TIMEOUT,
+                "Cargo build (x64 Windows)",
+            )
+            .await?;
+            let dll = locate_cargo_built_dll(&target_dir, &module_name)?;
+            (dll, format!("=== Cargo build (x64 Windows) ===\n{build_output}"))
+        }
+    };
 
-    let dll = locate_built_dll(&cmake_build_dir, &module_name)?;
     let dll_metadata = fs::symlink_metadata(&dll)
         .map_err(|e| format!("Cannot inspect compiled DLL: {e}"))?;
     if dll_metadata.file_type().is_symlink()
@@ -175,11 +219,6 @@ pub async fn build_and_install(
     let package_path = workspace.path.join("built-native-mod.zip");
     create_package(&package_path, &manifest_bytes, &module_relative, &dll)?;
     let package_preview = manager.preview(&package_path)?;
-    let build_log = format!(
-        "=== Configure ===\n{}\n=== Build ===\n{}",
-        configure_output, build_output
-    );
-
     let installed_id = manager.install(&package_path).map_err(|error| {
         format!(
             "Build succeeded, but package installation failed: {error}\n\nBuild output:\n{build_log}"
@@ -195,7 +234,6 @@ pub async fn build_and_install(
         build_output: build_log,
     })
 }
-
 fn checked_regular_file(path: &Path, label: &str, max_bytes: u64) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|e| format!("Cannot inspect {label} '{}': {e}", path.display()))?;
@@ -209,7 +247,15 @@ fn checked_regular_file(path: &Path, label: &str, max_bytes: u64) -> Result<(), 
     Ok(())
 }
 
-fn inspect_project(project_dir: &Path) -> Result<(PathBuf, Vec<u8>, PathBuf), String> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceBuildSystem {
+    CMake,
+    Cargo,
+}
+
+fn inspect_project(
+    project_dir: &Path,
+) -> Result<(PathBuf, Vec<u8>, PathBuf, SourceBuildSystem), String> {
     let root_metadata = fs::symlink_metadata(project_dir)
         .map_err(|e| format!("Cannot inspect source project directory: {e}"))?;
     if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
@@ -218,7 +264,22 @@ fn inspect_project(project_dir: &Path) -> Result<(PathBuf, Vec<u8>, PathBuf), St
     let root = project_dir
         .canonicalize()
         .map_err(|e| format!("Cannot resolve source project directory: {e}"))?;
-    checked_regular_file(&root.join("CMakeLists.txt"), "CMakeLists.txt", MAX_SOURCE_CMAKE_BYTES)?;
+
+    let cmake_file = root.join("CMakeLists.txt");
+    let cargo_file = root.join("Cargo.toml");
+    let build_system = if cmake_file.exists() {
+        checked_regular_file(&cmake_file, "CMakeLists.txt", MAX_SOURCE_CMAKE_BYTES)?;
+        SourceBuildSystem::CMake
+    } else if cargo_file.exists() {
+        checked_regular_file(&cargo_file, "Cargo.toml", MAX_SOURCE_CARGO_BYTES)?;
+        SourceBuildSystem::Cargo
+    } else {
+        return Err(
+            "The source project must contain manifest.json and either CMakeLists.txt or Cargo.toml."
+                .into(),
+        );
+    };
+
     let manifest_path = root.join("manifest.json");
     checked_regular_file(&manifest_path, "manifest.json", MAX_MANIFEST_BYTES)?;
     let manifest_bytes = fs::read(&manifest_path)
@@ -233,9 +294,8 @@ fn inspect_project(project_dir: &Path) -> Result<(PathBuf, Vec<u8>, PathBuf), St
         .and_then(Value::as_str)
         .ok_or("Source manifest.json must declare a relative module DLL path.")?;
     let relative = safe_module_relative_path(module)?;
-    Ok((root, manifest_bytes, relative))
+    Ok((root, manifest_bytes, relative, build_system))
 }
-
 fn safe_module_relative_path(module: &str) -> Result<PathBuf, String> {
     if module.is_empty()
         || module.contains('\\')
@@ -338,6 +398,31 @@ fn locate_built_dll(build_dir: &Path, module_name: &std::ffi::OsStr) -> Result<P
     ))
 }
 
+fn locate_cargo_built_dll(
+    target_dir: &Path,
+    module_name: &std::ffi::OsStr,
+) -> Result<PathBuf, String> {
+    let candidate = target_dir
+        .join("x86_64-pc-windows-msvc")
+        .join("release")
+        .join(module_name);
+    let metadata = fs::symlink_metadata(&candidate).map_err(|e| {
+        format!(
+            "Cargo completed, but the expected DLL was not found at '{}': {e}. Check that Cargo.toml declares a `cdylib` whose `[lib] name` matches manifest.module.",
+            candidate.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "Cargo output '{}' is not a regular DLL file. Check the `cdylib` name and manifest.module.",
+            candidate.display()
+        ));
+    }
+    candidate
+        .canonicalize()
+        .map_err(|e| format!("Cannot resolve Cargo output DLL path: {e}"))
+}
+
 async fn run_command(
     program: &str,
     arguments: Vec<std::ffi::OsString>,
@@ -382,7 +467,7 @@ async fn run_command(
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!(
-            "Could not start {stage}; install CMake and the Visual Studio C++ x64 build tools. Details: {e}"
+            "Could not start {program} for {stage}; install the required build toolchain and ensure it is on PATH. Details: {e}"
         ))?;
     let stdout = child.stdout.take().ok_or_else(|| format!("{stage}: stdout pipe is unavailable"))?;
     let stderr = child.stderr.take().ok_or_else(|| format!("{stage}: stderr pipe is unavailable"))?;
@@ -562,6 +647,97 @@ WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void) {
         let manager = Arc::new(NativeModManager::new(root.join("managed")));
         let report = build_and_install(project, sdk, manager.clone()).await.unwrap();
         assert_eq!(report.id, MOD_ID);
+        assert!(report.message.contains("disabled"));
+        assert!(!manager.enabled_snapshot().contains(MOD_ID));
+        let package = manager.package_dir(MOD_ID).unwrap();
+        assert!(package.join("manifest.json").is_file());
+        assert!(package.join("bin").join(format!("{MODULE_NAME}.dll")).is_file());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn in_app_builder_builds_rust_cdylib_and_installs_disabled() {
+        let _serial = lock_source_build_tests();
+        const MOD_ID: &str = "com.example.inapp-rust-builder-smoke";
+        const MODULE_NAME: &str = "com_example_inapp_rust_builder_smoke";
+        let root = std::env::temp_dir().join(format!(
+            "00047-native-mod-rust-builder-smoke-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let project = root.join("source");
+        fs::create_dir_all(project.join("src")).unwrap();
+
+        let manifest = serde_json::json!({
+            "manifestVersion": 1,
+            "id": MOD_ID,
+            "name": "In-app Rust Builder Smoke Test",
+            "version": "1.0.0",
+            "description": "Windows CI exercise for the in-app Rust source builder",
+            "architecture": "x64",
+            "module": format!("bin/{MODULE_NAME}.dll"),
+            "targets": ["explorer.exe"]
+        });
+        fs::write(
+            project.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        ).unwrap();
+        fs::write(project.join("Cargo.toml"), r#"[package]
+name = "inapp-rust-builder-smoke"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "com_example_inapp_rust_builder_smoke"
+crate-type = ["cdylib"]
+"#).unwrap();
+        fs::write(project.join("Cargo.lock"), r#"# This file is automatically @generated by Cargo.
+# It is not intended for manual editing.
+version = 4
+
+[[package]]
+name = "inapp-rust-builder-smoke"
+version = "0.1.0"
+"#).unwrap();
+        fs::write(project.join("src").join("lib.rs"), r#"#![allow(non_snake_case)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+#[no_mangle]
+pub extern "system" fn WmodGetApiVersion() -> u32 { 2 }
+
+#[no_mangle]
+pub extern "system" fn WmodInitializeV1() -> i32 {
+    INITIALIZED.store(true, Ordering::Release);
+    1
+}
+
+#[no_mangle]
+pub extern "system" fn WmodShutdownV1() {
+    INITIALIZED.store(false, Ordering::Release);
+}
+
+#[no_mangle]
+pub extern "system" fn WmodIsInitializedV1() -> i32 {
+    if INITIALIZED.load(Ordering::Acquire) { 1 } else { 0 }
+}
+
+#[no_mangle]
+pub extern "system" fn WmodCanUnloadV1() -> i32 {
+    if !INITIALIZED.load(Ordering::Acquire) { 1 } else { 0 }
+}
+"#).unwrap();
+
+        let manager = Arc::new(NativeModManager::new(root.join("managed")));
+        // Rust-only lifecycle modules do not need the C++ compatibility SDK.
+        let report = build_and_install(project, root.join("unused-sdk"), manager.clone())
+            .await
+            .unwrap();
+        assert_eq!(report.id, MOD_ID);
+        assert!(report.build_output.contains("Cargo build"));
         assert!(report.message.contains("disabled"));
         assert!(!manager.enabled_snapshot().contains(MOD_ID));
         let package = manager.package_dir(MOD_ID).unwrap();

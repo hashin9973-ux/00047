@@ -335,7 +335,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
   async function buildSourceProject() {
     const answer = await modal({
       title: 'Build and install from source?',
-      body: 'Choose a native-mod project folder containing manifest.json and CMakeLists.txt. 00047 will run CMake configure/build with the bundled SDK and your installed Visual Studio C++ x64 toolchain. CMakeLists.txt and build scripts execute with your Windows user permissions, so only build source you trust. The package is validated and installed disabled by default. When trusted-signature enforcement is enabled, the resulting DLL must also have a valid trusted Authenticode signature.',
+      body: 'Choose a native-mod project folder containing manifest.json and either CMakeLists.txt or Cargo.toml. CMake projects use the bundled SDK and Visual Studio C++ x64 toolchain; Cargo projects build a Rust x64 cdylib and require a current Cargo.lock. Build files and scripts execute with your Windows user permissions, so only build source you trust. The package is validated and installed disabled by default. When trusted-signature enforcement is enabled, the resulting DLL must also have a valid trusted Authenticode signature.',
       buttons: [['cancel', 'Cancel'], ['go', 'Choose source folder', 'primary']]
     });
     if (answer !== 'go') return;

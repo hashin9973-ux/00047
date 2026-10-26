@@ -10,4 +10,6 @@ python tools/package_native_mod.py --manifest samples/native-mod-rust/manifest.j
 python tools/validate_native_mod.py dist/rust-native-mod.zip
 ```
 
+The 00047 in-app **Build from source** action can build this project folder directly. It uses Cargo's x64 MSVC target, builds in a temporary workspace, validates the resulting DLL and package, then installs it disabled by default. Keep Cargo.lock up to date before starting the build.
+
 The Windows CI job also loads the DLL and checks its export version and lifecycle transitions. Treat all native mods as unsandboxed native code; implement shutdown and unload checks for every resource a real mod owns.

@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "00047-native-mod-rust-sample"
+name = "native-mod-rust-sample"
 version = "0.1.0"
