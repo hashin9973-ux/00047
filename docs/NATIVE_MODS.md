@@ -103,7 +103,7 @@ Each build stage has a five-minute timeout and captured console output is bounde
 
 ## Settings and logs
 
-A mod may declare an optional `settings` array in `manifest.json`. Each setting has a unique `id`, a `label`, a `type`, and a `default`. Supported types are `boolean`, `string`, `stringArray`, `integer`, `number`, and `select`. Numeric settings can declare `min`, `max`, and `step`; string settings can declare `maxLength`; select and string-array settings can declare `options` with unique `value` and `label` properties. A string-array setting stores a JSON array of strings; without `options` it is edited as a list of text values, and with `dynamicSelect: true` each element uses the same runtime option list.
+A mod may declare an optional `settings` array in `manifest.json`. Each setting has a unique `id`, a `label`, a `type`, and a `default`. Supported types are `boolean`, `string`, `stringArray`, `numberArray`, `integer`, `number`, and `select`. Numeric scalar settings can declare `min`, `max`, and `step`; string settings can declare `maxLength`; select and string-array settings can declare `options` with unique `value` and `label` properties. String and number arrays are stored as JSON arrays and edited as add/remove lists; number arrays accept signed 32-bit integers. The Windhawk compatibility getters resolve indexed member keys such as `NameList[0]` against those arrays.
 
 ```json
 {
@@ -151,7 +151,7 @@ python tools/package_native_mod.py --manifest mods/<mod-id>/manifest.json --dll 
 python tools/validate_native_mod.py dist/mod.zip
 ```
 
-The importer rejects rules the target/build model cannot preserve, including wildcard/path target matching, `@exclude`, unsupported compiler flags, object-array settings and numeric arrays. It translates flat and nested group settings (nested leaves are flattened to dotted IDs), string and integer scalar arrays, and supports `$showIf` / `$hideIf`, `$format: slider`, `colorRgb`, `colorArgb`, native file/folder pickers, basic hotkey capture, and Windows font-family suggestions. Hotkey capture may not receive OS-reserved shortcuts; the font chooser is a datalist/free-text field rather than Windhawk's dedicated picker. Object-array templates and nested sub-form presentation still need manual porting. Inspect `windhawk-import.json` and audit the source before enabling it. Native mods remain unsandboxed and installed packages are disabled by default.
+The importer rejects rules the target/build model cannot preserve, including wildcard/path target matching, `@exclude`, unsupported compiler flags, mixed/floating-point arrays and object-array templates. It translates flat and nested group settings (nested leaves are flattened to dotted IDs), string and integer scalar arrays, and supports `$showIf` / `$hideIf`, `$format: slider`, `colorRgb`, `colorArgb`, native file/folder pickers, basic hotkey capture, and Windows font-family suggestions. Hotkey capture may not receive OS-reserved shortcuts; the font chooser is a datalist/free-text field rather than Windhawk's dedicated picker. Object-array templates and nested sub-form presentation still need manual porting. Inspect `windhawk-import.json` and audit the source before enabling it. Native mods remain unsandboxed and installed packages are disabled by default.
 
 ## Porting a Windhawk mod
 
