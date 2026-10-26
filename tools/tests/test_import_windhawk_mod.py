@@ -123,7 +123,7 @@ class WindhawkImportTests(unittest.TestCase):
         source_text = SOURCE.replace(
             "*/\n// ==/WindhawkModSettings==",
             '- Display:\n  $name: Display settings\n  $showIf: {Enabled: true}\n'
-            '  - UseVisualStyles: false\n  - Accent: mica\n'
+            '  - Enabled: false\n  - UseVisualStyles: false\n  - Accent: mica\n'
             '    $name: Accent scheme\n    $options:\n'
             '      - mica: Mica\n      - acrylic: Acrylic\n'
             '    $showIf: {UseVisualStyles: true}\n'
@@ -134,12 +134,16 @@ class WindhawkImportTests(unittest.TestCase):
             project, _ = import_project(self.source(root, source_text), root / "out")
             manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
             by_id = {item["id"]: item for item in manifest["settings"]}
+            self.assertEqual(by_id["Display.Enabled"]["label"], "Display settings / Enabled")
             self.assertEqual(by_id["Display.UseVisualStyles"]["label"], "Display settings / UseVisualStyles")
             self.assertEqual(by_id["Display.Accent"]["label"], "Display settings / Accent scheme")
             self.assertEqual(by_id["Display.Accent"]["showIf"], {
                 "Enabled": [True],
                 "Display.UseVisualStyles": [True],
-            } | {})
+            })
+            # The group-level Enabled reference must bind to the top-level
+            # setting despite the presence of a shadowing Display.Enabled leaf.
+            self.assertEqual(by_id["Display.Enabled"]["showIf"], {"Enabled": [True]})
     def test_indented_visibility_condition_maps_are_imported(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

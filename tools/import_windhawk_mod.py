@@ -501,8 +501,25 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                 warnings.append(f"setting {entry['id']}: hotkey capture uses webview keyboard events and may not capture Windows-reserved shortcuts exactly")
         converted.append(item)
 
+    by_id = {item["id"]: item for item in converted}
+
+    def resolve_condition(source_id: str, reference: str, *, group_scope: bool = False) -> str | None:
+        path = source_id.split(".")
+        scope = path[:-1] if not group_scope else path[:-1]
+        candidates = []
+        for size in range(len(scope), -1, -1):
+            prefix = ".".join(scope[:size])
+            candidate = f"{prefix}.{reference}" if prefix else reference
+            if candidate not in candidates:
+                candidates.append(candidate)
+        for candidate in candidates:
+            if candidate in by_id:
+                return candidate
+        return None
+
     # Group metadata is represented in this editor as dotted setting IDs and
-    # a readable label path. Conditions on a group are inherited by its leaves.
+    # a readable label path. Resolve a group's own conditions at the group's
+    # parent scope before inheriting them, so child names cannot shadow them.
     for item in converted:
         item_path = item["id"]
         ancestors = item_path.split(".")[:-1]
@@ -516,38 +533,30 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
             for field in ("showIf", "hideIf"):
                 inherited = meta.get(field, {})
                 existing = item.setdefault(field, {})
-                for condition_id, condition_values_list in inherited.items():
-                    if condition_id in existing:
+                for condition_ref, condition_values_list in inherited.items():
+                    resolved_group_condition = resolve_condition(
+                        group_path, condition_ref, group_scope=True
+                    )
+                    if resolved_group_condition is None:
+                        raise ImportError(
+                            f"setting group {group_path}: {field} references unknown setting {condition_ref!r}"
+                        )
+                    if resolved_group_condition in existing:
                         accepted = [
-                            value for value in existing[condition_id]
+                            value for value in existing[resolved_group_condition]
                             if any(type(value) is type(inherited_value) and value == inherited_value
                                    for inherited_value in condition_values_list)
                         ]
                         if not accepted:
                             raise ImportError(
-                                f"setting {item_path}: inherited group visibility conflicts on {condition_id!r}"
+                                f"setting {item_path}: inherited group visibility conflicts on {resolved_group_condition!r}"
                             )
-                        existing[condition_id] = accepted
+                        existing[resolved_group_condition] = accepted
                     else:
-                        existing[condition_id] = list(condition_values_list)
+                        existing[resolved_group_condition] = list(condition_values_list)
         if label_parts:
             leaf_label = item["label"] if item["label"] != item["id"] else item["id"].rsplit(".", 1)[-1]
             item["label"] = " / ".join(label_parts + [leaf_label])
-
-    by_id = {item["id"]: item for item in converted}
-
-    def resolve_condition(source_id: str, reference: str) -> str | None:
-        scope = source_id.split(".")[:-1]
-        candidates = []
-        for size in range(len(scope), -1, -1):
-            prefix = ".".join(scope[:size])
-            candidate = f"{prefix}.{reference}" if prefix else reference
-            if candidate not in candidates:
-                candidates.append(candidate)
-        for candidate in candidates:
-            if candidate in by_id:
-                return candidate
-        return None
 
     for item in converted:
         for field in ("showIf", "hideIf"):
