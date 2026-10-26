@@ -534,7 +534,8 @@ struct HookRecord {
 std::mutex g_mutex;
 std::unordered_map<void*, HookRecord> g_hooks;
 bool g_initialized = false;
-bool g_accepting = true;
+// A DLL is unloadable before its lifecycle begins; BeginHookOperations enables registrations.
+bool g_accepting = false;
 
 bool EnsureInitializedLocked() noexcept {
     if (g_initialized) return true;
