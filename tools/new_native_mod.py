@@ -167,7 +167,7 @@ Native mods execute inside their target process without a sandbox. This template
         package_name = module_name.replace("_", "-")
         project_version = manifest["version"]
         files = {
-            "manifest.json": json.dumps(manifest, ensure_ascii=False, indent=2) + "\\n",
+            "manifest.json": json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
             "Cargo.toml": f'''[package]
 name = "{package_name}"
 version = "{project_version}"
