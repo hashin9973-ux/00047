@@ -76,7 +76,7 @@ class WindhawkImportTests(unittest.TestCase):
             root = Path(temp)
             source_text = SOURCE.replace(
                 "BOOL Wh_ModInit() { return TRUE; }",
-                'BOOL Wh_ModInit() { Wh_Log(L"starting"); return TRUE; }',
+                'BOOL Wh_ModInit() { Wh_Log(L"starting"); Wh_SetFunctionHook(nullptr, nullptr, nullptr); return TRUE; }',
             ) + "\nvoid Wh_MadeUpThing();\n"
             source = self.source(root, source_text)
             project, warnings = import_project(source, root / "out")
@@ -84,6 +84,7 @@ class WindhawkImportTests(unittest.TestCase):
             compatibility = report["apiCompatibility"]
             findings = {item["name"]: item for item in compatibility["findings"]}
             self.assertEqual(findings["Wh_Log"]["category"], "supported-with-limitations")
+            self.assertEqual(findings["Wh_SetFunctionHook"]["category"], "supported-with-limitations")
             self.assertEqual(findings["Wh_MadeUpThing"]["category"], "unknown-api")
             self.assertTrue(compatibility["requiresManualReview"])
             self.assertTrue(any("Wh_MadeUpThing" in warning for warning in warnings))

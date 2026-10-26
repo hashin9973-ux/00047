@@ -33,6 +33,13 @@ metadata, basic settings, API helpers, and lifecycle adapter.
 
 #include <windhawk_api.h>
 
+using SetWindowTextWFn = BOOL (WINAPI*)(HWND, LPCWSTR);
+static SetWindowTextWFn g_originalSetWindowTextW = nullptr;
+
+static BOOL WINAPI SmokeSetWindowTextWHook(HWND window, LPCWSTR text) {
+    return g_originalSetWindowTextW ? g_originalSetWindowTextW(window, text) : FALSE;
+}
+
 BOOL Wh_ModInit() {
     if (!Wh_GetIntSetting(L"Enabled")) {
         Wh_Log(L"Smoke mod is disabled by settings.");
@@ -41,6 +48,13 @@ BOOL Wh_ModInit() {
     PCWSTR prefix = Wh_GetStringSetting(L"CaptionPrefix");
     Wh_Log(L"Imported caption prefix: %ls", prefix ? prefix : L"(null)");
     Wh_FreeStringSetting(prefix);
+    if (!Wh_SetFunctionHook(
+            reinterpret_cast<void*>(SetWindowTextW),
+            reinterpret_cast<void*>(SmokeSetWindowTextWHook),
+            reinterpret_cast<void**>(&g_originalSetWindowTextW))) {
+        Wh_Log(L"Failed to register the SetWindowTextW test hook.");
+        return FALSE;
+    }
     return TRUE;
 }
 void Wh_ModAfterInit() { Wh_Log(L"After init"); }
