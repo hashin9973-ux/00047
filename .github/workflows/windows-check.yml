@@ -121,6 +121,24 @@ jobs:
           python tools/package_native_mod.py --manifest (Join-Path $generatedC "manifest.json") --dll $generatedCDll --output $generatedCZip
           python tools/validate_native_mod.py $generatedCZip
 
+
+      - name: Import and build a representative Windhawk source mod
+        shell: pwsh
+        run: |
+          $generatedRoot = Join-Path $env:RUNNER_TEMP "00047-windhawk-import"
+          python tools/import_windhawk_mod.py samples/windhawk-import-smoke.cpp --output-dir $generatedRoot
+          $project = Join-Path $generatedRoot "com.example.windhawk-import-smoke"
+          $build = Join-Path $env:RUNNER_TEMP "00047-windhawk-import-build"
+          $sdk = (Resolve-Path "sdk/native-mod").Path
+          cmake -S $project -B $build -A x64 "-DWMOD_SDK_DIR=$sdk"
+          cmake --build $build --config Release
+          $dll = Join-Path $build "bin/Release/com_example_windhawk_import_smoke.dll"
+          if (-not (Test-Path $dll)) { throw "Imported Windhawk DLL was not created: $dll" }
+          $zip = Join-Path $env:RUNNER_TEMP "00047-windhawk-import.zip"
+          python tools/package_native_mod.py --manifest (Join-Path $project "manifest.json") --dll $dll --output $zip
+          python tools/validate_native_mod.py $zip
+          if (-not (Test-Path $zip)) { throw "Imported Windhawk package was not created." }
+
       - name: Build and test Explorer title-prefix native mod
         shell: pwsh
         run: |

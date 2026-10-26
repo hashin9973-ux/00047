@@ -1,0 +1,49 @@
+// ==WindhawkMod==
+// @id com.example.windhawk-import-smoke
+// @name Windhawk Import Smoke Test
+// @description A small API and lifecycle compatibility build fixture.
+// @version 1.0.0
+// @author 00047 CI
+// @include explorer.exe
+// @compilerOptions -std=c++20 -lcomctl32
+// ==/WindhawkMod==
+
+// ==WindhawkModSettings==
+/*
+- Enabled: true
+  $name: Enabled
+- CaptionPrefix: "[00047] "
+  $name: Caption prefix
+- Mode: prefixed
+  $name: Mode
+  $options:
+    - prefixed: Prefix the caption
+    - unchanged: Leave the caption unchanged
+- Opacity: 0.85
+  $float: true
+*/
+// ==/WindhawkModSettings==
+
+// ==WindhawkModReadme==
+/*
+CI fixture for importing a Windhawk single-file source and compiling its
+metadata, basic settings, API helpers, and lifecycle adapter.
+*/
+// ==/WindhawkModReadme==
+
+#include <windhawk_api.h>
+
+BOOL Wh_ModInit() {
+    if (!Wh_GetIntSetting(L"Enabled")) {
+        Wh_Log(L"Smoke mod is disabled by settings.");
+        return TRUE;
+    }
+    PCWSTR prefix = Wh_GetStringSetting(L"CaptionPrefix");
+    Wh_Log(L"Imported caption prefix: %ls", prefix ? prefix : L"(null)");
+    Wh_FreeStringSetting(prefix);
+    return TRUE;
+}
+void Wh_ModAfterInit() { Wh_Log(L"After init"); }
+void Wh_ModBeforeUninit() { Wh_Log(L"Before uninit"); }
+void Wh_ModUninit() { Wh_Log(L"Uninit"); }
+void Wh_ModSettingsChanged() { Wh_Log(L"Settings changed"); }

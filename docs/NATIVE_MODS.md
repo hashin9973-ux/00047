@@ -139,6 +139,20 @@ Native mods are arbitrary machine code and are not sandboxed. Loading them can c
 The engine does not yet provide a stable cross-process host callback API or guaranteed recovery from a DLL that crashes or permanently hangs a target after successful initialization. The in-app builder accepts a project with `CMakeLists.txt` (CMake/Visual Studio x64) or, when that file is absent, `Cargo.toml` (Rust `cdylib` targeting `x86_64-pc-windows-msvc`). Cargo projects must include a current `Cargo.lock` and set `[lib].name` to the DLL basename in `manifest.module`. Cargo output is built in a temporary workspace, then passed through the same PE/export validation and ZIP packaging path; installed packages remain disabled by default. CMake files, Cargo build scripts, and dependency build scripts can execute arbitrary commands with the current user's permissions and are not sandboxed. Optional Authenticode publisher-trust enforcement is available, but it is not a sandbox. The current x64 allow-list and explicit enable/disable flow are first-stage restrictions, not a security boundary.
 
 
+## Importing a Windhawk source file
+
+The SDK provides a source-level `windhawk_api.h` header and an importer for single-file Windhawk C++ mods:
+
+```powershell
+python tools/import_windhawk_mod.py path\to\mod.cpp --output-dir mods
+cmake -S mods/<mod-id> -B mods/build -A x64 -DWMOD_SDK_DIR=C:/path/to/00047/sdk/native-mod
+cmake --build mods/build --config Release
+python tools/package_native_mod.py --manifest mods/<mod-id>/manifest.json --dll mods/build/bin/Release/<module-name>.dll --output dist/mod.zip
+python tools/validate_native_mod.py dist/mod.zip
+```
+
+The importer rejects rules the target/build model cannot preserve, including wildcard/path target matching, `@exclude`, unsupported compiler flags, nested settings and numeric arrays. Some settings UI annotations need manual porting. Inspect `windhawk-import.json` and audit the source before enabling it. Native mods remain unsandboxed and installed packages are disabled by default.
+
 ## Porting a Windhawk mod
 
 Use [WINDHAWK_COMPATIBILITY.md](WINDHAWK_COMPATIBILITY.md) and `tools/audit_windhawk_mod.py` to identify supported API calls, unsupported APIs, and lifecycle callbacks that require manual adaptation. Hooking is implemented through a bundled x64 MinHook backend, but the source-level subset is not a drop-in Windhawk runtime. The audit is static source analysis only and does not certify compatibility or safety.
