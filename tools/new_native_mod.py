@@ -110,6 +110,8 @@ if(NOT EXISTS "${{WMOD_SDK_DIR}}/00047_mod_api.h")
   message(FATAL_ERROR "Set WMOD_SDK_DIR to the 00047 sdk/native-mod directory")
 endif()
 
+include("${{WMOD_SDK_DIR}}/windhawk_project_metadata.cmake")
+
 set(WMOD_HOOK_ENGINE_SOURCES
   "${{WMOD_SDK_DIR}}/windhawk_hook_compat.cpp"
   "${{WMOD_SDK_DIR}}/third_party/minhook/src/buffer.c"
@@ -283,6 +285,8 @@ set(WMOD_SDK_DIR "" CACHE PATH "Path to the 00047 repository sdk/native-mod dire
 if(NOT EXISTS "${{WMOD_SDK_DIR}}/00047_mod_api.h")
   message(FATAL_ERROR "Set WMOD_SDK_DIR to the 00047 sdk/native-mod directory")
 endif()
+
+include("${{WMOD_SDK_DIR}}/windhawk_project_metadata.cmake")
 
 add_library({module_name} SHARED mod.c)
 target_compile_definitions({module_name} PRIVATE WMOD_BUILD_DLL WIN32_LEAN_AND_MEAN NOMINMAX)

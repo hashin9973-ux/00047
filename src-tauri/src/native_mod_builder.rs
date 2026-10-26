@@ -133,6 +133,9 @@ pub async fn build_and_install(
             let cmake_sdk_root = cmake_tool_path(sdk_root)?;
             let cmake_build_dir = cmake_tool_path(&build_dir)?;
             let sdk_argument = format!("-DWMOD_SDK_DIR={}", cmake_sdk_root.display());
+            let metadata_include = cmake_sdk_root.join("windhawk_project_metadata.cmake");
+            let metadata_include_argument =
+                format!("-DCMAKE_PROJECT_INCLUDE={}", metadata_include.display());
 
             let configure_args = vec![
                 "-S".into(),
@@ -142,6 +145,7 @@ pub async fn build_and_install(
                 "-A".into(),
                 "x64".into(),
                 sdk_argument.into(),
+                metadata_include_argument.into(),
             ];
             let configure_output = run_command(
                 "cmake",
@@ -362,6 +366,7 @@ fn checked_sdk_directory(sdk_dir: &Path) -> Result<PathBuf, String> {
         .map_err(|e| format!("Cannot resolve the bundled native-mod SDK: {e}"))?;
     for relative in [
         "00047_mod_api.h",
+        "windhawk_project_metadata.cmake",
         "windhawk_hook_compat.cpp",
         "third_party/minhook/src/hook.c",
         "third_party/distorm/src/decoder.c",
@@ -626,7 +631,11 @@ set_target_properties(com_example_inapp_builder_smoke PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
 "#).unwrap();
-        fs::write(project.join("mod.cpp"), r#"#include "00047_mod_api.h"
+        fs::write(project.join("mod.cpp"), r#"#include <string_view>
+#include "00047_mod_api.h"
+
+static_assert(std::wstring_view(WH_MOD_ID) == L"com.example.inapp-builder-smoke");
+static_assert(std::wstring_view(WH_MOD_VERSION) == L"1.0.0");
 
 WMOD_00047_EXPORT std::uint32_t WINAPI WmodGetApiVersion(void) {
     return WMOD_00047_ABI_VERSION;
@@ -698,6 +707,15 @@ set_target_properties(com_example_inapp_c_builder_smoke PROPERTIES
 )
 "#).unwrap();
         fs::write(project.join("mod.c"), r#"#include "00047_mod_api.h"
+
+#ifndef WH_MOD_ID
+#error WH_MOD_ID must be injected from manifest.json
+#endif
+#ifndef WH_MOD_VERSION
+#error WH_MOD_VERSION must be injected from manifest.json
+#endif
+typedef char mod_id_length_matches[(sizeof(WH_MOD_ID) == sizeof(L"com.example.inapp-c-builder-smoke")) ? 1 : -1];
+typedef char mod_version_length_matches[(sizeof(WH_MOD_VERSION) == sizeof(L"1.0.0")) ? 1 : -1];
 
 static volatile LONG g_initialized = 0;
 

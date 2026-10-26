@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 project(00047_sample_native_mod LANGUAGES C CXX)
 
 set(WMOD_SDK_DIR "${CMAKE_CURRENT_LIST_DIR}/../../sdk/native-mod")
+include("${WMOD_SDK_DIR}/windhawk_project_metadata.cmake")
 set(WMOD_HOOK_ENGINE_SOURCES
   "${WMOD_SDK_DIR}/windhawk_hook_compat.cpp"
   "${WMOD_SDK_DIR}/third_party/minhook/src/buffer.c"

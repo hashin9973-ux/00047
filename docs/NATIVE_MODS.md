@@ -93,7 +93,7 @@ Windows CI runs those tests, builds/validates the real no-op sample package, and
 
 The Native Mods view's **Build from source...** action accepts a project folder containing `manifest.json` and either `CMakeLists.txt` or `Cargo.toml`. The manifest must point to `bin/<module-name>.dll`. If both build files exist, the builder selects CMake.
 
-For CMake projects, the app configures the x64 Visual Studio generator, points `WMOD_SDK_DIR` at the bundled `sdk/native-mod` resources, and builds the Release configuration. CMake and the Visual Studio C++ x64 build tools must be installed and available to the current user.
+For CMake projects, the app configures the x64 Visual Studio generator, points `WMOD_SDK_DIR` at the bundled `sdk/native-mod` resources, and builds the Release configuration. CMake and the Visual Studio C++ x64 build tools must be installed and available to the current user. It also injects a generated compatibility header defining `WH_MOD_ID` and `WH_MOD_VERSION` from the project's `manifest.json` for C/C++ sources, including projects that don't explicitly include the 00047 headers. The helper is bundled with the SDK and generated projects include it for standalone builds.
 
 For Rust projects, the app runs Cargo for the `x86_64-pc-windows-msvc` target. The project must have a current `Cargo.lock`, a library target with `crate-type = ["cdylib"]`, and a `[lib].name` matching the DLL filename declared in `manifest.module`. The app uses `--locked` and puts build artifacts in a temporary directory rather than the source project's `target` folder. The required Rust target and Cargo must already be installed.
 

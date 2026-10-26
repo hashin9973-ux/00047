@@ -1,6 +1,10 @@
 #include "00047_mod_api.h"
 #include "00047_mod_services.h"
 #include "windhawk_hook_compat.h"
+#include <string_view>
+
+static_assert(std::wstring_view(WH_MOD_ID) == L"com.example.00047-sample-native-mod");
+static_assert(std::wstring_view(WH_MOD_VERSION) == L"1.0.0");
 
 static bool g_initialized = false;
 
