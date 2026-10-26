@@ -531,7 +531,8 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                     else:
                         existing[condition_id] = list(condition_values_list)
         if label_parts:
-            item["label"] = " / ".join(label_parts + [item["label"]])
+            leaf_label = item["label"] if item["label"] != item["id"] else item["id"].rsplit(".", 1)[-1]
+            item["label"] = " / ".join(label_parts + [leaf_label])
 
     by_id = {item["id"]: item for item in converted}
 
