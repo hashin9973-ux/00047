@@ -240,8 +240,8 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       control = '<div class="native-color-field"><input type="color" data-setting-id="' + id +
         '" data-setting-type="formatted-color" data-setting-format="' + format + '" data-argb-alpha="' + alpha +
         '" value="' + esc(picker) + '">' +
-        (argb ? '<label class="native-color-alpha">Alpha <input type="range" min="0" max="255" step="1" data-color-alpha-for="' +
-          id + '" value="' + parseInt(alpha, 16) + '"></label>' : '') + '</div>';
+        (argb ? '<span class="native-color-alpha">Alpha <input type="range" min="0" max="255" step="1" data-color-alpha-for="' +
+          id + '" value="' + parseInt(alpha, 16) + '"></span>' : '') + '</div>';
     } else if (format === 'slider' && setting.min != null && setting.max != null &&
         ['string', 'integer', 'number'].includes(kind)) {
       const step = setting.step != null ? String(setting.step) : (kind === 'integer' ? '1' : 'any');

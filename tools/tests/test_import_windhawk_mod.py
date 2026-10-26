@@ -79,10 +79,10 @@ class WindhawkImportTests(unittest.TestCase):
             root = Path(temp)
             source_text = SOURCE.replace(
                 "$showIf: {Enabled: true}",
-                "$showIf: {Enabled: true}\\n  $format: slider",
+                "$showIf: {Enabled: true}\n  $format: slider",
             ).replace(
                 "*/\\n// ==/WindhawkModSettings==",
-                '- Overlay: "#80FFFFFF"\\n  $format: colorArgb\\n*/\\n// ==/WindhawkModSettings==',
+                '- Overlay: "#80FFFFFF"\n  $format: colorArgb\n*/\n// ==/WindhawkModSettings==',
             )
             project, warnings = import_project(self.source(root, source_text), root / "out")
             manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
