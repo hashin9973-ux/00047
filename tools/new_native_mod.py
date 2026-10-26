@@ -15,6 +15,12 @@ CANONICAL_TARGETS = {
     "startmenuexperiencehost.exe": "StartMenuExperienceHost.exe",
     "shellexperiencehost.exe": "ShellExperienceHost.exe",
     "searchhost.exe": "SearchHost.exe",
+    "textinputhost.exe": "TextInputHost.exe",
+    "dwm.exe": "dwm.exe",
+    "applicationframehost.exe": "ApplicationFrameHost.exe",
+    "lockapp.exe": "LockApp.exe",
+    "widgets.exe": "Widgets.exe",
+    "taskmgr.exe": "Taskmgr.exe",
 }
 
 
@@ -333,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--name", required=True, help="human-readable mod name")
     parser.add_argument("--output-dir", required=True, help="parent directory for the new project")
     parser.add_argument("--target", default="explorer.exe", choices=sorted(CANONICAL_TARGETS),
-                        help="allow-listed Windows shell process (default: explorer.exe)")
+                        help="allow-listed Windows UI process (default: explorer.exe)")
     parser.add_argument("--description", default="A starter 00047 native mod.")
     parser.add_argument("--language", choices=("cpp", "c", "rust"), default="cpp", help="starter implementation language (default: cpp)")
     args = parser.parse_args(argv)

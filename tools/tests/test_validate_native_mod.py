@@ -158,6 +158,27 @@ class NativeModValidatorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "not allowed"):
             validate_package(path)
 
+    def test_accepts_additional_windows_ui_targets(self):
+        manifest = base_manifest()
+        manifest["targets"] = [
+            "explorer.exe",
+            "StartMenuExperienceHost.exe",
+            "ShellExperienceHost.exe",
+            "SearchHost.exe",
+            "TextInputHost.exe",
+            "dwm.exe",
+            "ApplicationFrameHost.exe",
+            "LockApp.exe",
+            "Widgets.exe",
+            "Taskmgr.exe",
+        ]
+        path = self.package([
+            ("manifest.json", json.dumps(manifest)),
+            ("bin/test.dll", make_test_pe()),
+        ])
+        result = validate_package(path)
+        self.assertEqual(result["targets"], manifest["targets"])
+
     def test_rejects_non_x64_machine(self):
         path = self.package([
             ("manifest.json", json.dumps(base_manifest())),
@@ -333,6 +354,17 @@ class NativeModValidatorTests(unittest.TestCase):
     def test_scaffold_refuses_unsupported_process(self):
         with self.assertRaisesRegex(ValidationError, "allow-list"):
             create_project("com.example.bad", "Bad", self.temp_dir.name, target="notepad.exe")
+
+    def test_scaffold_accepts_additional_windows_ui_target(self):
+        destination = create_project(
+            "com.example.dwm-mod",
+            "DWM Mod",
+            self.temp_dir.name,
+            target="dwm.exe",
+        )
+        with open(destination / "manifest.json", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        self.assertEqual(manifest["targets"], ["dwm.exe"])
 
     def test_scaffold_does_not_overwrite_existing_project(self):
         destination = create_project("com.example.existing", "Existing", self.temp_dir.name)

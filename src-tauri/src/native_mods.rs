@@ -31,11 +31,17 @@ const REQUIRED_EXPORTS: [&str; 5] = [
     "WmodCanUnloadV1",
 ];
 
-pub const SUPPORTED_TARGETS: [&str; 4] = [
+pub const SUPPORTED_TARGETS: [&str; 10] = [
     "explorer.exe",
     "StartMenuExperienceHost.exe",
     "ShellExperienceHost.exe",
     "SearchHost.exe",
+    "TextInputHost.exe",
+    "dwm.exe",
+    "ApplicationFrameHost.exe",
+    "LockApp.exe",
+    "Widgets.exe",
+    "Taskmgr.exe",
 ];
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1416,7 +1422,10 @@ fn validate_manifest(m: &ModManifest, files: Option<&HashSet<String>>) -> Result
         return Err(format!("native module '{}' is missing from the ZIP", m.module));
     }
     if m.targets.is_empty() || m.targets.len() > SUPPORTED_TARGETS.len() {
-        return Err("mod must declare between 1 and 4 supported target processes".into());
+        return Err(format!(
+            "mod must declare between 1 and {} supported target processes",
+            SUPPORTED_TARGETS.len()
+        ));
     }
     let mut unique = HashSet::new();
     for target in &m.targets {
@@ -2923,9 +2932,23 @@ mod tests {
     }
 
     #[test]
-    fn native_mod_targets_are_restricted_to_shell_processes() {
-        let m = manifest(vec!["explorer.exe", "ShellExperienceHost.exe"], "bin/mod.dll");
+    fn native_mod_targets_cover_supported_windows_ui_processes() {
+        let supported = vec![
+            "explorer.exe",
+            "StartMenuExperienceHost.exe",
+            "ShellExperienceHost.exe",
+            "SearchHost.exe",
+            "TextInputHost.exe",
+            "dwm.exe",
+            "ApplicationFrameHost.exe",
+            "LockApp.exe",
+            "Widgets.exe",
+            "Taskmgr.exe",
+        ];
+        assert_eq!(SUPPORTED_TARGETS.len(), supported.len());
+        let m = manifest(supported.clone(), "bin/mod.dll");
         assert!(validate_manifest(&m, None).is_ok());
+
         let arbitrary = manifest(vec!["notepad.exe"], "bin/mod.dll");
         assert!(validate_manifest(&arbitrary, None).unwrap_err().contains("not supported"));
         let duplicate = manifest(vec!["explorer.exe", "EXPLORER.EXE"], "bin/mod.dll");

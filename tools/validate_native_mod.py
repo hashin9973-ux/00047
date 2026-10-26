@@ -24,6 +24,12 @@ ALLOWED_TARGETS = {
     "startmenuexperiencehost.exe",
     "shellexperiencehost.exe",
     "searchhost.exe",
+    "textinputhost.exe",
+    "dwm.exe",
+    "applicationframehost.exe",
+    "lockapp.exe",
+    "widgets.exe",
+    "taskmgr.exe",
 }
 REQUIRED_EXPORTS = {
     "WmodGetApiVersion",
@@ -190,7 +196,9 @@ def _validate_manifest(manifest: object, archive_names: set[str]) -> dict:
 
     targets = manifest.get("targets")
     if not isinstance(targets, list) or not 1 <= len(targets) <= len(ALLOWED_TARGETS):
-        raise ValidationError("targets must contain between 1 and 4 supported process names")
+        raise ValidationError(
+            f"targets must contain between 1 and {len(ALLOWED_TARGETS)} supported process names"
+        )
     if any(not isinstance(target, str) or target.casefold() not in ALLOWED_TARGETS for target in targets):
         raise ValidationError("targets contains a process not allowed by this SDK")
     if len({target.casefold() for target in targets}) != len(targets):
