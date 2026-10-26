@@ -95,6 +95,17 @@ class WindhawkImportTests(unittest.TestCase):
             with self.assertRaisesRegex(ImportError, "arrays must contain only strings or only integers"):
                 import_project(self.source(root, mixed), root / "mixed")
 
+            oversized = source_text.replace("[13, 27, 65]", "[13, 2147483648]")
+            with self.assertRaisesRegex(ImportError, "signed 32-bit integers"):
+                import_project(self.source(root, oversized), root / "oversized")
+
+            range_annotated = source_text.replace(
+                "- KeyCodes: [13, 27, 65]\\n  $name: Key codes",
+                "- KeyCodes: [13, 27, 65]\\n  $name: Key codes\\n  $min: 0",
+            )
+            with self.assertRaisesRegex(ImportError, "numeric arrays do not support"):
+                import_project(self.source(root, range_annotated), root / "range")
+
     def test_import_preserves_slider_and_color_formats(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

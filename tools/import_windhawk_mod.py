@@ -453,6 +453,8 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
             if not default or all(type(value) is str for value in default):
                 kind = "stringArray"
             elif all(type(value) is int for value in default):
+                if any(value < -(2**31) or value > 2**31 - 1 for value in default):
+                    raise ImportError(f"setting {entry['id']}: numeric array values must be signed 32-bit integers")
                 kind = "numberArray"
             else:
                 raise ImportError(f"setting {entry['id']}: arrays must contain only strings or only integers")
@@ -471,8 +473,8 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                 warnings.append(f"setting {entry['id']}: floating-point range limits are not represented in the 00047 text field")
         if options and kind == "string" and not dynamic:
             kind = "select"
-        if kind == "numberArray" and (options or dynamic or floating or format_hint):
-            raise ImportError(f"setting {entry['id']}: numeric arrays do not support options, $float, $dynamicSelect, or $format")
+        if kind == "numberArray" and (options or dynamic or floating or format_hint or "$min" in props or "$max" in props):
+            raise ImportError(f"setting {entry['id']}: numeric arrays do not support options, $min/$max, $float, $dynamicSelect, or $format")
         item = {"id": entry["id"], "label": props.get("$name", entry["id"]), "type": kind, "default": default}
         if format_hint:
             item["format"] = format_hint
