@@ -121,13 +121,13 @@ class WindhawkImportTests(unittest.TestCase):
 
     def test_nested_groups_flatten_to_dotted_ids_with_scoped_conditions(self):
         source_text = SOURCE.replace(
-            "*/\\n// ==/WindhawkModSettings==",
-            '- Display:\\n  $name: Display settings\\n  $showIf: {Enabled: true}\\n'
-            '  - UseVisualStyles: false\\n  - Accent: mica\\n'
-            '    $name: Accent scheme\\n    $options:\\n'
-            '      - mica: Mica\\n      - acrylic: Acrylic\\n'
-            '    $showIf: {UseVisualStyles: true}\\n'
-            '*/\\n// ==/WindhawkModSettings==',
+            "*/\n// ==/WindhawkModSettings==",
+            '- Display:\n  $name: Display settings\n  $showIf: {Enabled: true}\n'
+            '  - UseVisualStyles: false\n  - Accent: mica\n'
+            '    $name: Accent scheme\n    $options:\n'
+            '      - mica: Mica\n      - acrylic: Acrylic\n'
+            '    $showIf: {UseVisualStyles: true}\n'
+            '*/\n// ==/WindhawkModSettings==',
         )
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

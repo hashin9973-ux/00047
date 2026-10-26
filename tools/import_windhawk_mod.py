@@ -278,7 +278,7 @@ def flatten_nested_setting_groups(
                     raise ImportError(
                         f"setting group {group_path}: multiline {name} maps must be converted to inline maps before import"
                     )
-                info[name[1:]] = parse_condition_map(value, group_path, name)
+                info["showIf" if name == "$showif" else "hideIf"] = parse_condition_map(value, group_path, name)
             else:
                 raise ImportError(
                     f"setting group {group_path}: {name} is not supported on a group; move it to a child setting"
