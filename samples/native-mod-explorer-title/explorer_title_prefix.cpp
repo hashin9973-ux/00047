@@ -249,6 +249,8 @@ void Wh_ModUninit() {
     g_originalSetWindowTextWAddress = nullptr;
 }
 
+} // namespace
+
 WMOD_DEFINE_WINDHAWK_LIFECYCLE(
     Wh_ModInit,
     Wh_ModAfterInit,

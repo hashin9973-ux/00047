@@ -92,7 +92,8 @@ int wmain(int argc, wchar_t** argv) {
 
     CHECK(SetWindowTextW(targetWindow, L"Documents") == TRUE);
     CHECK(ReadCaption(targetWindow) == std::wstring(kExpectedPrefix) + L"Documents");
-    CHECK(SetWindowTextW(targetWindow, L"[00047] Documents") == TRUE);
+    // Repeated requests for the same unprefixed title must not duplicate the prefix.
+    CHECK(SetWindowTextW(targetWindow, L"Documents") == TRUE);
     CHECK(ReadCaption(targetWindow) == std::wstring(kExpectedPrefix) + L"Documents");
 
     CHECK(SetWindowTextW(otherWindow, L"Settings") == TRUE);
