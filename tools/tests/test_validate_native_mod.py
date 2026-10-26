@@ -243,6 +243,40 @@ class NativeModValidatorTests(unittest.TestCase):
         self.assertIn("Wh_Log(", source)
         self.assertIn("x64 function-hook registration/application", open(os.path.join(destination, "README.md"), encoding="utf-8").read())
 
+    def test_rust_scaffold_creates_language_neutral_cdylib_project(self):
+        destination = create_project(
+            "com.example.rust_generated",
+            "Generated Rust Mod",
+            self.temp_dir.name,
+            target="explorer.exe",
+            language="rust",
+        )
+        expected = {"manifest.json", "Cargo.toml", "Cargo.lock", "src", "README.md"}
+        self.assertEqual({name for name in os.listdir(destination)}, expected)
+        with open(os.path.join(destination, "manifest.json"), encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        self.assertEqual(manifest["module"], "bin/com_example_rust_generated.dll")
+        with open(os.path.join(destination, "Cargo.toml"), encoding="utf-8") as handle:
+            cargo = handle.read()
+        self.assertIn('crate-type = ["cdylib"]', cargo)
+        self.assertIn('name = "com_example_rust_generated"', cargo)
+        self.assertIn('name = "com-example-rust-generated"', cargo)
+        with open(os.path.join(destination, "Cargo.lock"), encoding="utf-8") as handle:
+            lock = handle.read()
+        self.assertIn('name = "com-example-rust-generated"', lock)
+        with open(os.path.join(destination, "src", "lib.rs"), encoding="utf-8") as handle:
+            source = handle.read()
+        for symbol in EXPORTS:
+            self.assertIn(symbol, source)
+        self.assertIn('extern "system"', source)
+        self.assertIn("AtomicBool", source)
+        self.assertFalse(os.path.exists(os.path.join(destination, "mod.cpp")))
+        self.assertFalse(os.path.exists(os.path.join(destination, "CMakeLists.txt")))
+
+    def test_scaffold_rejects_unknown_language(self):
+        with self.assertRaisesRegex(ValidationError, "language must be cpp or rust"):
+            create_project("com.example.badlang", "Bad Language", self.temp_dir.name, language="python")
+
     def test_scaffold_refuses_invalid_id(self):
         with self.assertRaisesRegex(ValidationError, "id must"):
             create_project("../bad", "Bad", self.temp_dir.name)
