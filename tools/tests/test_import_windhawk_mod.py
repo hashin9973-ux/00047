@@ -119,6 +119,27 @@ class WindhawkImportTests(unittest.TestCase):
             self.assertTrue(compatibility["requiresManualReview"])
             self.assertTrue(any("Wh_MadeUpThing" in warning for warning in warnings))
 
+    def test_nested_groups_flatten_to_dotted_ids_with_scoped_conditions(self):
+        source_text = SOURCE.replace(
+            "*/\\n// ==/WindhawkModSettings==",
+            '- Display:\\n  $name: Display settings\\n  $showIf: {Enabled: true}\\n'
+            '  - UseVisualStyles: false\\n  - Accent: mica\\n'
+            '    $name: Accent scheme\\n    $options:\\n'
+            '      - mica: Mica\\n      - acrylic: Acrylic\\n'
+            '    $showIf: {UseVisualStyles: true}\\n'
+            '*/\\n// ==/WindhawkModSettings==',
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project, _ = import_project(self.source(root, source_text), root / "out")
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            by_id = {item["id"]: item for item in manifest["settings"]}
+            self.assertEqual(by_id["Display.UseVisualStyles"]["label"], "Display settings / UseVisualStyles")
+            self.assertEqual(by_id["Display.Accent"]["label"], "Display settings / Accent scheme")
+            self.assertEqual(by_id["Display.Accent"]["showIf"], {
+                "Enabled": [True],
+                "Display.UseVisualStyles": [True],
+            } | {})
     def test_indented_visibility_condition_maps_are_imported(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

@@ -245,6 +245,114 @@ def clean_settings_lines(block: str) -> list[tuple[int, str]]:
     return output
 
 
+def flatten_nested_setting_groups(
+    lines: list[tuple[int, str]], root_indent: int
+) -> tuple[list[tuple[int, str]], dict[str, dict]]:
+    """Flatten nested mapping groups into dotted IDs supported by 00047.
+
+    Object arrays (YAML sequence rows whose first nested item is itself a
+    sequence) are intentionally rejected because they need per-row templates.
+    """
+    group_metadata: dict[str, dict] = {}
+    flattened: list[tuple[int, str]] = []
+
+    def parse_group_metadata(group_path: str, fallback_name: str,
+                             properties: list[tuple[int, str]]) -> dict:
+        info = {"name": fallback_name, "showIf": {}, "hideIf": {}}
+        for _, text in properties:
+            match = re.match(r"^(\$[A-Za-z][A-Za-z0-9_-]*(?::[A-Za-z0-9-]+)?)\s*:\s*(.*?)\s*$", text)
+            if not match:
+                raise ImportError(f"unsupported metadata on setting group {group_path}: {text!r}")
+            name, value = match.groups()
+            if ":" in name:
+                continue
+            name = name.casefold()
+            if name in ("$name", "$description"):
+                parsed = parse_scalar(value)
+                if not isinstance(parsed, str):
+                    raise ImportError(f"setting group {group_path}: {name} must be a string")
+                if name == "$name":
+                    info["name"] = parsed
+            elif name in ("$showif", "$hideif"):
+                if not value:
+                    raise ImportError(
+                        f"setting group {group_path}: multiline {name} maps must be converted to inline maps before import"
+                    )
+                info[name[1:]] = parse_condition_map(value, group_path, name)
+            else:
+                raise ImportError(
+                    f"setting group {group_path}: {name} is not supported on a group; move it to a child setting"
+                )
+        return info
+
+    def process_level(source: list[tuple[int, str]], level: int, prefix: str) -> None:
+        index = 0
+        while index < len(source):
+            indent, text = source[index]
+            if indent != level or not text.startswith("- "):
+                index += 1
+                continue
+            match = re.match(r"^([A-Za-z_][A-Za-z0-9_.-]{0,127})\s*:\s*(.*?)\s*$", text[2:].strip())
+            if not match:
+                raise ImportError(f"unsupported setting entry: {text!r}")
+            key, default = match.groups()
+            item_end = index + 1
+            while item_end < len(source):
+                next_indent, next_text = source[item_end]
+                if next_text.startswith("- ") and next_indent <= level:
+                    break
+                item_end += 1
+            body = source[index + 1:item_end]
+            nested_dash_indents = [
+                nested_indent for nested_indent, nested_text in body
+                if nested_text.startswith("- ") and nested_indent > level
+            ]
+            object_array_row = any(
+                nested_text.startswith("- -")
+                for nested_indent, nested_text in body
+                if nested_text.startswith("- ") and nested_indent > level
+            )
+            if object_array_row:
+                raise ImportError(
+                    "object-array setting templates are not supported by the current importer; convert them to a flat setting schema"
+                )
+            path = f"{prefix}.{key}" if prefix else key
+            if not default and nested_dash_indents:
+                child_indent = min(nested_dash_indents)
+                group_properties = [
+                    (body_index + index + 1, line_text)
+                    for body_index, (line_indent, line_text) in enumerate(body)
+                    if line_indent == child_indent and line_text.startswith("$")
+                ]
+                child_lines = [
+                    (line_indent, line_text)
+                    for line_indent, line_text in body
+                    if not (line_indent == child_indent and line_text.startswith("$"))
+                ]
+                metadata = parse_group_metadata(path, key, group_properties)
+                group_metadata[path] = metadata
+                process_level(child_lines, child_indent, path)
+            else:
+                if path.count(".") > 8:
+                    raise ImportError(f"setting nesting depth exceeds 8 at {path}")
+                if len(path) > 64:
+                    raise ImportError(f"flattened setting ID exceeds 64 characters: {path}")
+                flattened.append((root_indent, f"- {path}: {default}"))
+                for line_indent, line_text in body:
+                    if line_indent <= level:
+                        continue
+                    flattened.append((root_indent + line_indent - level, line_text))
+            index = item_end
+
+    first = next((indent for indent, text in lines if text.startswith("- ")), None)
+    if first is None:
+        return lines, group_metadata
+    if first != root_indent:
+        raise ImportError("settings list has inconsistent root indentation")
+    process_level(lines, root_indent, "")
+    return flattened, group_metadata
+
+
 def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
     raw = extract_block(source, SETTINGS_START, SETTINGS_END)
     if not raw.strip():
@@ -254,6 +362,7 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
     if first_item is None:
         raise ImportError("settings block does not contain a YAML list of defaults")
     root_indent = first_item[0]
+    lines, group_metadata = flatten_nested_setting_groups(lines, root_indent)
     entries, warnings, current, current_property, current_property_indent = [], [], None, None, None
     for indent, text in lines:
         if text.startswith("- "):
@@ -392,13 +501,63 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                 warnings.append(f"setting {entry['id']}: hotkey capture uses webview keyboard events and may not capture Windows-reserved shortcuts exactly")
         converted.append(item)
 
+    # Group metadata is represented in this editor as dotted setting IDs and
+    # a readable label path. Conditions on a group are inherited by its leaves.
+    for item in converted:
+        item_path = item["id"]
+        ancestors = item_path.split(".")[:-1]
+        label_parts = []
+        for index in range(1, len(ancestors) + 1):
+            group_path = ".".join(ancestors[:index])
+            meta = group_metadata.get(group_path)
+            if not meta:
+                continue
+            label_parts.append(meta["name"])
+            for field in ("showIf", "hideIf"):
+                inherited = meta.get(field, {})
+                existing = item.setdefault(field, {})
+                for condition_id, condition_values_list in inherited.items():
+                    if condition_id in existing:
+                        accepted = [
+                            value for value in existing[condition_id]
+                            if any(type(value) is type(inherited_value) and value == inherited_value
+                                   for inherited_value in condition_values_list)
+                        ]
+                        if not accepted:
+                            raise ImportError(
+                                f"setting {item_path}: inherited group visibility conflicts on {condition_id!r}"
+                            )
+                        existing[condition_id] = accepted
+                    else:
+                        existing[condition_id] = list(condition_values_list)
+        if label_parts:
+            item["label"] = " / ".join(label_parts + [item["label"]])
+
     by_id = {item["id"]: item for item in converted}
+
+    def resolve_condition(source_id: str, reference: str) -> str | None:
+        scope = source_id.split(".")[:-1]
+        candidates = []
+        for size in range(len(scope), -1, -1):
+            prefix = ".".join(scope[:size])
+            candidate = f"{prefix}.{reference}" if prefix else reference
+            if candidate not in candidates:
+                candidates.append(candidate)
+        for candidate in candidates:
+            if candidate in by_id:
+                return candidate
+        return None
+
     for item in converted:
         for field in ("showIf", "hideIf"):
-            for target_id, accepted in item.get(field, {}).items():
-                target = by_id.get(target_id)
-                if target is None:
-                    raise ImportError(f"setting {item['id']}: {field} references unknown setting {target_id!r}")
+            resolved = {}
+            for target_ref, accepted in item.get(field, {}).items():
+                target_id = resolve_condition(item["id"], target_ref)
+                if target_id is None:
+                    raise ImportError(f"setting {item['id']}: {field} references unknown setting {target_ref!r}")
+                if target_id in resolved:
+                    raise ImportError(f"setting {item['id']}: {field} references {target_id!r} more than once")
+                target = by_id[target_id]
                 target_kind = target["type"]
                 def type_matches(value):
                     if target_kind == "boolean":
@@ -407,9 +566,13 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                         return isinstance(value, int) and not isinstance(value, bool)
                     if target_kind == "number":
                         return isinstance(value, (int, float)) and not isinstance(value, bool)
-                    return isinstance(value, str)
+                    if target_kind in ("string", "select"):
+                        return isinstance(value, str)
+                    return False
                 if not all(type_matches(value) for value in accepted):
-                    raise ImportError(f"setting {item['id']}: {field} values do not match setting {target_id!r}")
+                    raise ImportError(f"setting {item['id']}: {field} values do not match setting {target_ref!r}")
+                resolved[target_id] = accepted
+            item[field] = resolved
     graph = {item["id"]: list(item.get("showIf", {})) + list(item.get("hideIf", {})) for item in converted}
     visiting, visited = set(), set()
     def visit(key):

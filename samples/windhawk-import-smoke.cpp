@@ -30,6 +30,16 @@
   $format: fontFamily
 - Shortcut: "ctrl+alt+84"
   $format: hotkey
+- Rendering:
+  $name: Rendering controls
+  $showIf: {Enabled: true}
+  - UseVisualStyles: false
+  - Theme: mica
+    $name: Theme
+    $options:
+      - mica: Mica
+      - acrylic: Acrylic
+    $showIf: {UseVisualStyles: true}
 - Overlay: "#80FFFFFF"
   $format: colorArgb
 */
