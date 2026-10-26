@@ -244,7 +244,9 @@ Native mods run inside their target process without a sandbox. These exports onl
     destination.mkdir()
     try:
         for relative, contents in files.items():
-            (destination / relative).write_text(contents, encoding="utf-8", newline="\n")
+            file_path = destination / relative
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            file_path.write_text(contents, encoding="utf-8", newline="\n")
     except Exception:
         import shutil
         shutil.rmtree(destination, ignore_errors=True)
