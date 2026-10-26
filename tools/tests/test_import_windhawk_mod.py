@@ -71,6 +71,23 @@ class WindhawkImportTests(unittest.TestCase):
             self.assertTrue(json.loads((project / "windhawk-import.json").read_text())["settingsBlock"])
             self.assertTrue((project / "WINDHAWK_README.md").exists())
 
+    def test_import_report_includes_supported_and_unknown_api_findings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_text = SOURCE.replace(
+                "BOOL Wh_ModInit() { return TRUE; }",
+                "BOOL Wh_ModInit() { Wh_Log(L\\"starting\\"); return TRUE; }",
+            ) + "\\nvoid Wh_MadeUpThing();\\n"
+            source = self.source(root, source_text)
+            project, warnings = import_project(source, root / "out")
+            report = json.loads((project / "windhawk-import.json").read_text(encoding="utf-8"))
+            compatibility = report["apiCompatibility"]
+            findings = {item["name"]: item for item in compatibility["findings"]}
+            self.assertEqual(findings["Wh_Log"]["category"], "supported-with-limitations")
+            self.assertEqual(findings["Wh_MadeUpThing"]["category"], "unknown-api")
+            self.assertTrue(compatibility["requiresManualReview"])
+            self.assertTrue(any("Wh_MadeUpThing" in warning for warning in warnings))
+
     def test_nonstandard_source_filename_is_normalized_for_wrapper(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

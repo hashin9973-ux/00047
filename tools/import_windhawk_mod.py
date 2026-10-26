@@ -11,7 +11,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from audit_windhawk_mod import mask_cpp_noncode
+from audit_windhawk_mod import audit_text, mask_cpp_noncode
 from new_native_mod import CANONICAL_TARGETS
 from validate_native_mod import ID_PATTERN
 
@@ -518,6 +518,21 @@ def import_project(source_path: Path, output_dir: Path) -> tuple[Path, list[str]
     if project.exists() or project.is_symlink():
         raise ImportError(f"destination already exists; refusing to overwrite: {project}")
     entry = make_entry(source)
+    api_findings = audit_text(source_path.name, source)
+    api_summary: dict[str, int] = {}
+    for finding in api_findings:
+        category = finding["category"]
+        api_summary[category] = api_summary.get(category, 0) + 1
+        if category in {"unsupported", "unknown-api", "manual-lifecycle-adaptation", "warning"}:
+            first_location = finding["locations"][0] if finding["locations"] else {"line": 1}
+            warnings.append(
+                f"API compatibility review required: {finding['name']} "
+                f"({category}) at {first_location.get('file', source_path.name)}:{first_location['line']}"
+            )
+    requires_manual_api_review = any(
+        item["category"] in {"unsupported", "unknown-api", "manual-lifecycle-adaptation", "warning"}
+        for item in api_findings
+    )
     output.mkdir(parents=True, exist_ok=True)
     project.mkdir()
     try:
@@ -538,6 +553,12 @@ def import_project(source_path: Path, output_dir: Path) -> tuple[Path, list[str]
             "metadata": fields,
             "settingsBlock": raw_settings,
             "warnings": warnings,
+            "apiCompatibility": {
+                "summary": api_summary,
+                "requiresManualReview": requires_manual_api_review,
+                "findings": api_findings,
+                "note": "Static source analysis only; this does not certify ABI equivalence, behavior, or safety.",
+            },
             "runtimeLimitations": [
                 "This is a source-level compatibility layer, not full Windhawk runtime equivalence.",
                 "Wildcards, full-path process matching, exclusions and non-allow-listed targets are not imported.",
