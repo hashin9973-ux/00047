@@ -8,6 +8,7 @@ const MAX_SETTINGS_BYTES: u64 = 256 * 1024;
 const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_SETTINGS: usize = 64;
 const MAX_OPTIONS: usize = 100;
+const MAX_ARRAY_ITEMS: usize = 256;
 const MAX_SETTING_TEXT: usize = 4096;
 const MAX_LOG_LINES: usize = 200;
 const MAX_LOG_LINE_CHARS: usize = 4096;
@@ -244,6 +245,7 @@ fn condition_atom_matches_setting(target: &SettingSpec, value: &Value) -> bool {
         "integer" => value.as_i64().is_some(),
         "number" => value.as_f64().is_some_and(f64::is_finite),
         "string" | "select" | "stringArray" => value.as_str().is_some_and(|s| s.chars().count() <= 100),
+        "numberArray" => value.as_i64().is_some_and(|n| (i32::MIN as i64..=i32::MAX as i64).contains(&n)),
         _ => false,
     }
 }
@@ -318,6 +320,7 @@ fn validate_value(s: &SettingSpec, v: &Value) -> Result<(), String> {
         }
         "stringArray" => {
             let items = v.as_array().ok_or("expected an array of strings")?;
+            if items.len() > MAX_ARRAY_ITEMS { return Err(format!("array exceeds {MAX_ARRAY_ITEMS} items")); }
             let max = if s.dynamic_select { 100 } else { s.max_length.unwrap_or(1024) };
             for item in items {
                 let text = item.as_str().ok_or("array values must be strings")?;
@@ -328,6 +331,17 @@ fn validate_value(s: &SettingSpec, v: &Value) -> Result<(), String> {
                     && !s.options.iter().any(|option| option.value == text) {
                     return Err("array value is not one of the declared options".into());
                 }
+            }
+        }
+        "numberArray" => {
+            let items = v.as_array().ok_or("expected an array of integers")?;
+            if items.len() > MAX_ARRAY_ITEMS { return Err(format!("array exceeds {MAX_ARRAY_ITEMS} items")); }
+            for item in items {
+                let n = item.as_i64().ok_or("array values must be integers")?;
+                if n < i32::MIN as i64 || n > i32::MAX as i64 {
+                    return Err("array integer is outside the signed 32-bit range".into());
+                }
+                validate_number(s, n as f64)?;
             }
         }
 
@@ -612,6 +626,21 @@ mod tests {
     }
 
     #[test]
+    fn numeric_array_values_are_bounded_and_round_trip_as_numbers() {
+        let spec: SettingSpec = serde_json::from_value(serde_json::json!({
+            "id": "keyCodes",
+            "label": "Key codes",
+            "type": "numberArray",
+            "default": [13, 27, 65]
+        })).unwrap();
+        assert!(validate_specs(&[spec.clone()]).is_ok());
+        assert!(validate_value(&spec, &serde_json::json!([13, 27])).is_ok());
+        assert!(validate_value(&spec, &serde_json::json!([13, "27"])).is_err());
+        assert!(validate_value(&spec, &serde_json::json!([2147483648_i64])).is_err());
+        assert!(validate_value(&spec, &serde_json::json!([1.5])).is_err());
+    }
+
+    #[test]
     fn schema_accepts_supported_setting_types() {
         let s = schema();
         assert!(validate_specs(&s).is_ok());
@@ -661,7 +690,8 @@ mod tests {
                     { "id": "opacity", "label": "Opacity", "type": "number", "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.1 },
                     { "id": "style", "label": "Style", "type": "select", "default": "mica",
                       "options": [{ "value": "mica", "label": "Mica" }, { "value": "acrylic", "label": "Acrylic" }] },
-                    { "id": "label", "label": "Label", "type": "string", "default": "Example", "maxLength": 40 }
+                    { "id": "label", "label": "Label", "type": "string", "default": "Example", "maxLength": 40 },
+                    { "id": "keyCodes", "label": "Key codes", "type": "numberArray", "default": [13, 27, 65] }
                 ]
             });
             fs::write(
@@ -687,16 +717,19 @@ mod tests {
         assert_eq!(initial.values.get("enabled"), Some(&Value::Bool(true)));
         assert_eq!(initial.values.get("opacity"), Some(&serde_json::json!(0.5)));
         assert_eq!(initial.values.get("style"), Some(&Value::String("mica".into())));
+        assert_eq!(initial.values.get("keyCodes"), Some(&serde_json::json!([13, 27, 65])));
 
         let values = serde_json::json!({
             "enabled": false,
             "opacity": 0.7,
             "style": "acrylic",
-            "label": "persisted"
+            "label": "persisted",
+            "keyCodes": [13, 27, 65, 91]
         });
         let saved = write_settings(&temp.path, id, values.clone()).unwrap();
         assert_eq!(saved.values.get("enabled"), Some(&Value::Bool(false)));
         assert_eq!(saved.values.get("label"), Some(&Value::String("persisted".into())));
+        assert_eq!(saved.values.get("keyCodes"), Some(&serde_json::json!([13, 27, 65, 91])));
         assert_eq!(read_settings(&temp.path, id).unwrap().values, saved.values);
 
         assert!(write_settings(&temp.path, id, serde_json::json!({
