@@ -4,6 +4,9 @@
 
 #include <Windows.h>
 #include <stdint.h>
+#ifdef __cplusplus
+#include <cstdint> // Preserve std::uint32_t for existing C++ mods.
+#endif
 
 // 00047 native mod ABI v2.
 // A module must export all five lifecycle functions/queries below with these exact names.
