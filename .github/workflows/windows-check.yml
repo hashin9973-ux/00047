@@ -152,7 +152,7 @@ jobs:
           & $settingsTestExe $settingsSmokeDll
           if ($LASTEXITCODE -ne 0) { throw "Settings-change runtime test failed with exit code $LASTEXITCODE." }
 
-      - name: Build and validate Rust native-mod ABI sample
+      - name: Build and validate language-neutral native-mod ABI samples
         shell: pwsh
         run: |
           $sample = "samples/native-mod-rust"
@@ -164,9 +164,13 @@ jobs:
           python tools/validate_native_mod.py $zip
 
           $build = Join-Path $env:RUNNER_TEMP "00047-nonhook-compat-tests"
-          cmake --build $build --config Release --target 00047_native_mod_abi_smoke
+          cmake --build $build --config Release --target 00047_native_mod_abi_smoke 00047_native_mod_c_abi_smoke
           $abiTest = Join-Path $build "Release/00047_native_mod_abi_smoke.exe"
+          $cDll = Join-Path $build "Release/00047_native_mod_c_abi_smoke.dll"
           if (-not (Test-Path $abiTest)) { throw "Native-mod ABI smoke test was not created." }
+          if (-not (Test-Path $cDll)) { throw "C native-mod ABI fixture was not created." }
+          & $abiTest $cDll
+          if ($LASTEXITCODE -ne 0) { throw "C native-mod ABI smoke test failed with exit code $LASTEXITCODE." }
           & $abiTest $dll
           if ($LASTEXITCODE -ne 0) { throw "Rust native-mod ABI smoke test failed with exit code $LASTEXITCODE." }
 

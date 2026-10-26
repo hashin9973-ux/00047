@@ -84,10 +84,15 @@ target_compile_features(00047_windhawk_settings_changed_runtime_test PRIVATE cxx
 target_compile_definitions(00047_windhawk_settings_changed_runtime_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 add_dependencies(00047_windhawk_settings_changed_runtime_test 00047_windhawk_settings_changed_smoke)
 
-# Exercise lifecycle exports from native DLLs built by non-C++ languages.
+# Exercise lifecycle exports from native DLLs built by C and non-C++ languages.
 add_executable(00047_native_mod_abi_smoke native_mod_abi_smoke.cpp)
 target_compile_features(00047_native_mod_abi_smoke PRIVATE cxx_std_17)
 target_compile_definitions(00047_native_mod_abi_smoke PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+# Compile the public lifecycle ABI header as C and validate the resulting DLL at runtime.
+add_library(00047_native_mod_c_abi_smoke SHARED native_mod_c_abi_smoke.c)
+target_compile_definitions(00047_native_mod_c_abi_smoke PRIVATE WMOD_BUILD_DLL WIN32_LEAN_AND_MEAN NOMINMAX)
+target_include_directories(00047_native_mod_c_abi_smoke PRIVATE "${WMOD_SDK_DIR}")
 
 # CI-only test double: its output basename is explorer.exe so the real
 # allow-list, remote LoadLibrary and unload code paths can be exercised without

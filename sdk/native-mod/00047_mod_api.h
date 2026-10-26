@@ -3,7 +3,7 @@
 #define WMOD_00047_MOD_API_H
 
 #include <Windows.h>
-#include <cstdint>
+#include <stdint.h>
 
 // 00047 native mod ABI v2.
 // A module must export all five lifecycle functions/queries below with these exact names.
@@ -13,17 +13,26 @@
 
 #define WMOD_00047_ABI_VERSION 2u
 
-#ifdef WMOD_BUILD_DLL
-#define WMOD_00047_EXPORT extern "C" __declspec(dllexport)
-#else
-#define WMOD_00047_EXPORT extern "C" __declspec(dllimport)
+// Keep the export declarations consumable from both C and C++ translation units.
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-WMOD_00047_EXPORT std::uint32_t WINAPI WmodGetApiVersion(void);
+#ifdef WMOD_BUILD_DLL
+#define WMOD_00047_EXPORT __declspec(dllexport)
+#else
+#define WMOD_00047_EXPORT __declspec(dllimport)
+#endif
+
+WMOD_00047_EXPORT uint32_t WINAPI WmodGetApiVersion(void);
 WMOD_00047_EXPORT BOOL WINAPI WmodInitializeV1(void);
 WMOD_00047_EXPORT void WINAPI WmodShutdownV1(void);
 // The host uses these lifecycle queries to safely retry enable and unload operations.
 WMOD_00047_EXPORT BOOL WINAPI WmodIsInitializedV1(void);
 WMOD_00047_EXPORT BOOL WINAPI WmodCanUnloadV1(void);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 #endif // WMOD_00047_MOD_API_H
