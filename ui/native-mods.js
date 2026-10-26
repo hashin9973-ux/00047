@@ -2,7 +2,19 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
   const $ = (selector) => document.querySelector(selector);
   let lifecycleRefreshTimer = null;
   let refreshInFlight = false;
-let activeHotkeyCapture = null;
+  let nativePanelTransition = false;
+  let activeHotkeyCapture = null;
+
+  function hasOpenNativePanel() {
+    return Boolean(document.querySelector('.native-settings-panel, .native-log-panel'));
+  }
+
+  function pauseLifecycleRefresh() {
+    if (lifecycleRefreshTimer !== null) {
+      clearTimeout(lifecycleRefreshTimer);
+      lifecycleRefreshTimer = null;
+    }
+  }
 
   function bindActions(root) {
     root.querySelectorAll('[data-native-action]').forEach((button) => {
@@ -25,15 +37,18 @@ let activeHotkeyCapture = null;
 
   async function refreshData() {
     if (refreshInFlight) return;
-    refreshInFlight = true;
-    if (lifecycleRefreshTimer !== null) {
-      clearTimeout(lifecycleRefreshTimer);
-      lifecycleRefreshTimer = null;
+    if (nativePanelTransition || hasOpenNativePanel()) {
+      pauseLifecycleRefresh();
+      return;
     }
+    refreshInFlight = true;
+    pauseLifecycleRefresh();
     const host = $('#view-native-mods');
     try {
       const info = await invoke('native_mod_refresh');
-      if (getView() !== 'native-mods') return;
+      // Do not replace the list if an edit/log panel opened while the refresh
+      // command was in flight; rebuilding the list would discard the user's work.
+      if (getView() !== 'native-mods' || nativePanelTransition || hasOpenNativePanel()) return;
       const signatureRequired = info.requireTrustedSignature === true;
       $('#native-signature-policy').innerHTML =
         '<div class="native-signature-policy-copy"><div><b>Trusted Authenticode signatures</b><span class="native-signature-status ' +
@@ -107,7 +122,7 @@ let activeHotkeyCapture = null;
       // Poll only while the native-mod view is active. The read-only refresh
       // command can now observe loading/stopping states while the background
       // monitor or a user action is working on a target process.
-      if (getView() === 'native-mods') {
+      if (getView() === 'native-mods' && !nativePanelTransition && !hasOpenNativePanel()) {
         lifecycleRefreshTimer = setTimeout(() => {
           lifecycleRefreshTimer = null;
           void refreshData();
@@ -123,6 +138,10 @@ let activeHotkeyCapture = null;
       if (action === 'folder') {
         await invoke('open_native_mods_folder');
       } else if (action === 'refresh') {
+        if (nativePanelTransition || hasOpenNativePanel()) {
+          toast('Close the settings or log panel before refreshing targets.');
+          return;
+        }
         await refreshData();
         return;
       } else if (action === 'signature-policy') {
@@ -204,19 +223,36 @@ let activeHotkeyCapture = null;
         updateSettingVisibility(form);
         return;
       } else if (action === 'settings') {
-        await toggleSettings(button, id);
+        nativePanelTransition = true;
+        pauseLifecycleRefresh();
+        try {
+          await toggleSettings(button, id);
+        } finally {
+          nativePanelTransition = false;
+          if (!hasOpenNativePanel()) void refreshData();
+        }
         return;
       } else if (action === 'settings-close') {
+        stopHotkeyCapture();
         button.closest('.native-settings-panel')?.remove();
+        void refreshData();
         return;
       } else if (action === 'settings-save') {
         await saveSettings(button, id);
         return;
       } else if (action === 'logs') {
-        await toggleLogs(button, id);
+        nativePanelTransition = true;
+        pauseLifecycleRefresh();
+        try {
+          await toggleLogs(button, id);
+        } finally {
+          nativePanelTransition = false;
+          if (!hasOpenNativePanel()) void refreshData();
+        }
         return;
       } else if (action === 'logs-close') {
         button.closest('.native-log-panel')?.remove();
+        void refreshData();
         return;
       } else if (action === 'uninstall') {
         const answer = await modal({
@@ -466,7 +502,7 @@ let activeHotkeyCapture = null;
     const card = button.closest('.native-mod-card');
     if (!card) return;
     const existing = card.querySelector('.native-settings-panel');
-    if (existing) { existing.remove(); return; }
+    if (existing) { stopHotkeyCapture(); existing.remove(); return; }
     const data = await invoke('native_mod_settings_read', { id });
     const panel = document.createElement('div');
     panel.className = 'native-settings-panel';
