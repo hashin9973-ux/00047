@@ -26,6 +26,8 @@
   $max: 1
   $format: slider
   $showIf: {Enabled: true}
+- Font: "Segoe UI"
+  $format: fontFamily
 - Shortcut: "ctrl+alt+84"
   $format: hotkey
 - Overlay: "#80FFFFFF"

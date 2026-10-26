@@ -8,6 +8,12 @@ mod extensions;
 mod native_mods;
 mod native_mod_builder;
 mod native_mod_config;
+#[cfg(windows)]
+mod native_font_list;
+#[cfg(not(windows))]
+mod native_font_list {
+    pub fn list() -> Vec<String> { Vec::new() }
+}
 mod logstore;
 mod model;
 mod store;
@@ -554,6 +560,11 @@ fn open_native_mods_folder(mods: State<'_, Arc<native_mods::NativeModManager>>) 
 }
 
 #[tauri::command]
+fn native_mod_font_families() -> Vec<String> {
+    native_font_list::list()
+}
+
+#[tauri::command]
 async fn native_mod_pick_setting_path(
     app: AppHandle,
     folder: bool,
@@ -723,6 +734,7 @@ fn main() {
             native_mod_settings_read,
             native_mod_settings_write,
             native_mod_pick_setting_path,
+            native_mod_font_families,
             native_mod_logs_read,
             restart_app
         ])

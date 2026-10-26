@@ -388,9 +388,7 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
         if format_hint in ("filePath", "folderPath", "fontFamily", "hotkey"):
             if kind != "string":
                 raise ImportError(f"setting {entry['id']}: $format: {format_hint} requires a string default")
-            if format_hint == "fontFamily":
-                warnings.append(f"setting {entry['id']}: fontFamily suggestions are preserved as a string but the specialized Windhawk font chooser is not implemented")
-            elif format_hint == "hotkey":
+            if format_hint == "hotkey":
                 warnings.append(f"setting {entry['id']}: hotkey capture uses webview keyboard events and may not capture Windows-reserved shortcuts exactly")
         converted.append(item)
 

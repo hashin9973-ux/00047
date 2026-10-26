@@ -279,6 +279,13 @@ let activeHotkeyCapture = null;
         '" data-setting-type="' + settingType + '" min="' + esc(String(setting.min)) +
         '" max="' + esc(String(setting.max)) + '" step="' + esc(step) + '" value="' + esc(String(value)) +
         '"><output data-setting-output-id="' + id + '">' + esc(String(value)) + '</output></div>';
+    } else if (kind === 'string' && format === 'fontFamily') {
+      const listId = 'native-fonts-' + id;
+      const maxLength = setting.maxLength == null ? 1024 : setting.maxLength;
+      control = '<div class="native-font-family-field"><input type="text" data-setting-id="' + id +
+        '" data-setting-type="string" data-setting-format="fontFamily" list="' + listId +
+        '" maxlength="' + esc(String(maxLength)) + '" value="' + esc(String(value == null ? '' : value)) +
+        '" required><datalist id="' + listId + '"></datalist></div>';
     } else if (kind === 'string' && format === 'hotkey') {
       control = '<div class="native-hotkey-field"><input type="text" data-setting-id="' + id +
         '" data-setting-type="string" maxlength="128" value="' + esc(String(value == null ? '' : value)) +
@@ -479,6 +486,20 @@ let activeHotkeyCapture = null;
       form.addEventListener('change', () => updateSettingVisibility(form));
       updateSettingOutputs(form);
       updateSettingVisibility(form);
+      const fontInputs = Array.from(form.querySelectorAll('[data-setting-format="fontFamily"]'));
+      if (fontInputs.length) {
+        try {
+          const families = await invoke('native_mod_font_families');
+          for (const input of fontInputs) {
+            const list = input.closest('.native-setting-field')?.querySelector('datalist');
+            if (list) {
+              list.innerHTML = families.map(family => '<option value="' + esc(family) + '"></option>').join('');
+            }
+          }
+        } catch (_) {
+          // Keep the free-text field usable if Windows font enumeration fails.
+        }
+      }
     }
   }
 

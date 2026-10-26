@@ -151,7 +151,7 @@ python tools/package_native_mod.py --manifest mods/<mod-id>/manifest.json --dll 
 python tools/validate_native_mod.py dist/mod.zip
 ```
 
-The importer rejects rules the target/build model cannot preserve, including wildcard/path target matching, `@exclude`, unsupported compiler flags, nested settings and numeric arrays. It translates flat-setting `$showIf` / `$hideIf` maps into the native settings editor and supports `$format: slider`, `colorRgb`, and `colorArgb`. File/folder path browsing, font-family suggestions, hotkey capture, and nested settings conditions still need manual porting. Inspect `windhawk-import.json` and audit the source before enabling it. Native mods remain unsandboxed and installed packages are disabled by default.
+The importer rejects rules the target/build model cannot preserve, including wildcard/path target matching, `@exclude`, unsupported compiler flags, nested settings and numeric arrays. It translates flat-setting `$showIf` / `$hideIf` maps into the native settings editor and supports `$format: slider`, `colorRgb`, `colorArgb`, native file/folder pickers, basic hotkey capture, and Windows font-family suggestions. Hotkey capture may not receive OS-reserved shortcuts; the font chooser is a datalist/free-text field rather than Windhawk's dedicated picker. Nested settings conditions still need manual porting. Inspect `windhawk-import.json` and audit the source before enabling it. Native mods remain unsandboxed and installed packages are disabled by default.
 
 ## Porting a Windhawk mod
 
