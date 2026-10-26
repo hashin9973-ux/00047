@@ -24,6 +24,7 @@ SOURCE = r'''// ==WindhawkMod==
   $options:
     - prefixed: Prefix
     - unchanged: Original
+  $hideIf: {Enabled: false}
 - Opacity: 0.85
   $float: true
   $min: 0
@@ -62,12 +63,14 @@ class WindhawkImportTests(unittest.TestCase):
                 {"value": "prefixed", "label": "Prefix"},
                 {"value": "unchanged", "label": "Original"},
             ])
+            self.assertEqual(manifest["settings"][1]["hideIf"], {"Enabled": [False]})
+            self.assertEqual(manifest["settings"][2]["showIf"], {"Enabled": [True]})
             self.assertIn("WMOD_DEFINE_WINDHAWK_LIFECYCLE_WITH_SETTINGS_CHANGED", (project / "windhawk_entry.cpp").read_text())
             cmake = (project / "CMakeLists.txt").read_text()
             self.assertIn("cxx_std_20", cmake)
             self.assertIn('"comctl32"', cmake)
             self.assertIn('"TEST_FLAG=1"', cmake)
-            self.assertIn("not translated", " ".join(warnings))
+            self.assertIn("range limits are not represented", " ".join(warnings))
             self.assertTrue(json.loads((project / "windhawk-import.json").read_text())["settingsBlock"])
             self.assertTrue((project / "WINDHAWK_README.md").exists())
 
@@ -89,7 +92,30 @@ class WindhawkImportTests(unittest.TestCase):
             self.assertTrue(compatibility["requiresManualReview"])
             self.assertTrue(any("Wh_MadeUpThing" in warning for warning in warnings))
 
-    def test_nonstandard_source_filename_is_normalized_for_wrapper(self):
+    def test_indented_visibility_condition_maps_are_imported(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_text = SOURCE.replace(
+                "$showIf: {Enabled: true}",
+                "$showIf:\\n    #! Enabled: true",
+            )
+            project, _ = import_project(self.source(root, source_text), root / "out")
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            opacity = next(item for item in manifest["settings"] if item["id"] == "Opacity")
+            self.assertEqual(opacity["showIf"], {"Enabled": [True]})
+
+    def test_rejects_unknown_visibility_reference_and_cycles(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            unknown = SOURCE.replace("$showIf: {Enabled: true}", "$showIf: {Missing: true}")
+            with self.assertRaisesRegex(ImportError, "references unknown setting"):
+                import_project(self.source(root, unknown), root / "out1")
+            cycle = SOURCE.replace("$showIf: {Enabled: true}", "$showIf: {Mode: prefixed}")
+            cycle = cycle.replace("$hideIf: {Enabled: false}", "$hideIf: {Opacity: 0.85}")
+            with self.assertRaisesRegex(ImportError, "cycle"):
+                import_project(self.source(root, cycle), root / "out2")
+
+    def test_nonstandard_source_filename_is_normalized_for_wrapper):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source = root / "windhawk-import-smoke.cpp"

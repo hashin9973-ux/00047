@@ -19,8 +19,10 @@
   $options:
     - prefixed: Prefix the caption
     - unchanged: Leave the caption unchanged
+  $hideIf: {Enabled: false}
 - Opacity: 0.85
   $float: true
+  $showIf: {Enabled: true}
 */
 // ==/WindhawkModSettings==
 

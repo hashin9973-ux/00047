@@ -143,6 +143,76 @@ def parse_scalar(value: str):
     return value
 
 
+def split_top_level(text: str, separator: str) -> list[str]:
+    parts, start, quote, escaped, stack = [], 0, None, False, []
+    pairs = {"[": "]", "{": "}", "(": ")"}
+    for index, char in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if quote == '"' and char == "\\":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+            continue
+        if char in pairs:
+            stack.append(pairs[char])
+            continue
+        if stack and char == stack[-1]:
+            stack.pop()
+            continue
+        if char == separator and not stack:
+            parts.append(text[start:index].strip())
+            start = index + 1
+    parts.append(text[start:].strip())
+    return parts
+
+
+def condition_values(raw: str, setting_id: str, annotation: str) -> list[object]:
+    raw = raw.strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        items = split_top_level(raw[1:-1], ",")
+        values = [parse_scalar(item) for item in items if item]
+    else:
+        values = [parse_scalar(raw)] if raw else []
+    if not values or len(values) > 100:
+        raise ImportError(f"setting {setting_id}: {annotation} conditions need 1 to 100 values")
+    for value in values:
+        if isinstance(value, float) or not isinstance(value, (str, int, bool)):
+            raise ImportError(f"setting {setting_id}: {annotation} values must be strings, integers, or booleans")
+    return values
+
+
+def add_condition_entry(conditions: dict, pair: str, setting_id: str, annotation: str) -> None:
+    pieces = split_top_level(pair, ":")
+    if len(pieces) < 2 or not pieces[0] or not ":".join(pieces[1:]).strip():
+        raise ImportError(f"setting {setting_id}: malformed {annotation} condition {pair!r}")
+    key = parse_scalar(pieces[0])
+    if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]{0,127}", key):
+        raise ImportError(f"setting {setting_id}: invalid {annotation} condition key")
+    if key in conditions:
+        raise ImportError(f"setting {setting_id}: duplicate {annotation} condition for {key!r}")
+    conditions[key] = condition_values(":".join(pieces[1:]), setting_id, annotation)
+
+
+def parse_condition_map(raw: str, setting_id: str, annotation: str) -> dict[str, list[object]]:
+    raw = raw.strip()
+    if not (raw.startswith("{") and raw.endswith("}")):
+        raise ImportError(f"setting {setting_id}: {annotation} must be a flat map such as {{Enabled: true}}")
+    conditions: dict[str, list[object]] = {}
+    for pair in split_top_level(raw[1:-1], ","):
+        if pair:
+            add_condition_entry(conditions, pair, setting_id, annotation)
+    if not conditions:
+        raise ImportError(f"setting {setting_id}: {annotation} map cannot be empty")
+    return conditions
+
+
 def clean_settings_lines(block: str) -> list[tuple[int, str]]:
     body = block.strip()
     if body.startswith("/*"):
@@ -184,7 +254,7 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
     if first_item is None:
         raise ImportError("settings block does not contain a YAML list of defaults")
     root_indent = first_item[0]
-    entries, warnings, current, current_property = [], [], None, None
+    entries, warnings, current, current_property, current_property_indent = [], [], None, None, None
     for indent, text in lines:
         if text.startswith("- "):
             if current is None or indent == root_indent:
@@ -197,6 +267,7 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                 current = {"id": key, "_raw": default, "_props": {}, "_options": []}
                 entries.append(current)
                 current_property = None
+                current_property_indent = None
             elif current_property == "$options" and indent > root_indent:
                 match = re.match(r"^([^:]+?)\s*:\s*(.*?)\s*$", text[2:].strip())
                 if not match:
@@ -212,6 +283,9 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
             continue
         if current is None:
             raise ImportError(f"unexpected settings content: {text!r}")
+        if current_property in ("$showif", "$hideif") and current_property_indent is not None and indent > current_property_indent:
+            add_condition_entry(current["_props"][current_property], text, current["id"], current_property)
+            continue
         match = re.match(r"^(\$[A-Za-z][A-Za-z0-9_-]*(?::[A-Za-z0-9-]+)?)\s*:\s*(.*?)\s*$", text)
         if not match:
             raise ImportError(f"unsupported settings YAML: {text!r}")
@@ -220,6 +294,7 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
             continue  # Locale-specific labels remain in the original source/import record.
         name = name.casefold()
         current_property = name
+        current_property_indent = indent
         if name == "$options":
             if value:
                 raise ImportError("inline $options maps are not supported; use a YAML list")
@@ -238,7 +313,9 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
             if isinstance(parsed, bool) or not isinstance(parsed, (int, float)):
                 raise ImportError(f"{name} must be numeric")
             current["_props"][name] = parsed
-        elif name in ("$format", "$showif", "$hideif"):
+        elif name in ("$showif", "$hideif"):
+            current["_props"][name] = parse_condition_map(value, current["id"], name) if value else {}
+        elif name == "$format":
             warnings.append(f"setting {current['id']}: {name} is not translated to the 00047 settings UI")
         else:
             raise ImportError(f"unsupported settings annotation: {name}")
@@ -273,6 +350,12 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
         if options and kind == "string" and not dynamic:
             kind = "select"
         item = {"id": entry["id"], "label": props.get("$name", entry["id"]), "type": kind, "default": default}
+        if "$description" in props:
+            item["description"] = props["$description"]
+        if props.get("$showif"):
+            item["showIf"] = props["$showif"]
+        if props.get("$hideif"):
+            item["hideIf"] = props["$hideif"]
         if options:
             item["options"] = options
         if dynamic:
@@ -284,6 +367,39 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                 if bound in props:
                     item[bound[1:]] = props[bound]
         converted.append(item)
+
+    by_id = {item["id"]: item for item in converted}
+    for item in converted:
+        for field in ("showIf", "hideIf"):
+            for target_id, accepted in item.get(field, {}).items():
+                target = by_id.get(target_id)
+                if target is None:
+                    raise ImportError(f"setting {item['id']}: {field} references unknown setting {target_id!r}")
+                target_kind = target["type"]
+                def type_matches(value):
+                    if target_kind == "boolean":
+                        return isinstance(value, bool)
+                    if target_kind == "integer":
+                        return isinstance(value, int) and not isinstance(value, bool)
+                    if target_kind == "number":
+                        return isinstance(value, (int, float)) and not isinstance(value, bool)
+                    return isinstance(value, str)
+                if not all(type_matches(value) for value in accepted):
+                    raise ImportError(f"setting {item['id']}: {field} values do not match setting {target_id!r}")
+    graph = {item["id"]: list(item.get("showIf", {})) + list(item.get("hideIf", {})) for item in converted}
+    visiting, visited = set(), set()
+    def visit(key):
+        if key in visiting:
+            raise ImportError("visibility conditions contain a cycle")
+        if key in visited:
+            return
+        visiting.add(key)
+        for dependency in graph[key]:
+            visit(dependency)
+        visiting.remove(key)
+        visited.add(key)
+    for key in graph:
+        visit(key)
     return converted, warnings, raw.strip()
 
 

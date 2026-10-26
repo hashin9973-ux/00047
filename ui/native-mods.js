@@ -167,9 +167,12 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         if (!template || !list) return;
         list.append(template.content.cloneNode(true));
         bindActions(list);
+        updateSettingVisibility(button.closest('.native-settings-form'));
         return;
       } else if (action === 'array-remove') {
+        const form = button.closest('.native-settings-form');
         button.closest('.native-array-item')?.remove();
+        updateSettingVisibility(form);
         return;
       } else if (action === 'settings') {
         await toggleSettings(button, id);
@@ -250,8 +253,85 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       control = '<input type="text" data-setting-id="' + id + '" data-setting-type="string" maxlength="' + esc(String(maxLength)) + '" value="' + esc(String(value == null ? '' : value)) + '" required>';
     }
     const wrapper = kind === 'stringArray' ? 'div' : 'label';
-    return '<' + wrapper + ' class="native-setting-field"><span><b>' + label + '</b>' + description +
+    const showIf = esc(JSON.stringify(setting.showIf || {}));
+    const hideIf = esc(JSON.stringify(setting.hideIf || {}));
+    return '<' + wrapper + ' class="native-setting-field" data-setting-field-id="' + id +
+      '" data-show-if="' + showIf + '" data-hide-if="' + hideIf + '"><span><b>' + label + '</b>' + description +
       '</span>' + control + '</' + wrapper + '>';
+  }
+
+  function collectSettingsDraft(form) {
+    const values = {};
+    if (!form) return values;
+    for (const control of form.querySelectorAll('[data-setting-id]')) {
+      const key = control.dataset.settingId;
+      const kind = control.dataset.settingType;
+      if (kind === 'boolean') values[key] = control.checked;
+      else if (kind === 'integer') values[key] = Number.parseInt(control.value, 10);
+      else if (kind === 'number') values[key] = Number(control.value);
+      else values[key] = control.value;
+    }
+    for (const field of form.querySelectorAll('[data-array-setting-id]')) {
+      values[field.dataset.arraySettingId] = Array.from(field.querySelectorAll('[data-array-item]')).map(item => item.value);
+    }
+    return values;
+  }
+
+  function conditionHolds(actual, accepted) {
+    const expected = Array.isArray(accepted) ? accepted : [accepted];
+    const equal = (left, right) => typeof left === typeof right && left === right;
+    if (Array.isArray(actual)) return actual.some(value => expected.some(candidate => equal(value, candidate)));
+    return expected.some(candidate => equal(actual, candidate));
+  }
+
+  function updateSettingVisibility(form) {
+    if (!form) return;
+    const fields = Array.from(form.querySelectorAll('[data-setting-field-id]'));
+    const byId = new Map(fields.map(field => [field.dataset.settingFieldId, field]));
+    const metadata = new Map();
+    for (const field of fields) {
+      const parse = value => {
+        try {
+          const result = JSON.parse(value || '{}');
+          return result && typeof result === 'object' && !Array.isArray(result) ? result : {};
+        } catch (_) { return {}; }
+      };
+      metadata.set(field.dataset.settingFieldId, {
+        showIf: parse(field.dataset.showIf),
+        hideIf: parse(field.dataset.hideIf)
+      });
+    }
+    const draft = collectSettingsDraft(form);
+    const memo = new Map();
+    const visiting = new Set();
+    const isShown = id => {
+      if (memo.has(id)) return memo.get(id);
+      if (visiting.has(id)) return true;
+      const field = byId.get(id);
+      if (!field) return false;
+      visiting.add(id);
+      const conditions = metadata.get(id);
+      let shown = true;
+      for (const [dependency, accepted] of Object.entries(conditions.showIf)) {
+        if (!isShown(dependency) || !conditionHolds(draft[dependency], accepted)) { shown = false; break; }
+      }
+      if (shown) {
+        for (const [dependency, accepted] of Object.entries(conditions.hideIf)) {
+          if (!isShown(dependency) || conditionHolds(draft[dependency], accepted)) { shown = false; break; }
+        }
+      }
+      visiting.delete(id);
+      memo.set(id, shown);
+      return shown;
+    };
+    for (const field of fields) {
+      const shown = isShown(field.dataset.settingFieldId);
+      field.hidden = !shown;
+      field.style.display = shown ? '' : 'none';
+      for (const control of field.querySelectorAll('[data-setting-id]')) {
+        if (control.type === 'text' || control.type === 'number') control.required = shown;
+      }
+    }
   }
 
   async function toggleSettings(button, id) {
@@ -272,25 +352,19 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     }
     card.append(panel);
     bindActions(card);
+    const form = panel.querySelector('.native-settings-form');
+    if (form) {
+      form.addEventListener('input', () => updateSettingVisibility(form));
+      form.addEventListener('change', () => updateSettingVisibility(form));
+      updateSettingVisibility(form);
+    }
   }
 
   async function saveSettings(button, id) {
     const panel = button.closest('.native-settings-panel');
     if (!panel) return;
     const form = panel.querySelector('.native-settings-form');
-    const values = {};
-    for (const control of panel.querySelectorAll('[data-setting-id]')) {
-      const key = control.dataset.settingId;
-      const kind = control.dataset.settingType;
-      if (kind === 'boolean') values[key] = control.checked;
-      else if (kind === 'integer') values[key] = Number.parseInt(control.value, 10);
-      else if (kind === 'number') values[key] = Number(control.value);
-      else values[key] = control.value;
-    }
-    for (const field of panel.querySelectorAll('[data-array-setting-id]')) {
-      const key = field.dataset.arraySettingId;
-      values[key] = Array.from(field.querySelectorAll('[data-array-item]')).map(item => item.value);
-    }
+    const values = collectSettingsDraft(form);
     if (form && !form.reportValidity()) return;
     await invoke('native_mod_settings_write', { id, values });
     toast('Settings saved. The mod must reload settings.json to apply changes.');

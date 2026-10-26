@@ -30,6 +30,10 @@ pub struct SettingSpec {
     #[serde(default)] pub max_length: Option<usize>,
     #[serde(default)] pub dynamic_select: bool,
     #[serde(default)] pub options: Vec<SettingOption>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub show_if: HashMap<String, Vec<Value>>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub hide_if: HashMap<String, Vec<Value>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -212,6 +216,60 @@ fn validate_specs(specs: &[SettingSpec]) -> Result<(), String> {
             return Err(format!("Setting '{}': options are only valid for select, stringArray, or dynamic-select string settings.", s.id));
         }
         validate_value(s, &s.default).map_err(|e| format!("Setting '{}': invalid default value: {e}", s.id))?;
+    }
+    validate_visibility_conditions(specs)?;
+    Ok(())
+}
+
+fn condition_atom_matches_setting(target: &SettingSpec, value: &Value) -> bool {
+    match target.kind.as_str() {
+        "boolean" => value.is_boolean(),
+        "integer" => value.as_i64().is_some(),
+        "number" => value.as_f64().is_some_and(f64::is_finite),
+        "string" | "select" | "stringArray" => value.as_str().is_some_and(|s| s.chars().count() <= 100),
+        _ => false,
+    }
+}
+
+fn validate_visibility_conditions(specs: &[SettingSpec]) -> Result<(), String> {
+    let by_id: HashMap<&str, &SettingSpec> = specs.iter().map(|s| (s.id.as_str(), s)).collect();
+    for setting in specs {
+        for (field, conditions) in [("showIf", &setting.show_if), ("hideIf", &setting.hide_if)] {
+            if conditions.len() > MAX_SETTINGS {
+                return Err(format!("Setting '{}': {field} has too many conditions.", setting.id));
+            }
+            for (target_id, accepted) in conditions {
+                let target = by_id.get(target_id.as_str()).ok_or_else(|| {
+                    format!("Setting '{}': {field} references unknown setting '{target_id}'.", setting.id)
+                })?;
+                if accepted.is_empty() || accepted.len() > MAX_OPTIONS {
+                    return Err(format!("Setting '{}': {field} condition for '{target_id}' needs 1 to {MAX_OPTIONS} values.", setting.id));
+                }
+                if accepted.iter().any(|value| !condition_atom_matches_setting(target, value)) {
+                    return Err(format!("Setting '{}': {field} values do not match setting '{target_id}'.", setting.id));
+                }
+            }
+        }
+    }
+
+    let indices: HashMap<String, usize> = specs.iter().enumerate()
+        .map(|(index, setting)| (setting.id.clone(), index)).collect();
+    fn visit(index: usize, specs: &[SettingSpec], indices: &HashMap<String, usize>, state: &mut [u8]) -> bool {
+        if state[index] == 1 { return false; }
+        if state[index] == 2 { return true; }
+        state[index] = 1;
+        for target_id in specs[index].show_if.keys().chain(specs[index].hide_if.keys()) {
+            let Some(target) = indices.get(target_id) else { return false; };
+            if !visit(*target, specs, indices, state) { return false; }
+        }
+        state[index] = 2;
+        true
+    }
+    let mut state = vec![0u8; specs.len()];
+    for index in 0..specs.len() {
+        if !visit(index, specs, &indices, &mut state) {
+            return Err("Native mod setting visibility conditions contain a cycle.".into());
+        }
     }
     Ok(())
 }
@@ -468,6 +526,30 @@ mod tests {
             "default": ""
         })).unwrap();
         assert!(validate_specs(&[spec]).is_ok());
+    }
+
+    #[test]
+    fn visibility_conditions_validate_references_values_and_cycles() {
+        let mut settings = schema();
+        settings[3].show_if.insert("enabled".into(), vec![serde_json::json!(true)]);
+        settings[3].hide_if.insert("style".into(), vec![serde_json::json!("acrylic")]);
+        assert!(validate_specs(&settings).is_ok());
+        let encoded = serde_json::to_value(&settings[3]).unwrap();
+        assert_eq!(encoded["showIf"]["enabled"], serde_json::json!([true]));
+        assert_eq!(encoded["hideIf"]["style"], serde_json::json!(["acrylic"]));
+
+        let mut unknown = schema();
+        unknown[3].show_if.insert("missing".into(), vec![serde_json::json!(true)]);
+        assert!(validate_specs(&unknown).unwrap_err().contains("unknown setting"));
+
+        let mut mismatch = schema();
+        mismatch[3].show_if.insert("enabled".into(), vec![serde_json::json!("true")]);
+        assert!(validate_specs(&mismatch).unwrap_err().contains("do not match"));
+
+        let mut cycle = schema();
+        cycle[0].show_if.insert("label".into(), vec![serde_json::json!("Example")]);
+        cycle[3].show_if.insert("enabled".into(), vec![serde_json::json!(true)]);
+        assert!(validate_specs(&cycle).unwrap_err().contains("cycle"));
     }
 
     #[test]

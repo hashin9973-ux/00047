@@ -26,6 +26,10 @@ The SDK supplies `windhawk_api.h`, the conventional include name used by Windhaw
 
 Run `python tools/import_windhawk_mod.py path\to\mod.cpp --output-dir path\to\mods` to generate a project from a single-file Windhawk source. The importer preserves the source and local quoted includes, maps exact allow-listed `@include` targets, creates a manifest and lifecycle wrapper, and translates a subset of flat settings defaults/options. Common `-l...`, `-D...`, and C++ standard flags are supported. It rejects wildcard/path target rules, `@exclude`, unsupported compiler flags, nested settings, and numeric arrays rather than silently altering behavior. Settings annotations such as `$showIf`, `$hideIf`, and `$format` are recorded as warnings but are not translated into the settings UI. Inspect `windhawk-import.json` and audit the source before enabling it. Import/build success does not certify equivalent runtime behavior.
 
+## Flat setting visibility conditions
+
+The source importer translates flat-setting `$showIf` and `$hideIf` maps into `showIf` and `hideIf` fields in the native-mod manifest. The settings editor updates visibility as values change, resolves dependencies recursively, retains hidden values when saving, and rejects unknown references, type mismatches, and dependency cycles. Conditions accept scalar values compatible with the referenced flat setting. Nested groups and object/array-scoped condition resolution still require manual porting.
+
 ## Compile-time metadata constants
 
 Windhawk mods may use `WH_MOD_ID` and `WH_MOD_VERSION` as wide string-literal constants. The SDK's `windhawk_project_metadata.cmake` reads those values from the root `manifest.json`, generates `windhawk_mod_metadata.h`, and force-includes it for C and C++ compilation. The in-app source builder installs this helper through `CMAKE_PROJECT_INCLUDE`, so existing CMake projects do not need to know their target name. Generated C/C++ projects also include the helper explicitly when built outside the app. Existing explicit definitions are preserved. This fills a compile-time API gap; it does not make the native runtime binary-compatible with Windhawk.
