@@ -274,7 +274,12 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     const options = Array.isArray(setting.options) ? setting.options : [];
     const isSelect = setting.dynamicSelect === true || options.length > 0;
     let control = '';
-    if (isSelect) {
+    if (setting.type === 'numberArray') {
+      const min = setting.min == null ? '' : ' min="' + esc(String(setting.min)) + '"';
+      const max = setting.max == null ? '' : ' max="' + esc(String(setting.max)) + '"';
+      control = '<input type="number" data-array-item="true" data-array-item-type="integer"' +
+        min + max + ' step="1" value="' + esc(String(value == null ? '' : value)) + '" required>';
+    } else if (isSelect) {
       control = '<select data-array-item="true" data-array-item-type="select">' +
         options.map(option => '<option value="' + esc(option.value) + '" ' +
           (String(value) === String(option.value) ? 'selected' : '') + '>' + esc(option.label) + '</option>').join('') +
@@ -334,7 +339,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         '" data-setting-type="string" maxlength="' + esc(String(maxLength)) + '" value="' +
         esc(String(value == null ? '' : value)) + '" required><button class="btn" type="button" data-native-action="settings-browse" data-setting-browse-for="' +
         id + '" data-setting-browse-format="' + format + '">Browse…</button></div>';
-    } else if (kind === 'stringArray') {
+    } else if (kind === 'stringArray' || kind === 'numberArray') {
       const items = Array.isArray(value) ? value : [];
       const itemMarkup = items.map(item => renderArrayItem(setting, item)).join('');
       control = '<div class="native-array-field" data-array-setting-id="' + id + '">' +
@@ -356,7 +361,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       const maxLength = setting.maxLength == null ? 1024 : setting.maxLength;
       control = '<input type="text" data-setting-id="' + id + '" data-setting-type="string" maxlength="' + esc(String(maxLength)) + '" value="' + esc(String(value == null ? '' : value)) + '" required>';
     }
-    const wrapper = kind === 'stringArray' ? 'div' : 'label';
+    const wrapper = (kind === 'stringArray' || kind === 'numberArray') ? 'div' : 'label';
     const showIf = esc(JSON.stringify(setting.showIf || {}));
     const hideIf = esc(JSON.stringify(setting.hideIf || {}));
     return '<' + wrapper + ' class="native-setting-field" data-setting-field-id="' + id +
@@ -388,7 +393,11 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
       else values[key] = control.value;
     }
     for (const field of form.querySelectorAll('[data-array-setting-id]')) {
-      values[field.dataset.arraySettingId] = Array.from(field.querySelectorAll('[data-array-item]')).map(item => item.value);
+      values[field.dataset.arraySettingId] = Array.from(field.querySelectorAll('[data-array-item]')).map(item => {
+        if (item.dataset.arrayItemType === 'integer') return Number.parseInt(item.value, 10);
+        if (item.dataset.arrayItemType === 'number') return Number(item.value);
+        return item.value;
+      });
     }
     return values;
   }
