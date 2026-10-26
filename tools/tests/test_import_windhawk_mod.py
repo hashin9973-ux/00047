@@ -100,8 +100,8 @@ class WindhawkImportTests(unittest.TestCase):
                 import_project(self.source(root, oversized), root / "oversized")
 
             range_annotated = source_text.replace(
-                "- KeyCodes: [13, 27, 65]\\n  $name: Key codes",
-                "- KeyCodes: [13, 27, 65]\\n  $name: Key codes\\n  $min: 0",
+                "- KeyCodes: [13, 27, 65]",
+                "- KeyCodes: [13, 27, 65]\\n  $min: 0",
             )
             with self.assertRaisesRegex(ImportError, "numeric arrays do not support"):
                 import_project(self.source(root, range_annotated), root / "range")
