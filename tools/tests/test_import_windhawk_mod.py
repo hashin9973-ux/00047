@@ -76,8 +76,8 @@ class WindhawkImportTests(unittest.TestCase):
             root = Path(temp)
             source_text = SOURCE.replace(
                 "BOOL Wh_ModInit() { return TRUE; }",
-                "BOOL Wh_ModInit() { Wh_Log(L\\"starting\\"); return TRUE; }",
-            ) + "\\nvoid Wh_MadeUpThing();\\n"
+                'BOOL Wh_ModInit() { Wh_Log(L"starting"); return TRUE; }',
+            ) + "\nvoid Wh_MadeUpThing();\n"
             source = self.source(root, source_text)
             project, warnings = import_project(source, root / "out")
             report = json.loads((project / "windhawk-import.json").read_text(encoding="utf-8"))
