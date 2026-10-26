@@ -289,7 +289,7 @@ set_target_properties({module_name} PROPERTIES
 ''',
             "README.md": f'''# {name.strip()} (C)
 
-Starter project for the 00047 native-mod lifecycle ABI. The generated C DLL tracks initialized state only; it does not patch or modify the Windows shell.
+Starter project for the 00047 native-mod C lifecycle ABI. The generated C DLL tracks initialized state only; it does not patch or modify the Windows shell.
 
 ## Build (Windows x64)
 
