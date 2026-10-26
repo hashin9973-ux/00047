@@ -503,9 +503,10 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
 
     by_id = {item["id"]: item for item in converted}
 
-    def resolve_condition(source_id: str, reference: str, *, group_scope: bool = False) -> str | None:
-        path = source_id.split(".")
-        scope = path[:-1] if not group_scope else path[:-1]
+    def resolve_condition(source_id: str, reference: str) -> str | None:
+        # Both a leaf ID and a group ID are resolved relative to their parent.
+        # For a group ID this is intentionally one level above its children.
+        scope = source_id.split(".")[:-1]
         candidates = []
         for size in range(len(scope), -1, -1):
             prefix = ".".join(scope[:size])
@@ -517,9 +518,23 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                 return candidate
         return None
 
+    # Resolve leaf-local conditions first. The keys become canonical IDs,
+    # making them distinguishable from group conditions with the same spelling.
+    for item in converted:
+        for field in ("showIf", "hideIf"):
+            resolved = {}
+            for target_ref, accepted in item.get(field, {}).items():
+                target_id = resolve_condition(item["id"], target_ref)
+                if target_id is None:
+                    raise ImportError(f"setting {item['id']}: {field} references unknown setting {target_ref!r}")
+                if target_id in resolved:
+                    raise ImportError(f"setting {item['id']}: {field} references {target_id!r} more than once")
+                resolved[target_id] = accepted
+            item[field] = resolved
+
     # Group metadata is represented in this editor as dotted setting IDs and
-    # a readable label path. Resolve a group's own conditions at the group's
-    # parent scope before inheriting them, so child names cannot shadow them.
+    # a readable label path. Group conditions resolve at the group's parent
+    # scope, then combine with leaf conditions using canonical target IDs.
     for item in converted:
         item_path = item["id"]
         ancestors = item_path.split(".")[:-1]
@@ -534,9 +549,7 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                 inherited = meta.get(field, {})
                 existing = item.setdefault(field, {})
                 for condition_ref, condition_values_list in inherited.items():
-                    resolved_group_condition = resolve_condition(
-                        group_path, condition_ref, group_scope=True
-                    )
+                    resolved_group_condition = resolve_condition(group_path, condition_ref)
                     if resolved_group_condition is None:
                         raise ImportError(
                             f"setting group {group_path}: {field} references unknown setting {condition_ref!r}"
@@ -558,16 +571,13 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
             leaf_label = item["label"] if item["label"] != item["id"] else item["id"].rsplit(".", 1)[-1]
             item["label"] = " / ".join(label_parts + [leaf_label])
 
+    # Check the canonical condition targets against the referenced setting types.
     for item in converted:
         for field in ("showIf", "hideIf"):
-            resolved = {}
-            for target_ref, accepted in item.get(field, {}).items():
-                target_id = resolve_condition(item["id"], target_ref)
-                if target_id is None:
-                    raise ImportError(f"setting {item['id']}: {field} references unknown setting {target_ref!r}")
-                if target_id in resolved:
-                    raise ImportError(f"setting {item['id']}: {field} references {target_id!r} more than once")
-                target = by_id[target_id]
+            for target_id, accepted in item.get(field, {}).items():
+                target = by_id.get(target_id)
+                if target is None:
+                    raise ImportError(f"setting {item['id']}: {field} references unknown setting {target_id!r}")
                 target_kind = target["type"]
                 def type_matches(value):
                     if target_kind == "boolean":
@@ -580,9 +590,7 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
                         return isinstance(value, str)
                     return False
                 if not all(type_matches(value) for value in accepted):
-                    raise ImportError(f"setting {item['id']}: {field} values do not match setting {target_ref!r}")
-                resolved[target_id] = accepted
-            item[field] = resolved
+                    raise ImportError(f"setting {item['id']}: {field} values do not match setting {target_id!r}")
     graph = {item["id"]: list(item.get("showIf", {})) + list(item.get("hideIf", {})) for item in converted}
     visiting, visited = set(), set()
     def visit(key):

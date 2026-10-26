@@ -126,7 +126,7 @@ class WindhawkImportTests(unittest.TestCase):
             '  - Enabled: false\n  - UseVisualStyles: false\n  - Accent: mica\n'
             '    $name: Accent scheme\n    $options:\n'
             '      - mica: Mica\n      - acrylic: Acrylic\n'
-            '    $showIf: {UseVisualStyles: true}\n'
+            '    $showIf: {UseVisualStyles: true, Enabled: false}\n'
             '*/\n// ==/WindhawkModSettings==',
         )
         with tempfile.TemporaryDirectory() as temp:
@@ -139,6 +139,7 @@ class WindhawkImportTests(unittest.TestCase):
             self.assertEqual(by_id["Display.Accent"]["label"], "Display settings / Accent scheme")
             self.assertEqual(by_id["Display.Accent"]["showIf"], {
                 "Enabled": [True],
+                "Display.Enabled": [False],
                 "Display.UseVisualStyles": [True],
             })
             # The group-level Enabled reference must bind to the top-level
