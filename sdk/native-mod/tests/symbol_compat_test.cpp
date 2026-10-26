@@ -97,6 +97,9 @@ int wmain() {
     hookOptions.onlineCacheUrl = L"";
     CHECK(wmod::windhawk_symbol_compat::ResolveOnlineCacheBase(
         &hookOptions, resolvedCacheBase) == FALSE);
+    // Windhawk queues hooks while Wh_ModInit is running. Begin an explicit
+    // hook lifecycle in this standalone API test, just as the native adapter does.
+    CHECK(wmod::windhawk_hook_compat::BeginHookOperations() == TRUE);
     CHECK(Wh_HookSymbols(GetModuleHandleW(nullptr), &probeHook, 1, &hookOptions) == TRUE);
     CHECK(originalProbe != nullptr);
     g_originalProbe = originalProbe;
@@ -332,6 +335,8 @@ int wmain() {
     // NULL handles are explicitly safe no-ops.
     CHECK(Wh_FindNextSymbol(nullptr, &first) == FALSE);
     Wh_FindCloseSymbol(nullptr);
+    wmod::windhawk_hook_compat::ShutdownHookOperations();
+    CHECK(wmod::windhawk_hook_compat::CanUnload() == TRUE);
     std::wcout << L"DbgHelp symbol compatibility tests passed.\n";
     return 0;
 }
