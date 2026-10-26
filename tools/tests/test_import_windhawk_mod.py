@@ -71,6 +71,15 @@ class WindhawkImportTests(unittest.TestCase):
             self.assertTrue(json.loads((project / "windhawk-import.json").read_text())["settingsBlock"])
             self.assertTrue((project / "WINDHAWK_README.md").exists())
 
+    def test_nonstandard_source_filename_is_normalized_for_wrapper(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "windhawk-import-smoke.cpp"
+            source.write_text(SOURCE, encoding="utf-8")
+            project, _ = import_project(source, root / "out")
+            self.assertTrue((project / "mod.cpp").is_file())
+            self.assertIn('#include "mod.cpp"', (project / "windhawk_entry.cpp").read_text(encoding="utf-8"))
+
     def test_copies_local_quoted_dependencies(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

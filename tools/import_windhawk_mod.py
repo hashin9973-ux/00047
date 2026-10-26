@@ -522,6 +522,10 @@ def import_project(source_path: Path, output_dir: Path) -> tuple[Path, list[str]
     project.mkdir()
     try:
         copy_dependencies(source_path, source_path.parent, project, set(), [0])
+        # The generated lifecycle wrapper uses one stable include name. Also place
+        # the selected root source there; the copied original-name file is kept so
+        # source identity remains obvious in the imported project.
+        shutil.copyfile(source_path, project / "mod.cpp")
         (project / "windhawk_entry.cpp").write_text(entry, encoding="utf-8", newline="\n")
         (project / "CMakeLists.txt").write_text(cmake_project(module, standard, definitions, libraries), encoding="utf-8", newline="\n")
         (project / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
