@@ -242,7 +242,9 @@ int wmain() {
         {"id":"choice","label":"Choice","type":"select","default":"mica",
          "options":[{"value":"mica","label":"Mica"}]},
         {"id":"dynamicSetting","label":"Dynamic choice","type":"string","default":"missing",
-         "dynamicSelect":true,"options":[{"value":"static","label":"Static"}]}
+         "dynamicSelect":true,"options":[{"value":"static","label":"Static"}]},
+        {"id":"windowNames","label":"Window names","type":"stringArray","default":["Explorer","Cabinet"]},
+        {"id":"keyCodes","label":"Key codes","type":"numberArray","default":[13,27,65]}
       ]
     })json";
     CHECK(WriteUtf8(manifest, manifestJson));
@@ -254,6 +256,11 @@ int wmain() {
     CHECK(Wh_GetIntSetting(L"intSetting") == 42);
     CHECK(Wh_GetIntSetting(L"boolSetting") == 1);
     CHECK(Wh_GetIntSetting(L"int%ls", L"Setting") == 42);
+    CHECK(Wh_GetIntSetting(L"keyCodes[%d]", 1) == 27);
+    PCWSTR defaultArrayText = Wh_GetStringSetting(L"windowNames[%d]", 0);
+    CHECK(defaultArrayText != nullptr);
+    CHECK(std::wcscmp(defaultArrayText, L"Explorer") == 0);
+    Wh_FreeStringSetting(defaultArrayText);
 
     PCWSTR defaultText = Wh_GetStringSetting(L"stringSetting");
     CHECK(defaultText != nullptr);
@@ -275,7 +282,12 @@ int wmain() {
     CHECK(WriteUtf8(settings, R"json({"intSetting":7})json"));
     CHECK(Wh_GetIntSetting(L"intSetting") == 7);
     CHECK(Wh_GetIntSetting(L"boolSetting") == 1);
-    CHECK(WriteUtf8(settings, R"json({"intSetting":7,"stringSetting":"Saved value"})json"));
+    CHECK(WriteUtf8(settings, R"json({"intSetting":7,"stringSetting":"Saved value","windowNames":["Shell","Desktop"],"keyCodes":[56,78]})json"));
+    CHECK(Wh_GetIntSetting(L"keyCodes[%d]", 0) == 56);
+    PCWSTR savedArrayText = Wh_GetStringSetting(L"windowNames[%d]", 1);
+    CHECK(savedArrayText != nullptr);
+    CHECK(std::wcscmp(savedArrayText, L"Desktop") == 0);
+    Wh_FreeStringSetting(savedArrayText);
     PCWSTR savedText = Wh_GetStringSetting(L"stringSetting");
     CHECK(savedText != nullptr);
     CHECK(std::wcscmp(savedText, L"Saved value") == 0);

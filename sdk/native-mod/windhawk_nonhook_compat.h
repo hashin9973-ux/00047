@@ -292,6 +292,49 @@ inline bool ReadManifestDefault(PCWSTR key, std::wstring& raw_value) noexcept {
     }
 }
 
+inline bool ParseIndexedSettingKey(std::wstring_view key, std::wstring& base,
+    size_t& index) noexcept {
+    base.clear();
+    index = 0;
+    if (key.size() < 4 || key.back() != L']') return false;
+    const size_t open = key.rfind(L'[');
+    if (open == std::wstring_view::npos || open == 0 || open + 2 >= key.size() ||
+        key.find(L'[', 0) != open || key.find(L']', open) != key.size() - 1) return false;
+    size_t parsed = 0;
+    for (size_t i = open + 1; i < key.size() - 1; ++i) {
+        const wchar_t ch = key[i];
+        if (ch < L'0' || ch > L'9') return false;
+        const size_t digit = static_cast<size_t>(ch - L'0');
+        if (parsed > (255 - digit) / 10) return false;
+        parsed = parsed * 10 + digit;
+    }
+    base.assign(key.substr(0, open));
+    index = parsed;
+    return !base.empty();
+}
+
+inline bool ExtractJsonArrayElement(std::wstring_view raw_array, size_t wanted,
+    std::wstring& raw_value) {
+    raw_value.clear();
+    raw_array = TrimJson(raw_array);
+    if (raw_array.empty() || raw_array.front() != L'[' || wanted >= 256) return false;
+    size_t i = SkipWhitespace(raw_array, 1);
+    if (i < raw_array.size() && raw_array[i] == L']') return false;
+    for (size_t index = 0; i < raw_array.size() && index < 256; ++index) {
+        const size_t end = SkipJsonValue(raw_array, i);
+        if (end == std::wstring_view::npos) return false;
+        if (index == wanted) {
+            raw_value.assign(raw_array.substr(i, end - i));
+            return true;
+        }
+        i = SkipWhitespace(raw_array, end);
+        if (i >= raw_array.size() || raw_array[i] == L']') return false;
+        if (raw_array[i] != L',') return false;
+        i = SkipWhitespace(raw_array, i + 1);
+    }
+    return false;
+}
+
 inline bool ReadRawSetting(const wchar_t* key, std::wstring& raw_value) noexcept {
     raw_value.clear();
     if (!key || !*key) return false;
@@ -303,7 +346,16 @@ inline bool ReadRawSetting(const wchar_t* key, std::wstring& raw_value) noexcept
             ExtractJsonProperty(contents, key, raw_value)) {
             return true;
         }
-        return ReadManifestDefault(key, raw_value);
+        if (ReadManifestDefault(key, raw_value)) return true;
+
+        // Windhawk exposes array scalars as keys such as Names[0] and KeyCodes[1],
+        // while 00047 stores the parent array as a single JSON value.
+        std::wstring base;
+        size_t index = 0;
+        if (!ParseIndexedSettingKey(key, base, index)) return false;
+        std::wstring array_value;
+        if (!ReadRawSetting(base.c_str(), array_value)) return false;
+        return ExtractJsonArrayElement(array_value, index, raw_value);
     } catch (...) {
         raw_value.clear();
         return false;
