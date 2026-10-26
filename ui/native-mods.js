@@ -158,6 +158,18 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         if (answer !== 'go') return;
         const status = await invoke('native_mod_disable', { id });
         toast(String(status));
+      } else if (action === 'settings-browse') {
+        const format = button.dataset.settingBrowseFormat;
+        const picked = await invoke('native_mod_pick_setting_path', { folder: format === 'folderPath' });
+        if (picked == null) return;
+        const field = button.closest('.native-setting-field');
+        const input = field?.querySelector('[data-setting-id]');
+        if (input) {
+          input.value = picked;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        return;
       } else if (action === 'array-add') {
         const panel = button.closest('.native-settings-panel');
         const field = Array.from(panel?.querySelectorAll('[data-array-setting-id]') || [])
@@ -250,6 +262,12 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         '" data-setting-type="' + settingType + '" min="' + esc(String(setting.min)) +
         '" max="' + esc(String(setting.max)) + '" step="' + esc(step) + '" value="' + esc(String(value)) +
         '"><output data-setting-output-id="' + id + '">' + esc(String(value)) + '</output></div>';
+    } else if (kind === 'string' && (format === 'filePath' || format === 'folderPath')) {
+      const maxLength = setting.maxLength == null ? 1024 : setting.maxLength;
+      control = '<div class="native-path-field"><input type="text" data-setting-id="' + id +
+        '" data-setting-type="string" maxlength="' + esc(String(maxLength)) + '" value="' +
+        esc(String(value == null ? '' : value)) + '" required><button class="btn" type="button" data-native-action="settings-browse" data-setting-browse-for="' +
+        id + '" data-setting-browse-format="' + format + '">Browse…</button></div>';
     } else if (kind === 'stringArray') {
       const items = Array.isArray(value) ? value : [];
       const itemMarkup = items.map(item => renderArrayItem(setting, item)).join('');

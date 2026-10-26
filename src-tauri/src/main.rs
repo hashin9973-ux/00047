@@ -554,6 +554,28 @@ fn open_native_mods_folder(mods: State<'_, Arc<native_mods::NativeModManager>>) 
 }
 
 #[tauri::command]
+async fn native_mod_pick_setting_path(
+    app: AppHandle,
+    folder: bool,
+) -> Result<Option<String>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    if folder {
+        app.dialog().file().pick_folder(move |picked| {
+            let _ = tx.send(picked);
+        });
+    } else {
+        app.dialog().file().pick_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+    }
+    let Some(picked) = rx.await.map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
 fn native_mod_settings_read(
     mods: State<'_, Arc<native_mods::NativeModManager>>,
     id: String,
@@ -700,6 +722,7 @@ fn main() {
             open_native_mods_folder,
             native_mod_settings_read,
             native_mod_settings_write,
+            native_mod_pick_setting_path,
             native_mod_logs_read,
             restart_app
         ])

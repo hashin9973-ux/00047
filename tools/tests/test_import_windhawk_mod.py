@@ -83,7 +83,7 @@ class WindhawkImportTests(unittest.TestCase):
                 "$showIf: {Enabled: true}\n  $format: slider",
             ).replace(
                 "*/\n// ==/WindhawkModSettings==",
-                '- Overlay: "#80FFFFFF"\n  $format: colorArgb\n*/\n// ==/WindhawkModSettings==',
+                '- Path: ""\n  $format: folderPath\n- Overlay: "#80FFFFFF"\n  $format: colorArgb\n*/\n// ==/WindhawkModSettings==',
             )
             project, warnings = import_project(self.source(root, source_text), root / "out")
             manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
@@ -91,6 +91,8 @@ class WindhawkImportTests(unittest.TestCase):
             overlay = next(s for s in manifest["settings"] if s["id"] == "Overlay")
             self.assertEqual(opacity["format"], "slider")
             self.assertEqual((opacity["min"], opacity["max"]), (0, 1))
+            path_setting = next(s for s in manifest["settings"] if s["id"] == "Path")
+            self.assertEqual(path_setting["format"], "folderPath")
             self.assertEqual(overlay["format"], "colorArgb")
             self.assertEqual(overlay["default"], "#80FFFFFF")
             self.assertNotIn("range limits are not represented", " ".join(warnings))

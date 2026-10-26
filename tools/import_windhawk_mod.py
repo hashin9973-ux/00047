@@ -388,7 +388,8 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
         if format_hint in ("filePath", "folderPath", "fontFamily", "hotkey"):
             if kind != "string":
                 raise ImportError(f"setting {entry['id']}: $format: {format_hint} requires a string default")
-            warnings.append(f"setting {entry['id']}: {format_hint} is preserved as a string, but the specialized Windhawk editor control is not implemented")
+            if format_hint in ("fontFamily", "hotkey"):
+                warnings.append(f"setting {entry['id']}: {format_hint} is preserved as a string, but the specialized Windhawk editor control is not implemented")
         converted.append(item)
 
     by_id = {item["id"]: item for item in converted}
