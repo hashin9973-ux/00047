@@ -163,8 +163,8 @@ Native mods execute inside their target process without a sandbox. This template
 ''',
     }
 
-    # Keep the default C++ template unchanged; the Rust option replaces its
-    # generated files with an independent Cargo cdylib project.
+    # Keep the default C++ template byte-for-byte as defined above. Rust
+    # projects use the same manifest but build a standalone cdylib with Cargo.
     if language == "rust":
         package_name = module_name.strip("_").replace("_", "-") or "native-mod"
         project_version = manifest["version"]
@@ -228,7 +228,7 @@ Starter project for the 00047 native-mod lifecycle ABI. This Rust cdylib only tr
 
 ## Build and package (Windows x64)
 
-Install the Rust MSVC toolchain and the `x86_64-pc-windows-msvc` target. From this project directory:
+Install the Rust MSVC toolchain and the x86_64-pc-windows-msvc target. From this project directory:
 
     cargo build --target x86_64-pc-windows-msvc --release --locked
     python C:/path/to/00047/tools/package_native_mod.py --manifest manifest.json --dll target/x86_64-pc-windows-msvc/release/{module_name}.dll --output dist/{module_name}.zip
