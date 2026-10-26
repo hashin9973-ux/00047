@@ -41,6 +41,8 @@ def create_project(mod_id: str, name: str, output_dir: str, target: str = "explo
     module_name = re.sub(r"[^A-Za-z0-9_]", "_", mod_id)
     if not module_name or module_name[0].isdigit():
         module_name = "mod_" + module_name
+    if language == "rust" and module_name == "_":
+        module_name = "mod_"
     manifest = {
         "manifestVersion": 1,
         "id": mod_id,
@@ -164,7 +166,7 @@ Native mods execute inside their target process without a sandbox. This template
     # Keep the default C++ template unchanged; the Rust option replaces its
     # generated files with an independent Cargo cdylib project.
     if language == "rust":
-        package_name = module_name.replace("_", "-")
+        package_name = module_name.strip("_").replace("_", "-") or "native-mod"
         project_version = manifest["version"]
         files = {
             "manifest.json": json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",

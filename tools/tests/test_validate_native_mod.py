@@ -273,6 +273,24 @@ class NativeModValidatorTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(destination, "mod.cpp")))
         self.assertFalse(os.path.exists(os.path.join(destination, "CMakeLists.txt")))
 
+    def test_rust_scaffold_normalizes_leading_separator_in_package_name(self):
+        destination = create_project(
+            "-leading",
+            "Leading Separator Rust Mod",
+            self.temp_dir.name,
+            language="rust",
+        )
+        with open(os.path.join(destination, "manifest.json"), encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        self.assertEqual(manifest["module"], "bin/_leading.dll")
+        with open(os.path.join(destination, "Cargo.toml"), encoding="utf-8") as handle:
+            cargo = handle.read()
+        self.assertIn('name = "leading"', cargo)
+        self.assertIn('name = "_leading"', cargo)
+        with open(os.path.join(destination, "Cargo.lock"), encoding="utf-8") as handle:
+            lock = handle.read()
+        self.assertIn('name = "leading"', lock)
+
     def test_scaffold_rejects_unknown_language(self):
         with self.assertRaisesRegex(ValidationError, "language must be cpp or rust"):
             create_project("com.example.badlang", "Bad Language", self.temp_dir.name, language="python")
