@@ -22,6 +22,8 @@ pub struct SettingSpec {
     pub id: String,
     pub label: String,
     #[serde(default)] pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
     #[serde(rename = "type")] pub kind: String,
     #[serde(default)] pub default: Value,
     #[serde(default)] pub min: Option<f64>,
@@ -191,6 +193,21 @@ fn validate_specs(specs: &[SettingSpec]) -> Result<(), String> {
         if !valid_setting_key(&s.id) || !ids.insert(s.id.clone()) { return Err(format!("Setting ID '{}' is invalid or duplicated.", s.id)); }
         if s.label.trim().is_empty() || s.label.chars().count() > 100 { return Err(format!("Setting '{}': label is required (max 100 characters).", s.id)); }
         if s.description.chars().count() > 500 { return Err(format!("Setting '{}': description exceeds 500 characters.", s.id)); }
+        if s.format.as_ref().is_some_and(|format| format.is_empty() || format.chars().count() > 64) {
+            return Err(format!("Setting '{}': format must be a non-empty string no longer than 64 characters.", s.id));
+        }
+        match s.format.as_deref() {
+            Some("colorRgb" | "colorArgb") if s.kind != "string" || s.dynamic_select || !s.options.is_empty() => {
+                return Err(format!("Setting '{}': color formats require a plain string setting.", s.id));
+            }
+            Some("slider") if !matches!(s.kind.as_str(), "string" | "integer" | "number") || s.min.is_none() || s.max.is_none() => {
+                return Err(format!("Setting '{}': slider format requires a numeric setting with min and max.", s.id));
+            }
+            Some("filePath" | "folderPath" | "fontFamily" | "hotkey") if s.kind != "string" => {
+                return Err(format!("Setting '{}': {} format requires a string setting.", s.id, s.format.as_deref().unwrap_or_default()));
+            }
+            _ => {}
+        }
         if s.min.is_some_and(|v| !v.is_finite()) || s.max.is_some_and(|v| !v.is_finite()) { return Err(format!("Setting '{}': numeric bounds must be finite.", s.id)); }
         if matches!((s.min, s.max), (Some(min), Some(max)) if min > max) { return Err(format!("Setting '{}': minimum exceeds maximum.", s.id)); }
         if s.step.is_some_and(|n| !n.is_finite() || n <= 0.0) { return Err(format!("Setting '{}': step must be positive and finite.", s.id)); }
@@ -279,6 +296,16 @@ fn validate_value(s: &SettingSpec, v: &Value) -> Result<(), String> {
         "boolean" => if !v.is_boolean() { return Err("expected true or false".into()); },
         "string" => {
             let text = v.as_str().ok_or("expected text")?;
+            match s.format.as_deref() {
+                Some("colorRgb") if !valid_hex_color(text, 6) => return Err("expected #RRGGBB color text".into()),
+                Some("colorArgb") if !valid_hex_color(text, 8) => return Err("expected #AARRGGBB color text".into()),
+                Some("slider") => {
+                    let number = text.parse::<f64>().map_err(|_| "slider value must be numeric")?;
+                    if !number.is_finite() { return Err("slider value must be finite".into()); }
+                    validate_number(s, number)?;
+                }
+                _ => {}
+            }
             if s.dynamic_select {
                 if text.chars().count() > 100 { return Err("dynamic select value exceeds 100 characters".into()); }
             } else {
@@ -324,6 +351,11 @@ fn validate_value(s: &SettingSpec, v: &Value) -> Result<(), String> {
         other => return Err(format!("unsupported setting type '{other}'")),
     }
     Ok(())
+}
+
+fn valid_hex_color(text: &str, digits: usize) -> bool {
+    text.len() == digits + 1 && text.starts_with('#')
+        && text.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
 }
 
 fn validate_number(s: &SettingSpec, n: f64) -> Result<(), String> {
@@ -550,6 +582,33 @@ mod tests {
         cycle[0].show_if.insert("label".into(), vec![serde_json::json!("Example")]);
         cycle[3].show_if.insert("enabled".into(), vec![serde_json::json!(true)]);
         assert!(validate_specs(&cycle).unwrap_err().contains("cycle"));
+    }
+
+    #[test]
+    fn known_format_settings_validate_and_preserve_values() {
+        let color: SettingSpec = serde_json::from_value(serde_json::json!({
+            "id": "overlay",
+            "label": "Overlay",
+            "type": "string",
+            "format": "colorArgb",
+            "default": "#80FFFFFF"
+        })).unwrap();
+        assert!(validate_specs(&[color.clone()]).is_ok());
+        assert!(validate_value(&color, &Value::String("#FF102030".into())).is_ok());
+        assert!(validate_value(&color, &Value::String("white".into())).is_err());
+
+        let slider: SettingSpec = serde_json::from_value(serde_json::json!({
+            "id": "opacity",
+            "label": "Opacity",
+            "type": "string",
+            "format": "slider",
+            "default": "0.85",
+            "min": 0.0,
+            "max": 1.0
+        })).unwrap();
+        assert!(validate_specs(&[slider.clone()]).is_ok());
+        assert!(validate_value(&slider, &Value::String("0.95".into())).is_ok());
+        assert!(validate_value(&slider, &Value::String("1.1".into())).is_err());
     }
 
     #[test]

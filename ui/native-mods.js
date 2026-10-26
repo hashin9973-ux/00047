@@ -229,8 +229,28 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     const label = esc(setting.label);
     const description = setting.description ? '<small class="mu">' + esc(setting.description) + '</small>' : '';
     const kind = setting.type;
+    const format = setting.format;
     let control = '';
-    if (kind === 'stringArray') {
+    if (kind === 'string' && (format === 'colorRgb' || format === 'colorArgb')) {
+      const text = String(value == null ? '' : value);
+      const argb = format === 'colorArgb';
+      const valid = argb ? /^#[0-9a-fA-F]{8}$/.test(text) : /^#[0-9a-fA-F]{6}$/.test(text);
+      const alpha = argb && valid ? text.slice(1, 3).toUpperCase() : 'FF';
+      const picker = valid ? (argb ? '#' + text.slice(3) : text) : '#000000';
+      control = '<div class="native-color-field"><input type="color" data-setting-id="' + id +
+        '" data-setting-type="formatted-color" data-setting-format="' + format + '" data-argb-alpha="' + alpha +
+        '" value="' + esc(picker) + '">' +
+        (argb ? '<label class="native-color-alpha">Alpha <input type="range" min="0" max="255" step="1" data-color-alpha-for="' +
+          id + '" value="' + parseInt(alpha, 16) + '"></label>' : '') + '</div>';
+    } else if (format === 'slider' && setting.min != null && setting.max != null &&
+        ['string', 'integer', 'number'].includes(kind)) {
+      const step = setting.step != null ? String(setting.step) : (kind === 'integer' ? '1' : 'any');
+      const settingType = kind === 'string' ? 'slider-string' : kind;
+      control = '<div class="native-slider-field"><input type="range" data-setting-id="' + id +
+        '" data-setting-type="' + settingType + '" min="' + esc(String(setting.min)) +
+        '" max="' + esc(String(setting.max)) + '" step="' + esc(step) + '" value="' + esc(String(value)) +
+        '"><output data-setting-output-id="' + id + '">' + esc(String(value)) + '</output></div>';
+    } else if (kind === 'stringArray') {
       const items = Array.isArray(value) ? value : [];
       const itemMarkup = items.map(item => renderArrayItem(setting, item)).join('');
       control = '<div class="native-array-field" data-array-setting-id="' + id + '">' +
@@ -263,12 +283,24 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
   function collectSettingsDraft(form) {
     const values = {};
     if (!form) return values;
+    const alphaById = new Map();
+    for (const alpha of form.querySelectorAll('[data-color-alpha-for]')) {
+      const parsed = Number.parseInt(alpha.value, 10);
+      alphaById.set(alpha.dataset.colorAlphaFor,
+        Number.isFinite(parsed) ? parsed.toString(16).padStart(2, '0').toUpperCase() : 'FF');
+    }
     for (const control of form.querySelectorAll('[data-setting-id]')) {
       const key = control.dataset.settingId;
       const kind = control.dataset.settingType;
       if (kind === 'boolean') values[key] = control.checked;
       else if (kind === 'integer') values[key] = Number.parseInt(control.value, 10);
       else if (kind === 'number') values[key] = Number(control.value);
+      else if (kind === 'formatted-color') {
+        const color = control.value.toUpperCase();
+        values[key] = control.dataset.settingFormat === 'colorArgb'
+          ? '#' + (alphaById.get(key) || control.dataset.argbAlpha || 'FF') + color.slice(1)
+          : color;
+      } else if (kind === 'slider-string') values[key] = control.value;
       else values[key] = control.value;
     }
     for (const field of form.querySelectorAll('[data-array-setting-id]')) {
@@ -284,8 +316,18 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     return expected.some(candidate => equal(actual, candidate));
   }
 
+  function updateSettingOutputs(form) {
+    if (!form) return;
+    const controls = Array.from(form.querySelectorAll('[data-setting-id]'));
+    for (const output of form.querySelectorAll('[data-setting-output-id]')) {
+      const control = controls.find(item => item.dataset.settingId === output.dataset.settingOutputId);
+      if (control) output.textContent = control.value;
+    }
+  }
+
   function updateSettingVisibility(form) {
     if (!form) return;
+    updateSettingOutputs(form);
     const fields = Array.from(form.querySelectorAll('[data-setting-field-id]'));
     const byId = new Map(fields.map(field => [field.dataset.settingFieldId, field]));
     const metadata = new Map();
@@ -356,6 +398,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     if (form) {
       form.addEventListener('input', () => updateSettingVisibility(form));
       form.addEventListener('change', () => updateSettingVisibility(form));
+      updateSettingOutputs(form);
       updateSettingVisibility(form);
     }
   }

@@ -22,7 +22,12 @@
   $hideIf: {Enabled: false}
 - Opacity: 0.85
   $float: true
+  $min: 0
+  $max: 1
+  $format: slider
   $showIf: {Enabled: true}
+- Overlay: "#80FFFFFF"
+  $format: colorArgb
 */
 // ==/WindhawkModSettings==
 

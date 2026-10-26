@@ -74,6 +74,26 @@ class WindhawkImportTests(unittest.TestCase):
             self.assertTrue(json.loads((project / "windhawk-import.json").read_text())["settingsBlock"])
             self.assertTrue((project / "WINDHAWK_README.md").exists())
 
+    def test_import_preserves_slider_and_color_formats(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_text = SOURCE.replace(
+                "$showIf: {Enabled: true}",
+                "$showIf: {Enabled: true}\\n  $format: slider",
+            ).replace(
+                "*/\\n// ==/WindhawkModSettings==",
+                '- Overlay: "#80FFFFFF"\\n  $format: colorArgb\\n*/\\n// ==/WindhawkModSettings==',
+            )
+            project, warnings = import_project(self.source(root, source_text), root / "out")
+            manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
+            opacity = next(s for s in manifest["settings"] if s["id"] == "Opacity")
+            overlay = next(s for s in manifest["settings"] if s["id"] == "Overlay")
+            self.assertEqual(opacity["format"], "slider")
+            self.assertEqual((opacity["min"], opacity["max"]), (0, 1))
+            self.assertEqual(overlay["format"], "colorArgb")
+            self.assertEqual(overlay["default"], "#80FFFFFF")
+            self.assertNotIn("range limits are not represented", " ".join(warnings))
+
     def test_import_report_includes_supported_and_unknown_api_findings(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

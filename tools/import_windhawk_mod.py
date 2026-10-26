@@ -316,7 +316,10 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
         elif name in ("$showif", "$hideif"):
             current["_props"][name] = parse_condition_map(value, current["id"], name) if value else {}
         elif name == "$format":
-            warnings.append(f"setting {current['id']}: {name} is not translated to the 00047 settings UI")
+            parsed = parse_scalar(value)
+            if not isinstance(parsed, str) or not parsed:
+                raise ImportError(f"setting {current['id']}: $format must be a non-empty string")
+            current["_props"][name] = parsed
         else:
             raise ImportError(f"unsupported settings annotation: {name}")
 
@@ -324,6 +327,7 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
     for entry in entries:
         default, props, options = parse_scalar(entry["_raw"]), entry["_props"], entry["_options"]
         dynamic, floating = props.get("$dynamicselect", False), props.get("$float", False)
+        format_hint = props.get("$format")
         if isinstance(default, bool):
             kind = "boolean"
         elif isinstance(default, int):
@@ -345,11 +349,13 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
             if isinstance(default, int):
                 default = str(default)
             kind = "string"
-            if "$min" in props or "$max" in props:
+            if ("$min" in props or "$max" in props) and format_hint != "slider":
                 warnings.append(f"setting {entry['id']}: floating-point range limits are not represented in the 00047 text field")
         if options and kind == "string" and not dynamic:
             kind = "select"
         item = {"id": entry["id"], "label": props.get("$name", entry["id"]), "type": kind, "default": default}
+        if format_hint:
+            item["format"] = format_hint
         if "$description" in props:
             item["description"] = props["$description"]
         if props.get("$showif"):
@@ -362,10 +368,27 @@ def parse_settings(source: str) -> tuple[list[dict], list[str], str]:
             if kind not in ("string", "select", "stringArray"):
                 raise ImportError(f"setting {entry['id']}: $dynamicSelect requires strings")
             item["dynamicSelect"] = True
-        if kind in ("integer", "number"):
+        if kind in ("integer", "number") or format_hint == "slider":
             for bound in ("$min", "$max"):
                 if bound in props:
                     item[bound[1:]] = props[bound]
+        if format_hint == "slider":
+            if kind not in ("integer", "number", "string") or "$min" not in props or "$max" not in props:
+                raise ImportError(f"setting {entry['id']}: $format: slider requires a numeric setting with $min and $max")
+            try:
+                numeric_default = float(default)
+            except (TypeError, ValueError):
+                raise ImportError(f"setting {entry['id']}: slider default must be numeric")
+            if not (float(props["$min"]) <= numeric_default <= float(props["$max"])):
+                raise ImportError(f"setting {entry['id']}: slider default is outside $min/$max")
+        if format_hint in ("colorRgb", "colorArgb"):
+            expected = 6 if format_hint == "colorRgb" else 8
+            if kind != "string" or dynamic or options or not isinstance(default, str) or not re.fullmatch(r"#[0-9a-fA-F]{" + str(expected) + r"}", default):
+                raise ImportError(f"setting {entry['id']}: $format: {format_hint} requires a matching #hex string default and no select options")
+        if format_hint in ("filePath", "folderPath", "fontFamily", "hotkey"):
+            if kind != "string":
+                raise ImportError(f"setting {entry['id']}: $format: {format_hint} requires a string default")
+            warnings.append(f"setting {entry['id']}: {format_hint} is preserved as a string, but the specialized Windhawk editor control is not implemented")
         converted.append(item)
 
     by_id = {item["id"]: item for item in converted}
