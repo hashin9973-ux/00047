@@ -2,6 +2,7 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
   const $ = (selector) => document.querySelector(selector);
   let lifecycleRefreshTimer = null;
   let refreshInFlight = false;
+let activeHotkeyCapture = null;
 
   function bindActions(root) {
     root.querySelectorAll('[data-native-action]').forEach((button) => {
@@ -158,6 +159,22 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         if (answer !== 'go') return;
         const status = await invoke('native_mod_disable', { id });
         toast(String(status));
+      } else if (action === 'settings-hotkey-capture') {
+        startHotkeyCapture(button);
+        return;
+      } else if (action === 'settings-hotkey-cancel') {
+        stopHotkeyCapture();
+        return;
+      } else if (action === 'settings-hotkey-clear') {
+        stopHotkeyCapture();
+        const field = button.closest('.native-setting-field');
+        const input = field?.querySelector('[data-setting-id]');
+        if (input) {
+          input.value = '';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        return;
       } else if (action === 'settings-browse') {
         const format = button.dataset.settingBrowseFormat;
         const picked = await invoke('native_mod_pick_setting_path', { folder: format === 'folderPath' });
@@ -262,6 +279,12 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
         '" data-setting-type="' + settingType + '" min="' + esc(String(setting.min)) +
         '" max="' + esc(String(setting.max)) + '" step="' + esc(step) + '" value="' + esc(String(value)) +
         '"><output data-setting-output-id="' + id + '">' + esc(String(value)) + '</output></div>';
+    } else if (kind === 'string' && format === 'hotkey') {
+      control = '<div class="native-hotkey-field"><input type="text" data-setting-id="' + id +
+        '" data-setting-type="string" maxlength="128" value="' + esc(String(value == null ? '' : value)) +
+        '" placeholder="ctrl+alt+84" required><button class="btn" type="button" data-native-action="settings-hotkey-capture" data-setting-hotkey-for="' +
+        id + '">Capture shortcut</button><button class="btn" type="button" data-native-action="settings-hotkey-clear" data-setting-hotkey-for="' +
+        id + '">Clear</button><small class="mu">Stored as lowercase modifiers plus a Windows virtual-key code, e.g. ctrl+alt+84.</small></div>';
     } else if (kind === 'string' && (format === 'filePath' || format === 'folderPath')) {
       const maxLength = setting.maxLength == null ? 1024 : setting.maxLength;
       control = '<div class="native-path-field"><input type="text" data-setting-id="' + id +
@@ -332,6 +355,44 @@ export function createNativeModsPage({ invoke, esc, toast, modal, htmlModal, get
     const equal = (left, right) => typeof left === typeof right && left === right;
     if (Array.isArray(actual)) return actual.some(value => expected.some(candidate => equal(value, candidate)));
     return expected.some(candidate => equal(actual, candidate));
+  }
+
+  function stopHotkeyCapture() {
+    if (!activeHotkeyCapture) return;
+    document.removeEventListener('keydown', activeHotkeyCapture.onKeyDown, true);
+    const button = activeHotkeyCapture.button;
+    if (button?.isConnected) {
+      button.dataset.nativeAction = 'settings-hotkey-capture';
+      button.textContent = 'Capture shortcut';
+    }
+    activeHotkeyCapture = null;
+  }
+
+  function startHotkeyCapture(button) {
+    stopHotkeyCapture();
+    const field = button.closest('.native-setting-field');
+    const input = field?.querySelector('[data-setting-id]');
+    if (!input) return;
+    button.dataset.nativeAction = 'settings-hotkey-cancel';
+    button.textContent = 'Cancel capture';
+    const modifierKeys = new Set([16, 17, 18, 91, 92, 160, 161, 162, 163, 164, 165]);
+    const onKeyDown = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const vk = Number(event.which || event.keyCode);
+      if (!Number.isInteger(vk) || vk < 1 || vk > 254 || modifierKeys.has(vk)) return;
+      const parts = [];
+      if (event.ctrlKey) parts.push('ctrl');
+      if (event.altKey) parts.push('alt');
+      if (event.shiftKey) parts.push('shift');
+      if (event.metaKey) parts.push('win');
+      input.value = parts.length ? parts.join('+') + '+' + vk : String(vk);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      stopHotkeyCapture();
+    };
+    activeHotkeyCapture = { button, onKeyDown };
+    document.addEventListener('keydown', onKeyDown, true);
   }
 
   function updateSettingOutputs(form) {

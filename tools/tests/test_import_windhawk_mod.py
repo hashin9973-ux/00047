@@ -83,7 +83,7 @@ class WindhawkImportTests(unittest.TestCase):
                 "$showIf: {Enabled: true}\n  $format: slider",
             ).replace(
                 "*/\n// ==/WindhawkModSettings==",
-                '- Path: ""\n  $format: folderPath\n- Overlay: "#80FFFFFF"\n  $format: colorArgb\n*/\n// ==/WindhawkModSettings==',
+                '- Path: ""\n  $format: folderPath\n- Shortcut: "ctrl+alt+84"\n  $format: hotkey\n- Overlay: "#80FFFFFF"\n  $format: colorArgb\n*/\n// ==/WindhawkModSettings==',
             )
             project, warnings = import_project(self.source(root, source_text), root / "out")
             manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
@@ -93,6 +93,8 @@ class WindhawkImportTests(unittest.TestCase):
             self.assertEqual((opacity["min"], opacity["max"]), (0, 1))
             path_setting = next(s for s in manifest["settings"] if s["id"] == "Path")
             self.assertEqual(path_setting["format"], "folderPath")
+            shortcut = next(s for s in manifest["settings"] if s["id"] == "Shortcut")
+            self.assertEqual(shortcut["format"], "hotkey")
             self.assertEqual(overlay["format"], "colorArgb")
             self.assertEqual(overlay["default"], "#80FFFFFF")
             self.assertNotIn("range limits are not represented", " ".join(warnings))
