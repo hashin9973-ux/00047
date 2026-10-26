@@ -79,10 +79,10 @@ class WindhawkImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             source_text = SOURCE.replace(
-                "*/\\n// ==/WindhawkModSettings==",
-                '- KeyCodes: [13, 27, 65]\\n  $name: Key codes\\n'
-                '- WindowNames: ["Explorer", "Cabinet"]\\n  $name: Window names\\n'
-                '*/\\n// ==/WindhawkModSettings==',
+                "- Opacity: 0.85",
+                '- KeyCodes: [13, 27, 65]\n  $name: Key codes\n'
+                '- WindowNames: ["Explorer", "Cabinet"]\n  $name: Window names\n'
+                '- Opacity: 0.85',
             )
             project, _ = import_project(self.source(root, source_text), root / "out")
             manifest = json.loads((project / "manifest.json").read_text(encoding="utf-8"))
